@@ -112,7 +112,7 @@ No real Codex runtime was used. Default tests passed with guards that fail on `o
 
 ### CI matrix
 
-The workflow defines `push`, `pull_request`, and `workflow_dispatch`, `fail-fast: false`, Ubuntu/Windows Python 3.11–3.14, pre-commit/static gates, full coverage tests, builds, and an isolated packaging/artifact job. GitHub Actions run [run 34890854934](https://github.com/fernan2cp/proteo-runtime/actions/runs/34890854934) completed successfully with all eight matrix jobs plus packaging. No CI credentials or OpenAI secrets are configured.
+The workflow defines `push`, `pull_request`, and `workflow_dispatch`, `fail-fast: false`, Ubuntu/Windows Python 3.11–3.14, pre-commit/static gates, full coverage tests, builds, and an isolated packaging/artifact job. GitHub Actions run [run 34891249980](https://github.com/fernan2cp/proteo-runtime/actions/runs/34891249980) completed successfully with all eight matrix jobs plus packaging. No CI credentials or OpenAI secrets are configured.
 
 ### Deferred or blocked items
 

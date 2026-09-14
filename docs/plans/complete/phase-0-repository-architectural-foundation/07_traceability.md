@@ -77,5 +77,5 @@ Each criterion has a concrete implementation or validation reference; all Phase 
 | AC-P0-026 | README/CLI explicitly describe deferred real providers and integrations. | Met locally |
 | AC-P0-027 | `test_quota_safety.py` guards imports, network, subprocess, auth paths, and secret environment reads. | Met locally |
 | AC-P0-028 | Pre-commit, Ruff, and mypy passed with no hiding suppressions. | Met locally |
-| AC-P0-029 | All eight local OS/Python combinations and the required remote matrix passed in run [3489054934](https://github.com/fernan2cp/proteo-runtime/actions/runs/34890854934). | Met |
+| AC-P0-029 | All eight local OS/Python combinations and the required remote matrix passed in run [run 34891249980](https://github.com/fernan2cp/proteo-runtime/actions/runs/34891249980). | Met |
 | AC-P0-030 | Evidence, matrix, exports, and deferred items are reconciled; this directory is ready to move unchanged to `docs/plans/complete/`. | Met |
