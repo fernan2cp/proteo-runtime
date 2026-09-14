@@ -9,7 +9,7 @@ pyproject.toml
 README.md
 LICENSE
 py.typed (inside package)
-pre-commit-config.yaml
+.pre-commit-config.yaml
 .github/workflows/ci.yml
 
 src/proteo_runtime/
@@ -141,6 +141,10 @@ The fake is a test support implementation, not a production fallback provider.
 
 ## Packaging and Tooling
 
-Use Hatchling as the PEP 517 build backend. Declare `openai-codex>=0.147,<0.148` as the base dependency and `pydantic>=2,<3` for strict configuration models. Add a functional `dev` extra containing pytest, pytest-asyncio, coverage, Ruff, mypy, pre-commit, and import-linter. Do not add placeholder LangGraph, LangSmith, or OpenTelemetry dependencies in Phase 0.
+Use Hatchling as the PEP 517 build backend. Declare `openai-codex>=0.147,<0.148` as the base dependency and `pydantic>=2,<3` for strict configuration models. Add a functional `dev` extra containing build, pytest, pytest-asyncio, pytest-cov, Ruff, mypy, pre-commit, and import-linter. Do not add placeholder LangGraph, LangSmith, or OpenTelemetry dependencies in Phase 0.
 
 Configure the `proteo-runtime` console script to call the minimal version-capable CLI. The root package should export only the documented Phase 0 contracts and avoid wildcard exports from internal modules.
+
+## Implementation Notes
+
+The implementation also isolates ModelInfo in core/model_info.py and policy vocabulary in core/security.py; these modules are exported through core.__init__ and remain within the dependency-safe core boundary.

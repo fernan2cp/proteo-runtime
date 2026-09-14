@@ -8,99 +8,99 @@ Task states are `pending`, `in_progress`, `done`, or `blocked`. A task may be ma
 
 ### P0-TASK-0001 — Reconfirm repository baseline
 
-**State:** `pending`  
-**Depends on:** none  
-**Requirements:** P0-REQ-001, P0-REQ-017  
+**State:** `done`
+**Depends on:** none
+**Requirements:** P0-REQ-001, P0-REQ-017
 **Acceptance:** AC-P0-001, AC-P0-002
 
 Inspect the local worktree, existing files, Git status, Python/tool versions, and current design guide. Record any divergence from `00_baseline.md` before adding files. Do not overwrite unrelated user changes.
 
 ### P0-TASK-0002 — Establish package metadata and project tooling
 
-**State:** `pending`  
-**Depends on:** P0-TASK-0001  
-**Requirements:** P0-REQ-001, P0-REQ-002, P0-REQ-012, P0-REQ-016  
+**State:** `done`
+**Depends on:** P0-TASK-0001
+**Requirements:** P0-REQ-001, P0-REQ-002, P0-REQ-012, P0-REQ-016
 **Acceptance:** AC-P0-003, AC-P0-004, AC-P0-005
 
 Add `pyproject.toml`, Hatchling configuration, package metadata/version, base dependencies, `dev` extra, console script, `py.typed`, MIT license, README skeleton, Ruff/mypy/pytest configuration, pre-commit configuration, and the initial CI workflow.
 
 ### P0-TASK-0003 — Create dependency-safe package topology
 
-**State:** `pending`  
-**Depends on:** P0-TASK-0002  
-**Requirements:** P0-REQ-003, P0-REQ-011  
+**State:** `done`
+**Depends on:** P0-TASK-0002
+**Requirements:** P0-REQ-003, P0-REQ-011
 **Acceptance:** AC-P0-006, AC-P0-007
 
 Create the `core`, `config`, `testing`, `providers`, `integrations`, and `cli` namespaces from `02_technical_design.md`. Add only documented package initializers and ensure internal modules are not accidentally re-exported.
 
 ### P0-TASK-0004 — Implement neutral value objects and protocols
 
-**State:** `pending`  
-**Depends on:** P0-TASK-0003  
-**Requirements:** P0-REQ-004, P0-REQ-005, P0-REQ-008, P0-REQ-013, P0-REQ-014  
+**State:** `done`
+**Depends on:** P0-TASK-0003
+**Requirements:** P0-REQ-004, P0-REQ-005, P0-REQ-008, P0-REQ-013, P0-REQ-014
 **Acceptance:** AC-P0-008 through AC-P0-012
 
 Implement the core dataclasses, enums, generics, `Protocol` contracts, normalization helpers, profile specifications, context/security policy vocabulary, capabilities, usage, identity, diagnostics, and event envelope. Add English Google-style docstrings to every function and method.
 
 ### P0-TASK-0005 — Implement public error hierarchy
 
-**State:** `pending`  
-**Depends on:** P0-TASK-0004  
-**Requirements:** P0-REQ-007, P0-REQ-014  
+**State:** `done`
+**Depends on:** P0-TASK-0004
+**Requirements:** P0-REQ-007, P0-REQ-014
 **Acceptance:** AC-P0-013, AC-P0-014
 
 Add every public error named by R-021, stable inheritance, safe contextual attributes, provider-cause chaining, and tests proving that secrets are not copied into messages or diagnostics.
 
 ### P0-TASK-0006 — Implement strict configuration schema models
 
-**State:** `pending`  
-**Depends on:** P0-TASK-0004, P0-TASK-0005  
-**Requirements:** P0-REQ-006, P0-REQ-017  
+**State:** `done`
+**Depends on:** P0-TASK-0004, P0-TASK-0005
+**Requirements:** P0-REQ-006, P0-REQ-017
 **Acceptance:** AC-P0-015 through AC-P0-017
 
 Implement immutable schema-version-1 Pydantic models, forbidden unknown keys, logical-level validation, and conversion to path-aware `ConfigurationError`. Explicitly document and test that loading, precedence, and production resolution are not part of Phase 0.
 
 ### P0-TASK-0007 — Implement `SessionCodec`
 
-**State:** `pending`  
-**Depends on:** P0-TASK-0004, P0-TASK-0005  
-**Requirements:** P0-REQ-009, P0-REQ-014  
+**State:** `done`
+**Depends on:** P0-TASK-0004, P0-TASK-0005
+**Requirements:** P0-REQ-009, P0-REQ-014
 **Acceptance:** AC-P0-018 through AC-P0-020
 
 Implement descriptor validation, canonical JSON encoding, `prt1.` framing, deterministic round trips, malformed/incompatible errors, and secret-field rejection. Keep authorization and provider-session checks outside the codec.
 
 ### P0-TASK-0008 — Implement deterministic fake runtime
 
-**State:** `pending`  
-**Depends on:** P0-TASK-0004, P0-TASK-0005, P0-TASK-0007  
-**Requirements:** P0-REQ-010, P0-REQ-015  
+**State:** `done`
+**Depends on:** P0-TASK-0004, P0-TASK-0005, P0-TASK-0007
+**Requirements:** P0-REQ-010, P0-REQ-015
 **Acceptance:** AC-P0-021 through AC-P0-025
 
 Implement fake runtime/model/session lifecycle, scripted results and streams, ordered events, usage, resumable session simulation, cancellation/interruption, injected failures, and single-active-turn enforcement. Add guards proving the fake cannot start Codex or access network/authentication.
 
 ### P0-TASK-0009 — Add CLI and public exports
 
-**State:** `pending`  
-**Depends on:** P0-TASK-0003, P0-TASK-0004  
-**Requirements:** P0-REQ-001, P0-REQ-011, P0-REQ-012  
+**State:** `done`
+**Depends on:** P0-TASK-0003, P0-TASK-0004
+**Requirements:** P0-REQ-001, P0-REQ-011, P0-REQ-012
 **Acceptance:** AC-P0-003, AC-P0-026
 
 Implement `proteo-runtime --version`, `python -m proteo_runtime`, root exports, package metadata smoke checks, and README examples that use only the fake runtime or neutral contracts.
 
 ### P0-TASK-0010 — Add contract/unit tests and quality gates
 
-**State:** `pending`  
-**Depends on:** P0-TASK-0004 through P0-TASK-0009  
-**Requirements:** P0-REQ-003, P0-REQ-007 through P0-REQ-016  
+**State:** `in_progress`
+**Depends on:** P0-TASK-0004 through P0-TASK-0009
+**Requirements:** P0-REQ-003, P0-REQ-007 through P0-REQ-016
 **Acceptance:** AC-P0-006 through AC-P0-030
 
 Add unit tests, provider-neutral contract tests, import-boundary tests, quota-safety tests, and build/install checks. Run Ruff, mypy, pytest with coverage, import-linter, and the complete CI matrix.
 
 ### P0-TASK-0011 — Review, evidence, and phase handoff
 
-**State:** `pending`  
-**Depends on:** P0-TASK-0010  
-**Requirements:** P0-REQ-016, P0-REQ-017  
+**State:** `in_progress`
+**Depends on:** P0-TASK-0010
+**Requirements:** P0-REQ-016, P0-REQ-017
 **Acceptance:** AC-P0-029, AC-P0-030
 
 Fill the validation evidence record, reconcile the traceability matrix, document any blocked or deferred item, perform a documentation/API review, and move the SDD directory to `docs/plans/complete/` only when all acceptance criteria are satisfied.
@@ -113,3 +113,6 @@ Fill the validation evidence record, reconcile the traceability matrix, document
                          └────────→ 0009
                          └────────→ 0010 → 0011
 ```
+## Implementation Evidence
+
+Local Windows evidence for this implementation: uv sync --extra dev resolved 42 packages; pytest passed 20 tests; coverage is 90.81%; Ruff format/check, mypy, and import-linter passed; uv build produced wheel and sdist; both artifacts installed in isolated Python 3.11 environments and printed CLI version 0.1.0. A Linux Python 3.11 Docker run also passed installation, 20 tests, Ruff, mypy, and import-linter; its final uv build was not completed because the mounted worktree made the sdist scan hang. The default test suite imports no openai_codex and uses no provider authentication, network, or Codex process. The GitHub Actions matrix remains pending until the branch is published and remote CI runs; therefore the SDD remains active.
