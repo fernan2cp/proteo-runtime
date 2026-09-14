@@ -45,7 +45,7 @@ Any implementation change that alters a public symbol, profile name, error inher
 
 ## Acceptance-criterion evidence index
 
-Each criterion has a concrete implementation or validation reference; remote-only criteria remain explicitly pending.
+Each criterion has a concrete implementation or validation reference; all Phase 0 criteria are satisfied by local evidence and the successful remote workflow.
 
 | Criterion | Implementation / validation evidence | Status |
 |---|---|---|
@@ -77,5 +77,5 @@ Each criterion has a concrete implementation or validation reference; remote-onl
 | AC-P0-026 | README/CLI explicitly describe deferred real providers and integrations. | Met locally |
 | AC-P0-027 | `test_quota_safety.py` guards imports, network, subprocess, auth paths, and secret environment reads. | Met locally |
 | AC-P0-028 | Pre-commit, Ruff, and mypy passed with no hiding suppressions. | Met locally |
-| AC-P0-029 | All eight local OS/Python combinations passed; required remote matrix is pending. | Pending remote CI |
-| AC-P0-030 | Evidence and matrix are reconciled; SDD move awaits remote green CI. | Pending remote CI |
+| AC-P0-029 | All eight local OS/Python combinations and the required remote matrix passed in run [3489054934](https://github.com/fernan2cp/proteo-runtime/actions/runs/34890854934). | Met |
+| AC-P0-030 | Evidence, matrix, exports, and deferred items are reconciled; this directory is ready to move unchanged to `docs/plans/complete/`. | Met |

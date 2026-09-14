@@ -15,10 +15,10 @@ The validation must be repeatable without Codex login, API keys, a Codex executa
 
 ```bash
 uv build
-uv run pip install --force-reinstall dist/*.whl
-uv run python -c "import proteo_runtime; print(proteo_runtime.__version__)"
-uv run proteo-runtime --version
-uv run python -m proteo_runtime --version
+uv run python scripts/check_artifacts.py dist
+# Install wheel and sdist separately in fresh uv virtual environments.
+uv pip install --python <fresh-venv-python> dist/*.whl
+uv pip install --python <other-fresh-venv-python> dist/*.tar.gz
 ```
 
 Verify the wheel and sdist contain the package, `py.typed`, license metadata, and no local credentials or development-only files.
@@ -112,9 +112,8 @@ No real Codex runtime was used. Default tests passed with guards that fail on `o
 
 ### CI matrix
 
-The workflow now defines `push`, `pull_request`, and `workflow_dispatch`, `fail-fast: false`, Ubuntu/Windows Python 3.11–3.14, pre-commit/static gates, full coverage tests, builds, and an isolated packaging/artifact job. No GitHub Actions run URL exists yet: the branch is not published and the local `gh` client is unauthenticated. Remote CI validation is therefore **pending**, and P0-TASK-0010/P0-TASK-0011 remain `in_progress`.
+The workflow defines `push`, `pull_request`, and `workflow_dispatch`, `fail-fast: false`, Ubuntu/Windows Python 3.11–3.14, pre-commit/static gates, full coverage tests, builds, and an isolated packaging/artifact job. GitHub Actions run [run 34890854934](https://github.com/fernan2cp/proteo-runtime/actions/runs/34890854934) completed successfully with all eight matrix jobs plus packaging. No CI credentials or OpenAI secrets are configured.
 
 ### Deferred or blocked items
 
-- Remote GitHub Actions matrix and packaging job: blocked pending repository publication/CI credentials; owner is the release engineer, to be completed before handoff.
 - Codex provider, configuration loading/precedence, LangGraph/LangSmith/OpenTelemetry integrations, tool execution, exporters, OS sandbox enforcement, and real authentication remain deferred to their documented later phases.

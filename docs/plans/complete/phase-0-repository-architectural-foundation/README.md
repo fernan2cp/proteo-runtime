@@ -48,7 +48,7 @@ https://developers.openai.com/codex/sdk/
 
 ## Status and Lifecycle
 
-Status: `active`.
+Status: `complete`.
 
 The package remains under `docs/plans/active/` until every acceptance criterion has implementation evidence. Once Phase 0 is implemented and validated, move this directory unchanged to `docs/plans/complete/`.
 

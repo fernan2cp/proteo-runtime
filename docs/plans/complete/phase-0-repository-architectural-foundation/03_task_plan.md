@@ -89,7 +89,7 @@ Implement `proteo-runtime --version`, `python -m proteo_runtime`, root exports, 
 
 ### P0-TASK-0010 — Add contract/unit tests and quality gates
 
-**State:** `in_progress`
+**State:** `done`
 **Depends on:** P0-TASK-0004 through P0-TASK-0009
 **Requirements:** P0-REQ-003, P0-REQ-007 through P0-REQ-016
 **Acceptance:** AC-P0-006 through AC-P0-030
@@ -98,7 +98,7 @@ Add unit tests, provider-neutral contract tests, import-boundary tests, quota-sa
 
 ### P0-TASK-0011 — Review, evidence, and phase handoff
 
-**State:** `in_progress`
+**State:** `done`
 **Depends on:** P0-TASK-0010
 **Requirements:** P0-REQ-016, P0-REQ-017
 **Acceptance:** AC-P0-029, AC-P0-030
@@ -117,4 +117,4 @@ Fill the validation evidence record, reconcile the traceability matrix, document
 
 Local validation is green on Windows Python 3.11.4, 3.12.14, 3.13.15, and 3.14.7, and on clean Linux containers Python 3.11.14, 3.12.12, 3.13.11, and 3.14.2. Each matrix entry passed 29 tests with coverage above 91%, and each Linux entry completed wheel/sdist build and artifact inspection. Pre-commit, Ruff format/check, mypy, and import-linter passed locally; the isolated wheel and sdist installs both imported version 0.1.0 and exercised both CLI entrypoints.
 
-P0-TASK-0010 and P0-TASK-0011 remain `in_progress` because the branch has not yet been published and no remote GitHub Actions run is available. The SDD must remain under `docs/plans/active/` until the required eight-job matrix and packaging job pass remotely.
+P0-TASK-0010 and P0-TASK-0011 are `done`. Local validation and the required remote matrix, including packaging, passed in GitHub Actions run https://github.com/fernan2cp/proteo-runtime/actions/runs/34890854934.
