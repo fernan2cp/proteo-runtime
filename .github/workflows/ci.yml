@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  quality:
+    name: Pre-commit / static quality
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: latest
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: uv sync --locked --extra dev
+      - run: uv run pre-commit run --all-files
+
+  test:
+    name: ${{ matrix.os }} / Python ${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: latest
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: uv sync --locked --python ${{ matrix.python-version }} --extra dev
+      - run: uv run --python ${{ matrix.python-version }} ruff format --check .
+      - run: uv run --python ${{ matrix.python-version }} ruff check .
+      - run: uv run --python ${{ matrix.python-version }} mypy src tests
+      - run: uv run --python ${{ matrix.python-version }} lint-imports
+      - run: uv run --python ${{ matrix.python-version }} pytest tests -q --cov=proteo_runtime --cov-report=term-missing --cov-fail-under=90
+      - run: uv build
+
+  packaging:
+    name: Packaging and isolated artifacts
+    runs-on: ubuntu-latest
+    needs: [quality, test]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: latest
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: uv sync --locked --extra dev
+      - run: uv build
+      - run: uv run python scripts/check_artifacts.py dist
+      - name: Install and validate wheel in an isolated environment
+        run: |
+          uv venv .ci-wheel-venv --python 3.11
+          uv pip install --python .ci-wheel-venv/bin/python dist/*.whl
+          .ci-wheel-venv/bin/python -c "import proteo_runtime; assert proteo_runtime.__version__ == '0.1.0'"
+          .ci-wheel-venv/bin/proteo-runtime --version
+          .ci-wheel-venv/bin/python -m proteo_runtime --version
+      - name: Install and validate sdist in an isolated environment
+        run: |
+          uv venv .ci-sdist-venv --python 3.11
+          uv pip install --python .ci-sdist-venv/bin/python dist/*.tar.gz
+          .ci-sdist-venv/bin/python -c "import proteo_runtime; assert proteo_runtime.__version__ == '0.1.0'"
+          .ci-sdist-venv/bin/proteo-runtime --version
+          .ci-sdist-venv/bin/python -m proteo_runtime --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: phase-0-distributions
+          path: dist/
+          if-no-files-found: error
