@@ -2,12 +2,12 @@
 
 **Project Charter, Architecture and Implementation Guide**
 
-**Status:** Draft v0.2\
+**Status:** Draft v0.3\
 **License:** MIT\
 **Primary language:** Python\
 **Initial runtime:** OpenAI Codex\
 **Initial framework integration:** LangGraph\
-**Initial observability integration:** LangSmith\
+**Initial observability integrations:** LangSmith and OpenTelemetry\
 **Target:** Stable, installable open-source Python library
 
 > **Project name:** Proteo Runtime  
@@ -163,9 +163,9 @@ Every important runtime decision should be observable:
 - failure;
 - fallback.
 
-LangSmith will be supported from the first usable version.
+The provider-neutral event contract is part of the core from Phase 0. LangSmith support is required from Phase 4 onward and in 1.0.
 
-The core, however, must expose a provider-neutral observability interface so LangSmith does not become an architectural dependency.
+The core must expose provider-neutral observability contracts so LangSmith, OpenTelemetry and future exporters do not become architectural dependencies.
 
 ---
 
@@ -316,7 +316,14 @@ Users MUST be able to define advanced custom profiles.
 
 The Codex 1.0 implementation MUST support ChatGPT subscription authentication managed by the official Codex runtime.
 
-Proteo Runtime MUST reuse Codex authentication state and MUST NOT implement OAuth, copy tokens or persist credentials. Each runtime instance supports one active subscription-backed identity; provider-neutral contracts MUST still represent identity opaquely and permit future providers to support multiple identities.
+Proteo Runtime MUST:
+
+- reuse authentication state exposed by Codex;
+- NOT implement its own OAuth flow;
+- NOT read, copy, return or persist Codex access tokens;
+- expose only non-secret identity metadata made available by the official runtime.
+
+Each runtime instance supports one active subscription-backed identity. Provider-neutral contracts MUST represent identity opaquely and MUST NOT assume that a provider can expose only one identity in future versions.
 
 API-key authentication is outside the Codex 1.0 contract. Subscription-specific authentication MUST remain isolated from the provider-neutral core.
 
@@ -390,11 +397,13 @@ The core MUST expose an observability contract independent of LangSmith.
 
 LangSmith MUST be implemented as an observer/exporter.
 
-OpenTelemetry MUST be implemented as an official observer/exporter for 1.0 and correlated with LangSmith through neutral invocation, session and turn identifiers.
+Proteo OpenTelemetry export MUST be implemented as an official provider-neutral observer/exporter for 1.0 and correlated with LangSmith through neutral invocation, session and turn identifiers.
+
+The Codex provider MAY additionally configure Codex-native OpenTelemetry as explicit, capability-gated enrichment. Provider-native telemetry MUST remain optional, disabled by default, and isolated from the neutral observability contract. It SHOULD use Proteo correlation identifiers when the upstream runtime permits propagation, but Proteo MUST NOT guarantee a shared OpenTelemetry `trace_id` unless the provider supports parent-context propagation.
 
 Exporter failures MUST be isolated from inference by default, reported as local diagnostics and exposed as degraded observability. An explicit strict mode MAY raise `ObservabilityError`.
 
-OpenTelemetry MUST describe only activity exposed by runtime events and MUST NOT claim access to hidden reasoning or unreported provider activity. The architecture SHOULD still allow Phoenix, Datadog or custom exporters.
+OpenTelemetry MUST describe only activity actually exposed by Proteo Runtime, provider event streams or explicitly enabled provider-native telemetry. Neither layer may claim access to hidden reasoning or unreported provider activity. The architecture SHOULD still allow Phoenix, Datadog or custom exporters.
 
 ---
 
@@ -415,7 +424,6 @@ RuntimeInput
 RuntimeMessage
 RuntimeResult
 RuntimeIdentity
-Transport
 ```
 
 Provider-neutral runtime contracts MUST support both simple inference and stateful agentic execution without constraining runtime implementations to a specific interaction model.
@@ -517,9 +525,9 @@ API runtime
 alternate runtime
 ```
 
-A complete multi-provider fallback implementation is not required for 1.0.
+Proteo Runtime 1.0 does NOT implement automatic API fallback, account rotation or cross-provider routing. It MUST instead expose normalized, actionable failures so the host/orchestrator can decide whether to retry, fall back to an API-backed model, select another subscription runtime or require human intervention.
 
-The public contracts must not prevent it.
+The public contracts must not prevent future routing layers, but orchestration policy remains outside the provider-neutral core.
 
 ---
 
@@ -547,7 +555,7 @@ The library MUST manage:
 ```text
 runtime startup
 runtime shutdown
-transport lifecycle
+provider client/transport lifecycle
 thread lifecycle
 session lifecycle
 cancellation
@@ -558,6 +566,8 @@ interruptions
 Resource leaks caused by forgotten Codex processes or threads must be actively prevented.
 
 Closing a persistent session MUST release resources without deleting history. Archiving and deletion MUST be explicit operations. Only one turn may be active per session; concurrent invocation MUST raise `SessionBusyError`.
+
+Persistent sessions MUST expose a versioned, self-contained and opaque Proteo session identifier. Proteo Runtime 1.0 MUST NOT require an internal alias database to resume a session. Session identifiers MUST contain no credentials or access tokens and MUST be treated as untrusted input rather than as a security boundary.
 
 ---
 
@@ -829,13 +839,18 @@ Their future integration must nevertheless remain architecturally possible.
                 └───────────────┬────────────────┘
                                 │
                     ┌───────────▼───────────┐
-                    │      Transport        │
-                    │                       │
-                    │ Official SDK          │
-                    │ App Server exp.       │
+                    │   openai-codex SDK    │
+                    │   canonical path      │
                     └───────────┬───────────┘
                                 │
+                    pinned local Codex runtime
+                    / App Server over JSON-RPC
+                                │
                     ChatGPT / Codex account
+
+        Experimental escape hatch:
+        Codex provider ──► direct App Server compatibility bridge
+                           only for SDK capability gaps
 ```
 
 Cross-cutting components:
@@ -888,12 +903,11 @@ src/
     ├── providers/
     │   └── codex/
     │       ├── runtime.py
+    │       ├── sdk.py
     │       ├── capabilities.py
     │       ├── auth.py
     │       ├── mapping.py
-    │       ├── transports/
-    │       │   ├── base.py
-    │       │   └── sdk.py
+    │       ├── telemetry.py
     │       └── experimental/
     │           └── app_server.py
     │
@@ -1063,34 +1077,61 @@ class RuntimeSession(Protocol):
         ...
 ```
 
-The host persists the opaque neutral session identifier and does not depend on a Codex thread object. Only one turn may be active per session. `close()` releases resources and preserves history; `archive()` and `delete()` are explicit persistence operations.
+The host persists the opaque neutral session identifier and does not depend on a Codex thread object. Proteo Runtime does not provide an internal alias store in 1.0. Only one turn may be active per session. `close()` interrupts active work, releases subscriptions and local resources, and preserves resumability; `archive()` and `delete()` are explicit persistence operations. Runtime shutdown releases processes and subscriptions without deleting persistent sessions.
 
-Resume validates provider, active identity and frozen configuration. Incompatible resume raises `SessionMismatchError` and requires `runtime.migrate_session(...)`.
+The canonical 1.0 session identifier is a versioned, self-contained descriptor encoded behind an opaque public string, conceptually:
 
-The 1.0 migration operation supports model, profile and security-policy changes only within the same Codex provider and active identity. Cross-provider or cross-identity migration raises `CapabilityError`. Every migration emits an auditable event.
+```text
+prt1.<base64url(versioned SessionDescriptor)>
+```
+
+The internal descriptor contains only non-secret resume metadata such as descriptor version, provider, provider session identifier, opaque identity fingerprint and frozen configuration/profile fingerprints. It contains no credentials or access tokens. The encoding is not an encryption or authorization boundary, and decoded fields are treated as untrusted input. An internal `SessionCodec` owns serialization and validation so later versions may change the encoding without exposing provider identifiers as public API.
+
+Resume validates descriptor version, provider, active identity, provider session existence and frozen configuration. Descriptor contents can never expand current permissions. Incompatible resume raises `SessionMismatchError` and requires `runtime.migrate_session(...)`.
+
+The 1.0 migration operation supports model, profile and security-policy changes only within the same Codex provider and active identity. Cross-provider or cross-identity migration raises `CapabilityError`. Every migration emits an auditable event. Persisted Codex rollout data remains managed by Codex; `close()` does not delete provider-persisted conversation data.
 
 ---
 
 ## 7.4 RuntimeInput and RuntimeResult
 
-Proteo Runtime 1.0 accepts text only. `RuntimeInput` contains neutral `RuntimeMessage` values with roles `system`, `user`, `assistant` or `tool`, each containing `TextContent`. A `str` is normalized to one user message. Framework state, provider objects and arbitrary serializable values must be converted by adapters.
+Proteo Runtime 1.0 supports text content only, represented through a small provider-neutral model:
 
-Every invocation returns `RuntimeResult[T]` with:
+```python
+@dataclass(frozen=True)
+class TextContent:
+    text: str
 
-```text
-value
-usage
-runtime
-model
-profile
-reasoning_effort
-session_id
-turn_id
-diagnostics
-raw
+@dataclass(frozen=True)
+class RuntimeMessage:
+    role: Literal["system", "user", "assistant", "tool"]
+    content: tuple[TextContent, ...]
+
+@dataclass(frozen=True)
+class RuntimeInput:
+    messages: tuple[RuntimeMessage, ...]
 ```
 
-For text, `T` is `str`; for Pydantic, it is the validated model; for JSON Schema, it is a validated JSON-compatible value. `raw` is `None` unless `include_raw=True`.
+Passing `str` is syntactic sugar for one `user` message containing one `TextContent`. Framework-specific state, provider objects and arbitrary serializable values are not valid core input and must be converted by adapters.
+
+Every invocation returns the same generic envelope:
+
+```python
+@dataclass(frozen=True)
+class RuntimeResult(Generic[T]):
+    value: T
+    usage: RuntimeUsage
+    runtime: str
+    model: str
+    profile: str
+    reasoning_effort: str | None
+    session_id: str | None
+    turn_id: str | None
+    diagnostics: tuple[RuntimeDiagnostic, ...] = ()
+    raw: object | None = None
+```
+
+For text, `T` is `str`; for Pydantic, it is the validated model; for JSON Schema, it is a validated JSON-compatible value. `raw` is `None` unless `include_raw=True`, remains subject to redaction policy and is never exported by default. Provider failures are raised through the Proteo error hierarchy and may preserve the provider exception as their cause.
 
 ---
 
@@ -1162,6 +1203,18 @@ Configuration is frozen when a model or session is created. Invocation overrides
 ---
 
 # 9. Execution Profiles
+
+The default profile matrix is:
+
+| Execution profile | Lifecycle | Context policy | Security policy | Host tools |
+|---|---|---|---|---|
+| `brain` | ephemeral | `external` | `isolated` | disabled |
+| `structured` | ephemeral | `external` | `isolated` | disabled |
+| `session` | persistent | `runtime` | `isolated` | disabled |
+| `controlled_agent` | ephemeral | `external` | `controlled_tools` | explicit registry only |
+| `native` | explicit | explicit | `native` | provider-defined |
+
+Persistent or hybrid controlled-agent behavior requires creating an explicit session.
 
 ## 9.1 Brain
 
@@ -1358,15 +1411,19 @@ When `runtime` or `hybrid` is used with a persistent session, replayed assistant
 
 # 11. Structured Output
 
-Structured output must have two validation layers.
+Structured output uses a normalized, two-layer validation pipeline:
 
 ```text
-Provider schema enforcement
-          ↓
-Host validation
-          ↓
-Application object
+schema normalization
+        ↓
+provider-side enforcement when supported
+        ↓
+host-side validation
+        ↓
+RuntimeResult[T]
 ```
+
+Provider-side enforcement never replaces host validation.
 
 Pydantic should be the primary Python developer experience.
 
@@ -1686,7 +1743,17 @@ LangSmith must be optional at install/runtime level.
 
 ## OpenTelemetry
 
-OpenTelemetry is also an official 1.0 observer. It uses the same neutral events and correlation identifiers as LangSmith. It reports only activity exposed by Proteo Runtime or the provider event stream, never hidden chain-of-thought.
+Proteo OpenTelemetry is an official 1.0 observer/exporter. It consumes the same normalized `RuntimeEvent` stream as LangSmith and emits provider-neutral spans and metrics for runtime lifecycle, invocations, sessions, turns, tools, retries, validation, latency, usage and errors. It uses neutral invocation, session and turn identifiers for cross-exporter correlation.
+
+The Codex provider may additionally enable **Codex-native OpenTelemetry** as explicit provider-specific enrichment when the installed runtime supports it. This layer is:
+
+- opt-in and disabled by default;
+- capability/configuration gated;
+- configured to avoid user-prompt payload logging by default;
+- correlated with `proteo.invocation_id`, `proteo.session_id` and `proteo.turn_id` when upstream propagation is available;
+- not required to share the same OpenTelemetry `trace_id` unless Codex supports parent-context propagation.
+
+Provider-native telemetry does not replace Proteo's neutral event stream and is not part of the provider-neutral runtime contract. Neither layer may claim access to hidden chain-of-thought or provider activity that is not surfaced by telemetry.
 
 ---
 
@@ -1891,7 +1958,7 @@ Authentication
   Plan                     Plus
 
 Configuration
-  Config file              ./agent-runtime.json
+  Config file              ./proteo-runtime.json
   Valid                    ✓
 
 Models
@@ -1921,7 +1988,8 @@ Observability
   LangSmith                ✓
   Payload mode             metadata_only
   Project                  proteo-runtime-dev
-  OpenTelemetry            ✓
+  Proteo OpenTelemetry     ✓
+  Codex native OTel        disabled
   Status                   healthy
 
 Warnings
@@ -1963,9 +2031,7 @@ The initial public surface is:
 RuntimeNode
 ```
 
-`CodexNode`, `ChatRuntime` and LangChain chat-model compatibility are outside the initial adapter contract.
-
-or an implementation compatible with LangChain's chat-model interfaces.
+`CodexNode`, `ChatRuntime`, `BaseChatModel` compatibility and other LangChain-style surfaces are outside the initial adapter contract.
 
 ---
 
@@ -2092,7 +2158,7 @@ Must use:
 
 ```text
 FakeRuntime
-FakeTransport
+FakeProviderClient
 FakeSession
 FakeToolExecutor
 FakeObserver
@@ -2106,21 +2172,35 @@ No quota usage.
 
 Every runtime implementation must satisfy the same behavioral contracts.
 
-Examples:
+Required contract scenarios include:
 
-```text
-strict configuration and versioned model resolution
-neutral input rejection
-structured validation and raw opt-in
-session lifecycle, concurrency and resume compatibility
-usage normalization and normalized errors
-provider versus effective capabilities
-stream cancellation and transport invalidation
-context replay rejection
-security monotonicity and explicit filesystem roots
-tool approval and idempotency-aware retries
-observer degradation and strict mode
-```
+- base installation starts the Codex integration without framework extras;
+- `pytest` never consumes subscription quota;
+- unknown configuration keys and unsupported schema versions fail with paths;
+- missing model mappings, unavailable models and unsupported reasoning efforts do not silently fall back;
+- arbitrary objects are rejected by the core input boundary;
+- structured output succeeds, retries once, or raises `StructuredOutputError`;
+- raw output is absent unless explicitly requested;
+- session IDs round-trip through the versioned `SessionCodec` without an internal alias store;
+- malformed or incompatible session descriptors fail explicitly and cannot expand permissions;
+- concurrent use of one session raises `SessionBusyError`;
+- closing and resuming a session preserves provider history;
+- incompatible resume requires explicit migration;
+- cancelling a stream interrupts the provider turn or invalidates the provider connection before reuse;
+- replayed persistent history raises `ContextPolicyError`;
+- secure profiles expose no implicit filesystem roots;
+- normal overrides cannot expand effective permissions;
+- `native` requires both explicit opt-ins;
+- approval absence or failure denies a tool;
+- non-idempotent tools are not retried automatically;
+- exporter failure degrades observability without failing inference by default;
+- strict observability mode surfaces exporter failure;
+- Proteo OpenTelemetry and LangSmith correlate through neutral identifiers;
+- Codex-native OpenTelemetry remains opt-in and does not alter inference behavior;
+- a supported provider capability denied by policy remains unavailable;
+- Linux and Windows execute the same provider-neutral contract suite.
+
+Real Codex integration and end-to-end tests remain explicitly selected and quota-consuming. Unit and default contract tests use fakes only.
 
 ---
 
@@ -2145,6 +2225,10 @@ They should validate actual subscription-backed behavior before releases.
 ---
 
 # 24. Compatibility Strategy
+
+The canonical Codex integration baseline is the official OpenAI Codex documentation for the [Codex SDK](https://developers.openai.com/codex/sdk/), [App Server](https://developers.openai.com/codex/app-server/) and [authentication](https://developers.openai.com/codex/auth/).
+
+The stable `openai-codex` Python SDK is the canonical integration path. Direct App Server JSON-RPC is an internal experimental compatibility escape hatch only for SDK capability gaps; it is not a second equivalent public transport. `dynamicTools` remains experimental and requires both a feature flag and capability check.
 
 Codex changes rapidly.
 
@@ -2201,9 +2285,9 @@ all = [...]
 dev = [...]
 ```
 
-`openai-codex` is a base dependency, so `pip install proteo-runtime` provides the primary runtime. A basic installation does not install LangGraph, LangSmith or OpenTelemetry.
+`openai-codex` is a base dependency, so `pip install proteo-runtime` provides the primary runtime. A basic installation does not install LangGraph, LangSmith or Proteo OpenTelemetry dependencies.
 
-Optional integrations must fail with actionable installation guidance when configured without their corresponding extra.
+The `all` extra includes all supported framework integrations and observers. The `dev` extra includes development and test tooling. Optional integrations must fail with actionable installation guidance when imported or configured without their corresponding extra.
 
 ---
 
@@ -2241,35 +2325,33 @@ SECURITY.md
 CHANGELOG.md
 
 docs/
-├── getting-started.md
-├── concepts.md
-├── architecture.md
-├── configuration.md
-├── profiles.md
-├── context-management.md
-├── structured-output.md
-├── tools.md
-├── security.md
-├── observability.md
-├── retries.md
-├── langgraph.md
-├── doctor.md
-├── compatibility.md
-└── api/
+├── README.md
+├── design/
+│   ├── project-guide.md
+│   └── requirements.md          # extracted before 1.0
+├── architecture/
+│   ├── overview.md
+│   ├── runtime-core.md
+│   ├── context-management.md
+│   ├── tools.md
+│   ├── security.md
+│   └── observability.md
+├── plans/                       # versioned SDD implementation plans
+├── adr/
+├── guides/
+│   ├── getting-started.md
+│   ├── using-langgraph.md
+│   └── structured-output.md
+└── reference/
+    ├── configuration.md
+    ├── profiles.md
+    ├── capabilities.md
+    ├── errors.md
+    ├── cli.md
+    └── api/
 ```
 
-Before 1.0, extract the normative section of this document to:
-
-```text
-REQUIREMENTS.md
-```
-
-This document can then evolve into:
-
-```text
-docs/architecture.md
-docs/implementation-guide.md
-```
+`docs/design/project-guide.md` remains the design charter during early development. Before 1.0, its normative requirements should be extracted to `docs/design/requirements.md`; implementation plans remain historical engineering records under `docs/plans/`, while current behavior is documented under `architecture/`, `guides/` and `reference/`.
 
 ---
 
@@ -2382,6 +2464,7 @@ RuntimeMessage
 RuntimeResult
 RuntimeIdentity
 RuntimeDiagnostic
+SessionCodec
 ExecutionProfile
 ContextPolicy
 SecurityPolicy
@@ -2520,7 +2603,8 @@ Make runtime behavior inspectable through official exporters from Phase 4 onward
 normalized event bus
 observer interface
 LangSmith observer with metadata_only default
-OpenTelemetry observer
+Proteo OpenTelemetry observer
+optional capability-gated Codex-native OpenTelemetry enrichment
 cross-exporter correlation
 exporter degradation and strict mode
 nested trace hierarchy
@@ -2536,11 +2620,11 @@ validation events
 redaction
 ```
 
-Correlate OpenTelemetry and LangSmith through neutral invocation, session and turn identifiers. Exporters must not claim visibility into hidden reasoning.
+Correlate Proteo OpenTelemetry and LangSmith through neutral invocation, session and turn identifiers. When enabled and supported, configure Codex-native OpenTelemetry with the same Proteo correlation identifiers without assuming shared `trace_id` propagation. Exporters must not claim visibility into hidden reasoning.
 
 ### Exit criteria
 
-A LangGraph execution displays a coherent metadata-only trace containing graph nodes and exposed Codex runtime activity, with correlated OpenTelemetry spans. Exporter failure is diagnosable and does not fail inference unless strict mode is active.
+A LangGraph execution displays a coherent metadata-only trace containing graph nodes and exposed Codex runtime activity, with correlated Proteo OpenTelemetry spans. Optional Codex-native telemetry can be enabled without changing inference semantics. Exporter failure is diagnosable and does not fail inference unless strict mode is active.
 
 ---
 
@@ -2633,7 +2717,7 @@ documented timeout and attempt defaults
 runtime health checks
 ```
 
-Introduce fallback contracts without requiring multi-provider implementation.
+Ensure normalized failures carry enough information for host-owned fallback policies without implementing routing inside Proteo Runtime.
 
 ### Exit criteria
 
@@ -2668,7 +2752,8 @@ capabilities
 experimental features
 security
 LangSmith
-OpenTelemetry
+Proteo OpenTelemetry
+Codex native OpenTelemetry capability/status
 configuration
 ```
 
@@ -2788,6 +2873,7 @@ Version 1.0 requires all of the following.
 - profiles;
 - strict versioned configuration;
 - versioned model resolution;
+- versioned self-contained session descriptors and `SessionCodec`;
 - sessions;
 - structured output;
 - context policies;
@@ -2840,7 +2926,8 @@ Version 1.0 requires all of the following.
 ### Observability
 
 - LangSmith metadata-only by default;
-- official OpenTelemetry exporter;
+- official provider-neutral OpenTelemetry exporter;
+- optional capability-gated Codex-native OpenTelemetry enrichment;
 - cross-exporter correlation;
 - exporter degradation and strict mode;
 - token usage;
@@ -2983,7 +3070,7 @@ Runtime
 RuntimeModel
 RuntimeSession
 RuntimeCapabilities
-Transport
+RuntimeIdentity
 UsageMapper
 ```
 
@@ -2994,6 +3081,7 @@ LangGraph adapter
 ToolRegistry
 SecurityPolicy
 LangSmith observer
+OpenTelemetry observer
 structured-output validation
 retry engine
 ```
@@ -3052,7 +3140,7 @@ Initial implementation:
 ```text
 Runtime:   OpenAI Codex
 Framework: LangGraph
-Tracing:   LangSmith
+Tracing:   LangSmith + OpenTelemetry
 ```
 
 ---
@@ -3082,361 +3170,3 @@ This boundary is the primary design invariant of the project.
 
 Everything else should be built around preserving it.
 ---
-
-# 41. Draft v0.2 Normative Clarifications
-
-This section closes the implementation decisions identified during the pre-implementation review.
-
-The requirements in this section are normative. If an earlier candidate, recommendation, example or roadmap item conflicts with this section, this section takes precedence and the earlier text must be interpreted accordingly.
-
-## 41.1 Verified Codex integration baseline
-
-The Codex integration is based on the following official OpenAI documentation:
-
-- [Codex SDK](https://developers.openai.com/codex/sdk/);
-- [Codex App Server](https://developers.openai.com/codex/app-server/);
-- [Codex authentication](https://developers.openai.com/codex/auth/).
-
-The stable Python package `openai-codex` is the canonical Codex transport for Proteo Runtime 1.0. The SDK controls a local Codex App Server through JSON-RPC and ships with a compatible pinned Codex runtime.
-
-Direct JSON-RPC integration is not a second equivalent public transport. It may exist only behind an internal experimental boundary for capabilities not exposed by the stable SDK.
-
-The Codex `dynamicTools` field and the corresponding dynamic-tool request/response flow are experimental. Their use requires an explicit feature flag and capability check.
-
-## 41.2 Authentication and runtime identity
-
-Proteo Runtime 1.0 supports ChatGPT subscription authentication managed by Codex.
-
-Proteo Runtime:
-
-- reuses the authentication state exposed by Codex;
-- does not implement an OAuth flow;
-- does not read, copy, return or persist Codex access tokens;
-- does not support API-key authentication as part of the Codex 1.0 contract;
-- exposes only non-secret identity metadata made available by the official runtime.
-
-Each runtime instance has one active subscription-backed identity. The provider-neutral contracts must nevertheless represent identity as opaque and must not assume that a provider can expose only one identity in future versions.
-
-A session may be resumed only by a runtime instance whose provider and active identity are compatible with the session descriptor. An incompatible identity raises `SessionMismatchError`.
-
-## 41.3 Configuration and model resolution
-
-The configuration document uses a strict JSON schema with:
-
-```json
-{
-  "schema_version": 1,
-  "runtime": "codex",
-  "profiles": {}
-}
-```
-
-Unknown keys are errors. Validation errors must include the JSON path of the invalid value.
-
-Configuration sources, from lowest to highest precedence, are:
-
-```text
-versioned library defaults
-        ↓
-JSON selected by PROTEO_RUNTIME_CONFIG
-        ↓
-JSON selected by explicit config_path
-        ↓
-typed runtime initialization arguments
-        ↓
-typed invocation override
-```
-
-If `config_path` is supplied, it wins over `PROTEO_RUNTIME_CONFIG`. Proteo Runtime does not search parent directories and does not implicitly load configuration from the current working directory.
-
-Arbitrary environment-variable overrides are outside the 1.0 contract. Secrets are never valid configuration values.
-
-Configuration is resolved and frozen when a `RuntimeModel` or `RuntimeSession` is created. An invocation override applies only to that invocation. The provider adapter must reassert the frozen configuration as necessary so that sticky upstream turn overrides do not mutate later Proteo invocations.
-
-Each Proteo Runtime release ships tested, versioned mappings for:
-
-```text
-profile + logical level + runtime
-```
-
-The resolver never infers quality or reasoning level from a model name. Missing mappings, unavailable models and unsupported reasoning efforts fail explicitly; they never fall back to another level or model.
-
-## 41.4 Neutral input and result model
-
-Proteo Runtime 1.0 supports text input only.
-
-The neutral input model consists of:
-
-```python
-@dataclass(frozen=True)
-class TextContent:
-    text: str
-
-@dataclass(frozen=True)
-class RuntimeMessage:
-    role: Literal["system", "user", "assistant", "tool"]
-    content: tuple[TextContent, ...]
-
-@dataclass(frozen=True)
-class RuntimeInput:
-    messages: tuple[RuntimeMessage, ...]
-```
-
-Passing `str` is a convenience equivalent to one `user` message containing one `TextContent`.
-
-Framework-specific state, provider objects and arbitrary serializable objects are not valid core input. Adapters must convert them before calling the core.
-
-The uniform invocation result is:
-
-```python
-@dataclass(frozen=True)
-class RuntimeResult(Generic[T]):
-    value: T
-    usage: RuntimeUsage
-    runtime: str
-    model: str
-    profile: str
-    reasoning_effort: str | None
-    session_id: str | None
-    turn_id: str | None
-    diagnostics: tuple[RuntimeDiagnostic, ...] = ()
-    raw: object | None = None
-```
-
-For ordinary text invocation, `T` is `str`. For Pydantic structured output, `T` is the validated model type. For JSON Schema, `T` is a validated JSON-compatible value.
-
-`raw` is populated only when the caller explicitly selects `include_raw=True`. Raw data remains subject to redaction and is never exported by default.
-
-Provider failures are raised through the Proteo error hierarchy and may preserve the provider exception as their cause.
-
-## 41.5 Sessions and lifecycle
-
-A new persistent session returns an opaque, serializable Proteo session identifier. The host owns persistence of that identifier. Proteo Runtime does not provide an internal alias store in 1.0.
-
-The initial lifecycle surface is conceptually:
-
-```python
-session = await runtime.session(profile="session")
-session_id = session.id
-
-session = await runtime.resume_session(session_id)
-
-await session.close()
-await session.archive()
-await session.delete()
-```
-
-The identifier is opaque to callers and contains or references enough provider, identity and frozen-configuration metadata to validate resume operations.
-
-Session semantics are:
-
-- one active turn per session;
-- concurrent invocation raises `SessionBusyError`;
-- `close()` interrupts active work, releases subscriptions and local resources, and preserves resumability;
-- `archive()` is an explicit recoverable persistence operation;
-- `delete()` is an explicit destructive operation;
-- runtime shutdown releases processes and subscriptions without deleting persistent sessions.
-
-Resuming with a different provider, identity, model, profile or security policy raises `SessionMismatchError`. Such changes require `runtime.migrate_session(...)`, which emits an auditable event. In 1.0, migration is limited to the same Codex provider and active identity; cross-provider or cross-identity migration raises `CapabilityError`. Silent model switching and warning-only drift are forbidden.
-
-Persisted Codex rollout data remains managed by Codex. Proteo Runtime must document this storage boundary and must not claim that `close()` removes persisted conversation data.
-
-## 41.6 Context and profile defaults
-
-The default profile matrix is:
-
-| Execution profile | Lifecycle | Context policy | Security policy | Host tools |
-|---|---|---|---|---|
-| `brain` | ephemeral | `external` | `isolated` | disabled |
-| `structured` | ephemeral | `external` | `isolated` | disabled |
-| `session` | persistent | `runtime` | `isolated` | disabled |
-| `controlled_agent` | ephemeral | `external` | `controlled_tools` | explicit registry only |
-| `native` | explicit | explicit | `native` | provider-defined |
-
-Persistent or hybrid controlled-agent behavior requires creating an explicit session.
-
-For `runtime` and `hybrid`, Proteo Runtime rejects host input that contains replayed assistant or tool history when a persistent session already owns that history. The default error is `ContextPolicyError`.
-
-A caller may set an explicit context-replay option for a documented recovery or migration case. The override must be included in diagnostics and observability metadata.
-
-## 41.7 Security resolution and filesystem defaults
-
-Provider support and application permission are separate values.
-
-`runtime.capabilities()` returns capabilities supported by the provider/runtime. `model.effective_capabilities()` returns the intersection of:
-
-```text
-provider support
-∩ model support
-∩ execution profile
-∩ security policy
-∩ host configuration
-```
-
-Normal overrides may only remove capabilities. Expanding permissions requires selecting `profile="native"` and setting `allow_native=True` when the runtime is created. Either value without the other fails configuration validation.
-
-Filesystem defaults are fail-closed:
-
-- `isolated` uses a newly created empty temporary workspace and no implicit readable roots;
-- `controlled_tools` uses a newly created empty temporary workspace and exposes only registered host tools;
-- `read_only` requires explicit readable roots and does not inherit the process current working directory;
-- `native` uses only the explicitly configured working directory and permissions.
-
-The library guarantees policy validation, capability intersection and provider-sandbox mapping. Strong isolation is supplied by an explicit external isolation adapter, such as a container or host-provided process boundary.
-
-If the selected policy cannot be enforced on the current runtime or platform, invocation fails with `SecurityPolicyError` before inference. Silent degradation is forbidden.
-
-Linux and Windows are the supported 1.0 platforms and require CI coverage. macOS is outside the 1.0 compatibility guarantee.
-
-## 41.8 Structured output contract
-
-Structured output accepts Pydantic models and JSON Schema.
-
-The processing order is:
-
-```text
-schema normalization
-        ↓
-provider-side enforcement when supported
-        ↓
-host-side validation
-        ↓
-RuntimeResult[T]
-```
-
-Provider-side enforcement never replaces host validation.
-
-The default structured-output policy allows two total attempts: the initial attempt and one retry with bounded validation feedback. Exhaustion raises `StructuredOutputError`.
-
-Invalid raw output is retained only with `include_raw=True`. It is excluded from LangSmith and OpenTelemetry payloads by default.
-
-## 41.9 Host-managed tools
-
-Neutral tool contracts are intended to be stable. The Codex adapter for dynamic tools remains experimental until the upstream feature becomes stable.
-
-Every `ToolDefinition` must declare:
-
-- input schema;
-- output schema or output type;
-- permission category;
-- side-effect classification;
-- idempotency;
-- timeout override when different from the default;
-- whether human approval is required.
-
-Human approval uses a provider-neutral asynchronous `ApprovalHandler`. Missing handler, handler timeout, handler failure or an invalid response denies execution and raises or returns a normalized denial according to the configured tool failure policy.
-
-Automatic retries are disabled for tools unless the tool explicitly declares itself idempotent. A tool with unknown, external or destructive effects is never automatically repeated.
-
-The model receives schemas and tool results, never direct authority over host implementations.
-
-## 41.10 Streaming, cancellation, retry and timeout defaults
-
-Events from one invocation are emitted in causal order.
-
-A normally drained `astream()` ends with a terminal event containing the same `RuntimeResult` that `ainvoke()` would return.
-
-Closing, abandoning or cancelling the stream requests interruption of the active provider turn. Proteo Runtime waits for the configured cancellation grace period. If cancellation cannot be confirmed, the transport is marked unhealthy, restarted or replaced before reuse, and the condition is recorded in diagnostics. Background work must not continue silently.
-
-Initial configurable defaults are:
-
-| Setting | Default |
-|---|---:|
-| transient runtime attempts | 3 total attempts |
-| structured validation attempts | 2 total attempts |
-| runtime startup timeout | 30 seconds |
-| turn timeout | 300 seconds |
-| host-tool timeout | 30 seconds |
-| cancellation grace period | 5 seconds |
-
-Transient retries use exponential backoff with jitter. Authentication, capability, configuration, context-policy and permission failures are never retried.
-
-## 41.11 Observability defaults
-
-The neutral event contract is part of the core architecture from Phase 0.
-
-LangSmith support is required from Phase 4 onward and for 1.0. It is not a requirement for earlier internal milestones.
-
-OpenTelemetry is an official 1.0 exporter. It observes normalized runtime activity and is correlated with LangSmith through invocation, session and turn identifiers.
-
-The default LangSmith mode is `metadata_only`. It includes:
-
-- runtime, version, profile and effective security policy;
-- resolved model and reasoning effort;
-- thread/session and turn identifiers;
-- durations and normalized usage;
-- retry counts;
-- tool names and lifecycle states;
-- capability and validation outcomes.
-
-It excludes prompts, responses, schemas, tool arguments, tool results and raw provider payloads.
-
-Payload modes `redacted`, `full` and `disabled` require explicit configuration. `full` must never bypass secret redaction controls.
-
-Exporter failures are isolated from inference by default. They append a `RuntimeDiagnostic`, mark observability as degraded and emit a local warning. An explicit strict mode may raise `ObservabilityError`, primarily for CI.
-
-OpenTelemetry reports only activity surfaced by Proteo Runtime or the provider event stream. It does not expose hidden chain-of-thought or unreported internal Codex operations.
-
-## 41.12 LangGraph contract
-
-The initial public LangGraph integration exposes only `RuntimeNode`.
-
-`CodexNode`, `BaseChatModel` compatibility and other LangChain-style surfaces are outside the initial adapter contract.
-
-Framework state must be converted to `RuntimeInput` before reaching the core. Provider objects must never be written to graph state.
-
-Persistent session identity is carried through:
-
-```python
-config["configurable"]["proteo_session_id"]
-```
-
-`RuntimeNode` does not automatically add a session field to graph state. The host/checkpointer owns persistence of the configurable value.
-
-## 41.13 Packaging and supported extras
-
-`pip install proteo-runtime` installs the stable `openai-codex` dependency and provides the Codex runtime integration.
-
-Optional dependency groups are:
-
-```toml
-[project.optional-dependencies]
-langgraph = [...]
-langsmith = [...]
-otel = [...]
-all = [...]
-dev = [...]
-```
-
-The `all` extra includes all supported runtime integrations and observers. The `dev` extra includes development and test tooling.
-
-Optional integrations must fail with actionable installation guidance when imported or configured without their extra.
-
-## 41.14 Required contract and acceptance scenarios
-
-Contract tests and documentation examples must cover at least:
-
-- base installation starts the Codex integration without framework extras;
-- `pytest` never consumes subscription quota;
-- unknown configuration keys and unsupported schema versions fail with paths;
-- missing model mappings and unavailable models do not fall back;
-- arbitrary objects are rejected by the core input boundary;
-- structured output succeeds, retries once, or raises `StructuredOutputError`;
-- raw output is absent unless requested;
-- concurrent use of one session raises `SessionBusyError`;
-- closing and resuming a session preserves history;
-- incompatible resume requires explicit migration;
-- cancelling a stream interrupts or invalidates the transport;
-- replayed persistent history raises `ContextPolicyError`;
-- secure profiles expose no implicit filesystem roots;
-- a normal override cannot expand effective permissions;
-- `native` requires both explicit opt-ins;
-- approval absence or failure denies a tool;
-- non-idempotent tools are not retried;
-- exporter failure degrades observability without failing inference;
-- strict observability mode surfaces exporter failure;
-- a supported provider capability denied by policy remains unavailable;
-- Linux and Windows execute the same provider-neutral contract suite.
-
-Real Codex integration and end-to-end tests remain explicitly selected and quota-consuming. Unit and default contract tests use fakes only.
-
