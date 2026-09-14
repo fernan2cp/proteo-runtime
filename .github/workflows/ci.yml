@@ -37,11 +37,11 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: uv sync --locked --python ${{ matrix.python-version }} --extra dev
-      - run: uv run ruff format --check .
-      - run: uv run ruff check .
-      - run: uv run mypy src tests
-      - run: uv run lint-imports
-      - run: uv run pytest tests -q --cov=proteo_runtime --cov-report=term-missing --cov-fail-under=90
+      - run: uv run --python ${{ matrix.python-version }} ruff format --check .
+      - run: uv run --python ${{ matrix.python-version }} ruff check .
+      - run: uv run --python ${{ matrix.python-version }} mypy src tests
+      - run: uv run --python ${{ matrix.python-version }} lint-imports
+      - run: uv run --python ${{ matrix.python-version }} pytest tests -q --cov=proteo_runtime --cov-report=term-missing --cov-fail-under=90
       - run: uv build
 
   packaging:
