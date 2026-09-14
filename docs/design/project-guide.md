@@ -10,9 +10,9 @@
 **Initial observability integrations:** LangSmith and OpenTelemetry\
 **Target:** Stable, installable open-source Python library
 
-> **Project name:** Proteo Runtime  
-> **PyPI distribution:** `proteo-runtime`  
-> **Python namespace:** `proteo_runtime`  
+> **Project name:** Proteo Runtime
+> **PyPI distribution:** `proteo-runtime`
+> **Python namespace:** `proteo_runtime`
 > **CLI command:** `proteo-runtime`
 
 ---

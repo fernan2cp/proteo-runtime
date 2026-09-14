@@ -27,8 +27,10 @@ src/proteo_runtime/
 │   ├── events.py
 │   ├── identity.py
 │   ├── model.py
+│   ├── model_info.py
 │   ├── profiles.py
 │   ├── runtime.py
+│   ├── security.py
 │   ├── session.py
 │   ├── session_codec.py
 │   ├── types.py
@@ -47,8 +49,11 @@ src/proteo_runtime/
 
 tests/
 ├── contract/
-├── unit/
-└── test_import_boundaries.py
+│   ├── test_import_boundaries.py
+│   ├── test_protocols.py
+│   ├── test_public_api.py
+│   └── test_quota_safety.py
+└── unit/
 ```
 
 `providers` and `integrations` are reserved namespaces only. No Codex or LangGraph implementation is created in this phase.

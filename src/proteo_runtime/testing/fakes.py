@@ -16,6 +16,7 @@ from proteo_runtime.core.errors import (
     CancellationError,
     CapabilityError,
     InterruptedError,
+    RuntimeUnavailableError,
     SessionBusyError,
     SessionMismatchError,
     SessionNotFoundError,
@@ -38,7 +39,7 @@ class FakeTurn:
     usage: RuntimeUsage = field(default_factory=RuntimeUsage)
     diagnostics: tuple[RuntimeDiagnostic, ...] = ()
     events: tuple[RuntimeEvent, ...] = ()
-    error: AgentRuntimeError | None = None
+    error: Exception | None = None
     delay_seconds: float = 0.0
 
 
@@ -133,6 +134,18 @@ class FakeRuntime:
             self._started = True
             self._closed = False
             self._emit(RuntimeEventKind.RUNTIME_STARTED)
+
+    async def __aenter__(self) -> FakeRuntime:
+        """Start the runtime and return it for async context manager use."""
+
+        await self.start()
+        return self
+
+    async def __aexit__(self, exc_type: object, exc_value: object, traceback: object) -> None:
+        """Close the runtime when leaving an async context manager."""
+
+        del exc_type, exc_value, traceback
+        await self.close()
 
     async def close(self) -> None:
         """Close the fake runtime while preserving session state."""
@@ -263,31 +276,35 @@ class FakeRuntime:
         level: str,
         state: _SessionState | None = None,
         keep_active: bool = False,
+        stream: bool = False,
     ) -> tuple[RuntimeResult[Any], list[RuntimeEvent], FakeTurn]:
-        """Execute one scripted turn and collect events for invocation or stream."""
+        """Execute one scripted turn and collect lifecycle events."""
 
         del input
-        if state is not None:
-            await self._claim(state)
+        claimed = False
+        completed = False
         invocation_id = self._id_factory()
         turn_id = self._id_factory()
         session_id = state.descriptor if state else None
-        generated = [
-            self._emit(
-                RuntimeEventKind.INVOCATION_STARTED,
-                invocation_id=invocation_id,
-                session_id=session_id,
-                turn_id=turn_id,
-            ),
-            self._emit(
-                RuntimeEventKind.TURN_STARTED,
-                invocation_id=invocation_id,
-                session_id=session_id,
-                turn_id=turn_id,
-            ),
-        ]
-        turn = self._next_turn()
         try:
+            if state is not None:
+                await self._claim(state)
+                claimed = True
+            generated = [
+                self._emit(
+                    RuntimeEventKind.INVOCATION_STARTED,
+                    invocation_id=invocation_id,
+                    session_id=session_id,
+                    turn_id=turn_id,
+                ),
+                self._emit(
+                    RuntimeEventKind.TURN_STARTED,
+                    invocation_id=invocation_id,
+                    session_id=session_id,
+                    turn_id=turn_id,
+                ),
+            ]
+            turn = self._next_turn()
             if turn.delay_seconds:
                 await asyncio.sleep(turn.delay_seconds)
             if state and state.interrupted:
@@ -305,7 +322,12 @@ class FakeRuntime:
                     session_id=session_id,
                     turn_id=turn_id,
                 )
-                raise turn.error
+                if isinstance(turn.error, AgentRuntimeError):
+                    raise turn.error
+                raise RuntimeUnavailableError(
+                    "Fake turn failed",
+                    details={"exception_type": type(turn.error).__name__},
+                ) from None
             result = RuntimeResult(
                 value=turn.value,
                 usage=turn.usage,
@@ -317,31 +339,11 @@ class FakeRuntime:
                 turn_id=turn_id,
                 diagnostics=turn.diagnostics,
             )
-            generated.append(
-                self._emit(
-                    RuntimeEventKind.TOKEN_USAGE_UPDATED,
-                    invocation_id=invocation_id,
-                    session_id=session_id,
-                    turn_id=turn_id,
-                    metadata={"total_tokens": turn.usage.total_tokens or 0},
+            if not stream:
+                generated.extend(
+                    self._terminal_events(invocation_id, session_id, turn_id, turn.usage)
                 )
-            )
-            generated.append(
-                self._emit(
-                    RuntimeEventKind.TURN_COMPLETED,
-                    invocation_id=invocation_id,
-                    session_id=session_id,
-                    turn_id=turn_id,
-                )
-            )
-            generated.append(
-                self._emit(
-                    RuntimeEventKind.INVOCATION_COMPLETED,
-                    invocation_id=invocation_id,
-                    session_id=session_id,
-                    turn_id=turn_id,
-                )
-            )
+            completed = True
             return result, generated, turn
         except asyncio.CancelledError as exc:
             self._emit(
@@ -352,8 +354,39 @@ class FakeRuntime:
             )
             raise CancellationError("Fake turn was cancelled") from exc
         finally:
-            if state is not None and not keep_active:
+            if state is not None and claimed and (not keep_active or not completed):
                 await self._release(state)
+
+    def _terminal_events(
+        self,
+        invocation_id: str,
+        session_id: str | None,
+        turn_id: str,
+        usage: RuntimeUsage,
+    ) -> list[RuntimeEvent]:
+        """Emit usage and completion events for a successful invocation."""
+
+        return [
+            self._emit(
+                RuntimeEventKind.TOKEN_USAGE_UPDATED,
+                invocation_id=invocation_id,
+                session_id=session_id,
+                turn_id=turn_id,
+                metadata={"total_tokens": usage.total_tokens or 0},
+            ),
+            self._emit(
+                RuntimeEventKind.TURN_COMPLETED,
+                invocation_id=invocation_id,
+                session_id=session_id,
+                turn_id=turn_id,
+            ),
+            self._emit(
+                RuntimeEventKind.INVOCATION_COMPLETED,
+                invocation_id=invocation_id,
+                session_id=session_id,
+                turn_id=turn_id,
+            ),
+        ]
 
 
 class FakeRuntimeModel:
@@ -382,22 +415,34 @@ class FakeRuntimeModel:
     async def astream(
         self, input: RuntimeInput, *, config: InvocationConfig | None = None
     ) -> AsyncIterator[RuntimeEvent]:
-        """Yield deterministic lifecycle and output-delta events."""
+        """Yield deterministic lifecycle, output, usage, and completion events."""
 
         normalized = RuntimeInput.from_value(input)
         result, generated, turn = await self.runtime._execute(
-            normalized, model="fake-model", profile=self.profile, level=self.level
+            normalized,
+            model="fake-model",
+            profile=self.profile,
+            level=self.level,
+            stream=True,
         )
-        del result
+        del result, config
+        invocation_id = generated[0].invocation_id or ""
+        turn_id = generated[0].turn_id or ""
         streamed = list(generated)
         if turn.events:
             streamed.extend(turn.events)
         else:
             streamed.extend(
-                self.runtime._emit(RuntimeEventKind.OUTPUT_TEXT_DELTA, metadata={"text": chunk})
+                self.runtime._emit(
+                    RuntimeEventKind.OUTPUT_TEXT_DELTA,
+                    invocation_id=invocation_id,
+                    turn_id=turn_id,
+                    metadata={"text": chunk},
+                )
                 for chunk in _chunks(str(turn.value))
             )
-        for event in sorted(streamed, key=lambda item: item.sequence):
+        streamed.extend(self.runtime._terminal_events(invocation_id, None, turn_id, turn.usage))
+        for event in streamed:
             yield event
 
     def with_structured_output(self, schema: type[Any] | dict[str, Any]) -> FakeRuntimeModel:
@@ -449,25 +494,46 @@ class FakeRuntimeSession:
         if self._closed or self._state.deleted:
             raise SessionNotFoundError("Session handle is closed or deleted")
         normalized = RuntimeInput.from_value(input)
-        result, generated, turn = await self._runtime._execute(
-            normalized,
-            model="fake-session",
-            profile=self._state.profile,
-            level=self._state.level,
-            state=self._state,
-            keep_active=True,
-        )
-        del result
-        streamed = list(generated)
-        if turn.events:
-            streamed.extend(turn.events)
-        else:
-            streamed.extend(
-                self._runtime._emit(RuntimeEventKind.OUTPUT_TEXT_DELTA, metadata={"text": chunk})
-                for chunk in _chunks(str(turn.value))
+        active_owned = False
+        try:
+            result, generated, turn = await self._runtime._execute(
+                normalized,
+                model="fake-session",
+                profile=self._state.profile,
+                level=self._state.level,
+                state=self._state,
+                keep_active=True,
+                stream=True,
             )
-        for event in sorted(streamed, key=lambda item: item.sequence):
-            yield event
+            active_owned = True
+            del result, config
+            invocation_id = generated[0].invocation_id or ""
+            turn_id = generated[0].turn_id or ""
+            streamed = list(generated)
+            if turn.events:
+                streamed.extend(turn.events)
+            else:
+                streamed.extend(
+                    self._runtime._emit(
+                        RuntimeEventKind.OUTPUT_TEXT_DELTA,
+                        invocation_id=invocation_id,
+                        session_id=self.id,
+                        turn_id=turn_id,
+                        metadata={"text": chunk},
+                    )
+                    for chunk in _chunks(str(turn.value))
+                )
+            streamed.extend(
+                self._runtime._terminal_events(invocation_id, self.id, turn_id, turn.usage)
+            )
+            for event in streamed:
+                yield event
+        except asyncio.CancelledError as exc:
+            self._runtime._emit(RuntimeEventKind.CANCELLED, session_id=self.id)
+            raise CancellationError("Fake turn was cancelled") from exc
+        finally:
+            if active_owned:
+                await self._runtime._release(self._state)
 
     async def interrupt(self) -> None:
         """Request interruption of the active session turn."""

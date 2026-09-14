@@ -46,6 +46,22 @@ path = "src/proteo_runtime/__init__.py"
 [tool.hatch.build.targets.wheel]
 packages = ["src/proteo_runtime"]
 
+[tool.hatch.build.targets.sdist]
+exclude = [
+  "/.git",
+  "/.github",
+  "/.import_linter_cache",
+  "/.mypy_cache",
+  "/.pytest_cache",
+  "/.ruff_cache",
+  "/.venv",
+  "/build",
+  "/dist",
+  "/htmlcov",
+  "/.coverage",
+  "**/__pycache__",
+]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
@@ -73,7 +89,6 @@ warn_unreachable = true
 [tool.coverage.run]
 branch = true
 source = ["proteo_runtime"]
-omit = ["src/proteo_runtime/__main__.py", "src/proteo_runtime/cli/main.py"]
 
 [tool.coverage.report]
 fail_under = 90
@@ -95,6 +110,3 @@ forbidden_modules = [
   "langsmith",
   "opentelemetry",
 ]
-
-
-

@@ -36,14 +36,14 @@ def is_secret_key(key: str) -> bool:
 def freeze_value(value: object) -> object:
     """Recursively convert common containers to immutable equivalents."""
 
-    if value is None or isinstance(value, (str, int, float, bool)):
+    if value is None or isinstance(value, str | int | float | bool):
         return value
     if isinstance(value, Mapping):
         frozen = {str(key): freeze_value(item) for key, item in value.items()}
         return MappingProxyType(frozen)
-    if isinstance(value, (list, tuple)):
+    if isinstance(value, list | tuple):
         return tuple(freeze_value(item) for item in value)
-    if isinstance(value, (set, frozenset)):
+    if isinstance(value, set | frozenset):
         return frozenset(freeze_value(item) for item in value)
     raise TypeError(f"Unsupported metadata value type: {type(value).__name__}")
 

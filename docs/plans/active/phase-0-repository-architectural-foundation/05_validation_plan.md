@@ -37,7 +37,7 @@ The import-boundary check must explicitly exercise the core package in an enviro
 ## Unit and Contract Checks
 
 ```bash
-uv run pytest tests/unit tests/contract -q \
+uv run pytest tests -q \
   --cov=proteo_runtime \
   --cov-report=term-missing \
   --cov-fail-under=90
@@ -82,7 +82,39 @@ GitHub Actions must run on `ubuntu-latest` and `windows-latest` for Python 3.11,
 The final validation record must state explicitly that no real Codex runtime was used.
 ## Recorded Evidence
 
-- Windows Python 3.11: `uv sync --locked --extra dev`, 20 tests passed, coverage 90.81%, Ruff, mypy, and import-linter passed.
-- Packaging: `uv build` produced `proteo_runtime-0.1.0-py3-none-any.whl` and `proteo_runtime-0.1.0.tar.gz`; each installed into an isolated environment and both CLI entrypoints printed `0.1.0`; `py.typed` and metadata were present.
-- Linux Python 3.11 Docker: dependency installation, 20 tests, Ruff, mypy, and import-linter passed. The container was discarded before its final `uv build` because the mounted Windows worktree made the sdist scan hang.
-- No test imported `openai_codex` or accessed authentication, network sockets, subprocesses, or subscription quota. Remote GitHub Actions evidence is pending publication, so this SDD remains under `docs/plans/active/`.
+The following results were executed after the Phase 0 fixes; historical partial results are superseded.
+
+### Quality gates
+
+| Command | Result | Evidence |
+|---|---|---|
+| `uv run pre-commit run --all-files` | PASS (0) | Ruff format/lint, whitespace, EOF, YAML, and TOML hooks passed. |
+| `uv run ruff format --check .` | PASS (0) | 42 files already formatted. |
+| `uv run ruff check .` | PASS (0) | All checks passed, including UP038. |
+| `uv run mypy src tests` | PASS (0) | No issues in 40 source/test files. |
+| `uv run lint-imports` | PASS (0) | 41 files analyzed; 1 contract kept, 0 broken. |
+
+### Tests and coverage
+
+`uv run pytest tests -q --cov=proteo_runtime --cov-report=term-missing --cov-fail-under=90` completed with **29 passed, 0 failed, 91.21% total coverage** on Windows Python 3.11.4. The same suite passed on Windows Python 3.12.14, 3.13.15, and 3.14.7, and on Linux Docker Python 3.11.14, 3.12.12, 3.13.11, and 3.14.2. The suite includes unit, protocol, public API, import-boundary, fake-runtime, configuration, session codec, CLI, and quota-safety tests.
+
+### Packaging and CLI
+
+- `uv build` (exit 0) produced `dist/proteo_runtime-0.1.0-py3-none-any.whl` and `dist/proteo_runtime-0.1.0.tar.gz`.
+- `uv run python scripts/check_artifacts.py dist` (exit 0) verified package files, `py.typed`, metadata, license, entrypoint, and absence of caches/credential-shaped paths.
+- Each artifact was installed into a fresh uv Python 3.11 environment (exit 0). `import proteo_runtime` reported `0.1.0`; `proteo-runtime --version` and `python -m proteo_runtime --version` each reported `0.1.0`.
+- Reviewed package tree: wheel contains `proteo_runtime` modules, `py.typed`, `.dist-info/METADATA`, `WHEEL`, `entry_points.txt`, and license; sdist contains source package, `pyproject.toml`, README, and license without local caches.
+- Reviewed root exports: explicit `__all__` contains `__version__` plus the documented provider-neutral contracts, errors, policies, profiles, events, and value objects. `SessionCodec`, fake implementations, provider SDK types, and internal modules are not root exports.
+
+### Quota safety
+
+No real Codex runtime was used. Default tests passed with guards that fail on `openai_codex` imports, network sockets, provider subprocesses, credential-path reads, and credential-shaped environment access. The default suite used no ChatGPT/Codex login, API keys, network requests, provider subprocesses, or subscription quota.
+
+### CI matrix
+
+The workflow now defines `push`, `pull_request`, and `workflow_dispatch`, `fail-fast: false`, Ubuntu/Windows Python 3.11–3.14, pre-commit/static gates, full coverage tests, builds, and an isolated packaging/artifact job. No GitHub Actions run URL exists yet: the branch is not published and the local `gh` client is unauthenticated. Remote CI validation is therefore **pending**, and P0-TASK-0010/P0-TASK-0011 remain `in_progress`.
+
+### Deferred or blocked items
+
+- Remote GitHub Actions matrix and packaging job: blocked pending repository publication/CI credentials; owner is the release engineer, to be completed before handoff.
+- Codex provider, configuration loading/precedence, LangGraph/LangSmith/OpenTelemetry integrations, tool execution, exporters, OS sandbox enforcement, and real authentication remain deferred to their documented later phases.

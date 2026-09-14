@@ -42,3 +42,40 @@ The matrix below distinguishes what Phase 0 implements from what it only constra
 ## Change-Control Rule
 
 Any implementation change that alters a public symbol, profile name, error inheritance, session prefix/encoding, configuration version, or dependency boundary must update this matrix and the affected requirements/acceptance criteria before merge.
+
+## Acceptance-criterion evidence index
+
+Each criterion has a concrete implementation or validation reference; remote-only criteria remain explicitly pending.
+
+| Criterion | Implementation / validation evidence | Status |
+|---|---|---|
+| AC-P0-001 | `git status`, branch, baseline and SDD review recorded in `00_baseline.md` and this evidence. | Met locally |
+| AC-P0-002 | Only documented format changes plus Phase 0 files appear in `git diff`; no unrelated files were overwritten. | Met locally |
+| AC-P0-003 | Editable install and isolated wheel/sdist imports passed; package metadata is `proteo-runtime`. | Met locally |
+| AC-P0-004 | `uv build` and `check_artifacts.py` passed for wheel and sdist. | Met locally |
+| AC-P0-005 | Both CLI entrypoints returned `0.1.0` in isolated environments. | Met locally |
+| AC-P0-006 | Reviewed topology in `02_technical_design.md`; reserved namespaces contain only initializers. | Met locally |
+| AC-P0-007 | `uv run lint-imports` and `test_import_boundaries.py` passed. | Met locally |
+| AC-P0-008 | Core protocol/value/error exports and exact root `__all__` contract passed. | Met locally |
+| AC-P0-009 | `test_core.py` covers string normalization and arbitrary-object rejection. | Met locally |
+| AC-P0-010 | Immutable value, policy, usage, identity, diagnostic, profile, and event tests passed. | Met locally |
+| AC-P0-011 | `test_protocols.py` verifies async-first runtime/model/session protocols. | Met locally |
+| AC-P0-012 | Profile/policy vocabulary and safe defaults are covered by core contract tests. | Met locally |
+| AC-P0-013 | Complete documented error hierarchy test passed. | Met locally |
+| AC-P0-014 | Error redaction and safe fake provider-like failure normalization tests passed. | Met locally |
+| AC-P0-015 | Valid Pydantic schema v1 and immutable nested mapping test passed. | Met locally |
+| AC-P0-016 | Unknown-key/version path errors test passed. | Met locally |
+| AC-P0-017 | Invalid levels and missing mapping no-fallback test passed; loader remains deferred. | Met locally |
+| AC-P0-018 | Deterministic `prt1.` SessionCodec round-trip test passed. | Met locally |
+| AC-P0-019 | Malformed, unsupported, missing-field, and secret-field descriptor tests passed. | Met locally |
+| AC-P0-020 | Codec contains only non-secret identity/configuration data and does not alter active policy. | Met locally |
+| AC-P0-021 | Fake lifecycle/context-manager/idempotence and ordered-event tests passed. | Met locally |
+| AC-P0-022 | Fake result, usage, diagnostics, profile, and correlation fields are tested. | Met locally |
+| AC-P0-023 | Streaming order, `aclose`, cancellation, interruption, and lock release tests passed. | Met locally |
+| AC-P0-024 | Session close/resume/archive/delete and atomic busy-turn behavior are tested. | Met locally |
+| AC-P0-025 | Authentication/capability/timeout pass-through and raw-failure sanitization are tested. | Met locally |
+| AC-P0-026 | README/CLI explicitly describe deferred real providers and integrations. | Met locally |
+| AC-P0-027 | `test_quota_safety.py` guards imports, network, subprocess, auth paths, and secret environment reads. | Met locally |
+| AC-P0-028 | Pre-commit, Ruff, and mypy passed with no hiding suppressions. | Met locally |
+| AC-P0-029 | All eight local OS/Python combinations passed; required remote matrix is pending. | Pending remote CI |
+| AC-P0-030 | Evidence and matrix are reconciled; SDD move awaits remote green CI. | Pending remote CI |

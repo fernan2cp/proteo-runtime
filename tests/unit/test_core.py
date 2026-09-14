@@ -1,6 +1,8 @@
 """Contract tests for immutable provider-neutral values."""
 
+import operator
 from datetime import UTC, datetime
+from typing import Any, cast
 
 import pytest
 
@@ -28,7 +30,7 @@ def test_runtime_input_normalizes_only_strings_and_inputs() -> None:
     assert value.messages == (RuntimeMessage("user", (TextContent("hello"),)),)
     assert RuntimeInput.from_value(value) is value
     with pytest.raises(TypeError):
-        RuntimeInput.from_value(123)  # type: ignore[arg-type]
+        cast(Any, RuntimeInput.from_value)(123)
 
 
 def test_contracts_are_frozen_and_metadata_is_immutable() -> None:
@@ -41,7 +43,7 @@ def test_contracts_are_frozen_and_metadata_is_immutable() -> None:
         RuntimeIdentity("fake", "id", metadata={"api_key": "secret"})
     config = InvocationConfig(metadata={"labels": ["test"]})
     with pytest.raises(TypeError):
-        config.metadata["labels"] = ()  # type: ignore[index]
+        operator.setitem(cast(Any, config.metadata), "labels", ())
 
 
 def test_profiles_capabilities_and_events_have_stable_vocabulary() -> None:

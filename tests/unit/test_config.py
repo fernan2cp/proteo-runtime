@@ -1,5 +1,8 @@
 """Configuration schema tests."""
 
+import operator
+from typing import Any, cast
+
 import pytest
 
 from proteo_runtime.config import RuntimeConfigV1, validate_config
@@ -23,7 +26,7 @@ def test_valid_config_is_frozen_and_lookup_is_pure() -> None:
     assert isinstance(config, RuntimeConfigV1)
     assert config.lookup("brain", "low").model == "fake"
     with pytest.raises(TypeError):
-        config.profiles["new"] = {}  # type: ignore[index]
+        operator.setitem(cast(Any, config.profiles), "new", {})
 
 
 def test_invalid_keys_versions_and_missing_mappings_raise_path_errors() -> None:
