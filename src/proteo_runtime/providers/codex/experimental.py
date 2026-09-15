@@ -127,9 +127,16 @@ class CodexToolBridge:
 
         if method != "item/tool/call" or not isinstance(params, Mapping):
             return {"error": {"code": "tool_denied", "message": "unsupported tool request"}}
-        invocation_id = str(params.get("invocationId", params.get("invocation_id", "")))
-        call_id = str(params.get("callId", params.get("call_id", params.get("id", ""))))
-        name = str(params.get("name", params.get("toolName", "")))
+        invocation_id = str(
+            params.get(
+                "invocationId",
+                params.get("invocation_id", params.get("turnId", params.get("threadId", ""))),
+            )
+        )
+        call_id = str(
+            params.get("callId", params.get("call_id", params.get("itemId", params.get("id", ""))))
+        )
+        name = str(params.get("name", params.get("tool", params.get("toolName", ""))))
         arguments = params.get("arguments", {})
         if isinstance(arguments, str):
             try:

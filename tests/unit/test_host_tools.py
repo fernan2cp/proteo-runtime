@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 import sys
 from types import SimpleNamespace
@@ -343,6 +344,12 @@ async def test_experimental_raw_thread_shim_and_bridge_response() -> None:
         {"invocationId": "i", "callId": "c", "name": "add_value", "arguments": {"value": 2}},
     )
     assert "contentItems" in response
+    tool_response = await asyncio.to_thread(
+        sdk._client._sync._approval_handler,
+        "item/tool/call",
+        {"invocationId": "i", "callId": "c-tool", "tool": "add_value", "arguments": {"value": 3}},
+    )
+    assert json.loads(tool_response["contentItems"][0]["text"])["success"] is True
     assert sdk._client._sync._approval_handler("command/exec", {})["decision"] == "decline"
     with pytest.raises(CapabilityError):
         install_bridge(SimpleNamespace(_client=SimpleNamespace(_sync=SimpleNamespace())), bridge)
