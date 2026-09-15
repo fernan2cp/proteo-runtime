@@ -1,5 +1,8 @@
 # Requirements
 
+Estado de cierre: todos los requisitos `C21-REQ-001`–`C21-REQ-017` están `done`, con evidencia
+en el plan de tareas y la matriz de trazabilidad.
+
 ## Core contracts
 
 - `C21-REQ-001`: `native` MUST use `explicit` lifecycle and `explicit` context; its provider

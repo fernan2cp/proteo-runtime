@@ -1,10 +1,10 @@
 # Phase 2.1 — Cross-Phase Conformance Hardening
 
-Estado: `active`
+Estado: `complete`
 
 Este SDD corrige divergencias de contrato descubiertas después de los cierres históricos de
-Phase 0, Phase 1 y Phase 2. Es el tracker autoritativo de la implementación correctiva; los
-paquetes históricos permanecen en `docs/plans/complete/`.
+Phase 0, Phase 1 y Phase 2. Fue el tracker autoritativo de la implementación correctiva; los
+paquetes históricos y este registro permanecen en `docs/plans/complete/`.
 
 ## Fuentes y alcance
 

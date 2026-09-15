@@ -56,8 +56,8 @@ PROTEO_CODEX_INTEGRATION=1 uv run pytest -m integration tests/integration/codex 
 
 See `docs/plans/complete/phase-2-model-resolution-structured-output-context/`
 for the historical Phase 2 record and
-`docs/plans/active/phase-2.1-cross-phase-conformance-hardening/` for the current
-conformance hardening tracker; Phase 0 and Phase 1 records remain historical.
+`docs/plans/complete/phase-2.1-cross-phase-conformance-hardening/` for the completed
+conformance hardening record; Phase 0 and Phase 1 records remain historical.
 
 Configuration bindings are validated against the complete Codex catalog at startup and frozen
 when models or sessions are created. Structured output always sends its schema to the SDK and

@@ -37,4 +37,5 @@ branch, wait for the complete Linux/Windows Python 3.11–3.14 matrix, and recor
 Resultado de integración local: `PROTEO_CODEX_INTEGRATION=1 uv run pytest
 tests/integration/codex -q -m integration` obtuvo `5 passed`, incluyendo la verificación de los
 tres modelos y cuatro esfuerzos configurados sin ejecutar doce inferencias. La evidencia CI
-remota queda pendiente hasta publicar la rama.
+remota `https://github.com/fernan2cp/proteo-runtime/actions/runs/34971422372` pasó en el commit
+`df3f0bc` con la matriz Linux/Windows Python 3.11–3.14 y el job de packaging.

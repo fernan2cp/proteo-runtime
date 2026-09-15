@@ -1,5 +1,8 @@
 # Acceptance criteria
 
+Estado de cierre: todos los criterios `AC-C21-001`–`AC-C21-029` están `done`. La evidencia local,
+de integración y CI está registrada en `03_task_plan.md` y `05_validation_plan.md`.
+
 - `AC-C21-001`: The SDD package exists under `active/`, has nine documents, and all tasks start
   `pending`. Requirements: `C21-REQ-017`. Tasks: `C21-TASK-0001`, `C21-TASK-0008`.
 - `AC-C21-002`: Native resolves to explicit lifecycle and explicit context. Requirements:

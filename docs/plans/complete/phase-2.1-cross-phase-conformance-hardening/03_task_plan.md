@@ -79,7 +79,7 @@ Evidencia: `682a1b3`; fakes y pruebas nominativas cubren invariantes de confianz
 
 ### C21-TASK-0007 — Add opt-in integration and packaging evidence
 
-Estado: `in_progress`
+Estado: `done`
 
 Requisitos: `C21-REQ-016`, `C21-REQ-017`
 
@@ -89,11 +89,12 @@ Acciones: validate twelve mappings via catalog, run representative smokes, bump 
 update lock/artifact checks, push and verify CI.
 
 Evidencia: suite local `73 passed, 4 skipped`, cobertura branch-aware `90.06%`, build/artefactos e
-instalaciones aisladas `0.3.1` validados; integración Codex `5 passed`. CI remoto pendiente.
+instalaciones aisladas `0.3.1` validados; integración Codex `5 passed`; CI remoto
+`34971422372` (commit `df3f0bc`) verde en Linux/Windows Python 3.11–3.14.
 
 ### C21-TASK-0008 — Update guide, docs and close SDD
 
-Estado: `in_progress`
+Estado: `done`
 
 Requisitos: `C21-REQ-017`
 
@@ -102,5 +103,5 @@ Criterios: `AC-C21-001`, `AC-C21-025`–`AC-C21-029`
 Acciones: update guide/README/errata, record all evidence, mark done, move package to complete,
 commit closure and verify final CI.
 
-Evidencia: guía, README, erratas históricas y workflow actualizados en el árbol de trabajo; falta
-registrar CI remoto y ejecutar el traslado final a `complete/`.
+Evidencia: guía, README, erratas históricas y workflow actualizados; cierre registrado en el
+commit posterior al traslado del paquete a `docs/plans/complete/`.
