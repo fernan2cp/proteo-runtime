@@ -4,7 +4,7 @@ Todas las tareas comienzan en `pending`.
 
 ### P5-TASK-0001 — Crear contratos neutrales, schemas y registry
 
-Estado: `in_progress — audit remediation pending`
+Estado: `done`
 
 Requisitos: `P5-REQ-001`, `P5-REQ-002`, `P5-REQ-003`, `P5-REQ-004`
 
@@ -22,7 +22,7 @@ strict JSON safety y nuevos casos de contrato.
 
 ### P5-TASK-0002 — Implementar permisos, aprobación y ToolExecutor
 
-Estado: `in_progress — audit remediation pending`
+Estado: `done`
 
 Requisitos: `P5-REQ-005`, `P5-REQ-006`, `P5-REQ-007`, `P5-REQ-008`, `P5-REQ-009`,
 `P5-REQ-010`, `P5-REQ-011`
@@ -41,7 +41,7 @@ cleanup automático, no-retry de output inválido y rechazo de políticas incomp
 
 ### P5-TASK-0003 — Integrar bindings, profiles, capabilities y fakes
 
-Estado: `in_progress — audit remediation pending`
+Estado: `done`
 
 Requisitos: `P5-REQ-012`, `P5-REQ-013`, `P5-REQ-014`, `P5-REQ-015`
 
@@ -59,7 +59,7 @@ rebind de resume y flujo multi-tool determinista en fakes.
 
 ### P5-TASK-0004 — Completar eventos y observabilidad de tools
 
-Estado: `in_progress — audit remediation pending`
+Estado: `done`
 
 Requisitos: `P5-REQ-016`, `P5-REQ-017`, `P5-REQ-021`
 
@@ -77,7 +77,7 @@ payload de argumentos/resultados y matrices de exporters.
 
 ### P5-TASK-0005 — Implementar adapter experimental Codex
 
-Estado: `in_progress — audit remediation pending`
+Estado: `done`
 
 Requisitos: `P5-REQ-018`, `P5-REQ-019`, `P5-REQ-020`, `P5-REQ-021`
 
@@ -95,7 +95,7 @@ respuestas protocolarias válidas y mux seguro por thread/turn.
 
 ### P5-TASK-0006 — Integrar lifecycle, sesiones y cancelación Codex
 
-Estado: `in_progress — audit remediation pending`
+Estado: `done`
 
 Requisitos: `P5-REQ-008`, `P5-REQ-010`, `P5-REQ-013`, `P5-REQ-015`, `P5-REQ-019`,
 `P5-REQ-021`
@@ -115,7 +115,7 @@ invocations y dynamicTools vacías al resume sin binding.
 
 ### P5-TASK-0007 — Completar pruebas unitarias y contractuales
 
-Estado: `in_progress — audit remediation pending`
+Estado: `done`
 
 Requisitos: `P5-REQ-001`–`P5-REQ-022`
 
@@ -151,7 +151,7 @@ ejemplo y workflow CI actualizado.
 
 ### P5-TASK-0009 — Validar, entregar y cerrar el SDD
 
-Estado: `in_progress — owner review pending`
+Estado: `done`
 
 Requisitos: `P5-REQ-022`, `P5-REQ-023`, `P5-REQ-024`
 
@@ -167,6 +167,5 @@ Acciones:
 - registrar evidencia, auditar IDs y solicitar revisión del propietario;
 - mover este mismo paquete a `complete/` sólo después de aprobación y cierre total.
 
-Evidencia: gates locales y CI remoto previo registrados en `05_validation_plan.md`; smoke real
-Luna/low previo pasado. La nueva evidencia debe cubrir las brechas reabiertas antes de marcar
-este task `done` y mover el paquete a `complete/`.
+Evidencia: gates locales, smoke real Luna/low y CI hardening `35033800136` sobre `f7e677f`,
+registrados en `05_validation_plan.md`; worktree limpio y artefactos locales eliminados.

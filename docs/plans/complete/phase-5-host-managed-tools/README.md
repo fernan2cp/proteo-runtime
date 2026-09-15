@@ -1,6 +1,6 @@
 # Phase 5 — Host-Managed Tools
 
-Estado: `in_progress — owner review pending`
+Estado: `done — closure authorized by owner`
 
 Este SDD es el tracker autoritativo para implementar herramientas administradas por el host en
 Proteo Runtime. La fase permite que Codex seleccione y encadene capacidades de negocio declaradas
@@ -102,5 +102,7 @@ crea un plan paralelo de cierre.
   registry descartable y evidencia sanitizada.
 - Se verificó y eliminó el artefacto local `.ci-wheel-venv/`; `.ci-*-venv/` queda ignorado.
 
-El estado global y `P5-TASK-0009` permanecen `in_progress — owner review pending` por decisión
-del propietario. Esta carpeta no se mueve hasta recibir confirmación explícita.
+El propietario autorizó explícitamente el cierre en la solicitud actual. Tras el hardening, el
+run CI [35033800136](https://github.com/fernan2cp/proteo-runtime/actions/runs/35033800136) terminó
+`success` sobre `f7e677f`, con Ubuntu/Windows, Python 3.11–3.14 y packaging. Todos los IDs quedan
+`done`; el movimiento a `complete/` y su commit de cierre son la siguiente operación.

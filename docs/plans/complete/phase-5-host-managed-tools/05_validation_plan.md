@@ -188,6 +188,11 @@ Esta evidencia corresponde al baseline pre-Phase 5 y no cambia criterios a `done
   válidos. Se verificaron instalaciones aisladas base, sdist y extra LangGraph.
 - Encoding guard sobre `src`, `tests`, `docs`, `examples`, `README.md`, `pyproject.toml` y
   `.github`: `CLEAN`.
+
+CI posterior al hardening: [run 35033800136](https://github.com/fernan2cp/proteo-runtime/actions/runs/35033800136)
+terminó `success` sobre `f7e677f`, con los ocho jobs Ubuntu/Windows para Python 3.11–3.14,
+pre-commit y packaging/instalaciones aisladas. El run histórico `35027984595` queda documentado
+únicamente como baseline previo al hardening.
 - Smoke real separado: `PROTEO_CODEX_DYNAMIC_TOOLS_INTEGRATION=1 .venv\Scripts\python.exe -m
   pytest -q tests/integration/codex/test_dynamic_tools_smoke.py -s` → `1 passed in 15.44s`; se
   verificaron dos ejecuciones host-managed reales con outputs opacos, `gpt-5.6-luna`/`low` y

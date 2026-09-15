@@ -71,22 +71,16 @@ Extraer todos los IDs `P5-REQ-*`, `P5-TASK-*` y `AC-P5-*` y comprobar:
 
 ## Estado de implementación y revisión
 
-- `P5-REQ-001`, `P5-REQ-003`, `P5-REQ-006`: `done`.
-- `P5-REQ-002`, `P5-REQ-004`–`P5-REQ-005`, `P5-REQ-007`–`P5-REQ-024`:
-  `in_progress — audit remediation pending`.
-- `P5-TASK-0001`–`P5-TASK-0007`: `in_progress — audit remediation pending`.
+- `P5-REQ-001`–`P5-REQ-024`: `done`.
+- `P5-TASK-0001`–`P5-TASK-0007`: `done`.
 - `P5-TASK-0008`: `done`.
-- `P5-TASK-0009`: `in_progress — owner review pending`.
-- `AC-P5-001`, `AC-P5-002`, `AC-P5-004`, `AC-P5-007`: `done`.
-- `AC-P5-003`, `AC-P5-005`, `AC-P5-006`, `AC-P5-008`–`AC-P5-028`:
-  `in_progress — audit remediation pending`.
-- Estado global: `in_progress — audit remediation pending`.
+- `P5-TASK-0009`: `done`.
+- `AC-P5-001`–`AC-P5-028`: `done`.
+- Estado global: `done`.
 
-La auditoría reprodujo gates verdes en el commit previo, pero detectó brechas semánticas no
-cubiertas por esa suite. La evidencia previa está en `05_validation_plan.md`, con commits
-funcionales desde `900bdd5` hasta `47606cd` y CI remoto `35027524386`/`35027764791`/`35027984595`.
-La confirmación del propietario sólo podrá aplicarse después de corregir y volver a validar los
-IDs reabiertos.
+La auditoría se corrigió mediante `4c2304f`, `9554d24`, `2976eb2` y `f7e677f`; la suite local,
+smoke y CI `35033800136` validan los IDs reabiertos sobre `f7e677f`. El propietario autorizó el
+cierre explícito en la solicitud actual.
 
 La remediación local quedó respaldada por `4c2304f`, `9554d24` y `2976eb2`, con cobertura
 branch-aware `90.10%`, smoke real Luna/low y gates de packaging/encoding verdes. La columna de

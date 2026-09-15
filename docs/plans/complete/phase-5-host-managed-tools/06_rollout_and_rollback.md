@@ -93,13 +93,14 @@ con evidencia posterior al hardening.
 ## Estado de entrega
 
 La rama `arch/phase-5-host-managed-tools` está publicada con `0.6.0`, commits granulares y CI
-remoto previo verde en los runs
-[35027524386](https://github.com/fernan2cp/proteo-runtime/actions/runs/35027524386) y
+remoto verde en los runs previos
+[35027524386](https://github.com/fernan2cp/proteo-runtime/actions/runs/35027524386),
 [35027764791](https://github.com/fernan2cp/proteo-runtime/actions/runs/35027764791) y
-[35027984595](https://github.com/fernan2cp/proteo-runtime/actions/runs/35027984595). El release
-queda reabierto por auditoría; `P5-TASK-0009` permanece `in_progress` y no se ha movido la carpeta.
+[35027984595](https://github.com/fernan2cp/proteo-runtime/actions/runs/35027984595), además del
+run de hardening [35033800136](https://github.com/fernan2cp/proteo-runtime/actions/runs/35033800136)
+sobre `f7e677f`. Todos los requisitos, criterios y tareas están `done`; el commit de movimiento
+del paquete queda como cierre separado.
 
 La validación local posterior al hardening está verde (`144 passed, 8 skipped`, cobertura `90.10%`,
-smoke Luna/low `1 passed`, packaging y encoding limpios). El run `35027984595` no se considera
-prueba del hardening; el SDD se actualizará con la URL y SHA del CI posterior al push antes de
-marcar requisitos y criterios como `done`.
+smoke Luna/low `1 passed`, packaging y encoding limpios). El run `35027984595` se conserva sólo
+como baseline previo; `35033800136` es la evidencia remota posterior.
