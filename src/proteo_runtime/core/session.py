@@ -8,7 +8,6 @@ from typing import Generic, Protocol, TypeVar, runtime_checkable
 from .events import RuntimeEvent
 from .input import RuntimeInput
 from .model import InvocationConfig, RuntimeResult
-from .session_codec import SessionDescriptor
 
 T = TypeVar("T")
 
@@ -18,7 +17,7 @@ class RuntimeSession(Protocol, Generic[T]):
     """Async-first lifecycle and invocation contract for a session."""
 
     id: str
-    descriptor: SessionDescriptor
+    descriptor: str
 
     async def ainvoke(
         self,

@@ -29,7 +29,13 @@ class Runtime(Protocol):
     def model(self, *, profile: str, level: str = "medium") -> RuntimeModel[Any]:
         """Create a model view for a profile and logical level."""
 
-    async def session(self, *, profile: str = "session") -> RuntimeSession[Any]:
+    async def session(
+        self,
+        profile: str = "session",
+        *,
+        level: str = "medium",
+        config: Any | None = None,
+    ) -> RuntimeSession[Any]:
         """Create a resumable session."""
 
     async def resume_session(self, session_id: str) -> RuntimeSession[Any]:

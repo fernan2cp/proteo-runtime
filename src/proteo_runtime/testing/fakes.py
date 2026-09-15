@@ -9,25 +9,30 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from jsonschema import Draft202012Validator, SchemaError
+from pydantic import BaseModel, ValidationError
+
 from proteo_runtime.core.capabilities import RuntimeCapabilities
 from proteo_runtime.core.diagnostics import RuntimeDiagnostic
 from proteo_runtime.core.errors import (
     AgentRuntimeError,
     CancellationError,
     CapabilityError,
+    ContextPolicyError,
     InterruptedError,
     RuntimeUnavailableError,
     SessionBusyError,
     SessionMismatchError,
     SessionNotFoundError,
+    StructuredOutputError,
 )
 from proteo_runtime.core.events import RuntimeEvent, RuntimeEventKind
 from proteo_runtime.core.identity import RuntimeIdentity
 from proteo_runtime.core.input import RuntimeInput
-from proteo_runtime.core.model import InvocationConfig, RuntimeResult
+from proteo_runtime.core.model import InvocationConfig, RuntimeResult, StructuredOutputPolicy
 from proteo_runtime.core.model_info import ModelInfo
 from proteo_runtime.core.profiles import profile_spec
-from proteo_runtime.core.session_codec import SessionCodec, SessionDescriptor
+from proteo_runtime.core.session_codec import SessionCodec
 from proteo_runtime.core.usage import RuntimeUsage
 
 
@@ -52,11 +57,13 @@ class _SessionState:
     profile: str
     level: str
     security_policy: str
+    context_policy: str
     archived: bool = False
     deleted: bool = False
     active: bool = False
     interrupted: bool = False
     guard: asyncio.Lock = field(default_factory=asyncio.Lock)
+    generation: int = 0
 
 
 class FakeRuntime:
@@ -79,7 +86,7 @@ class FakeRuntime:
         self._id_factory = id_factory or self._default_id
         self._identity = identity or RuntimeIdentity("fake", "fake-identity", "Fake Runtime")
         self._capabilities = capabilities or RuntimeCapabilities(
-            structured_output=False,
+            structured_output=True,
             ephemeral_sessions=True,
             persistent_sessions=True,
             streaming=True,
@@ -178,22 +185,39 @@ class FakeRuntime:
             raise CapabilityError(f"Unknown reasoning level: {level}")
         return FakeRuntimeModel(self, profile, level)
 
-    async def session(self, *, profile: str = "session") -> FakeRuntimeSession:
+    async def session(
+        self,
+        profile: str = "session",
+        *,
+        level: str = "medium",
+        config: InvocationConfig | None = None,
+    ) -> FakeRuntimeSession:
         """Create and retain a resumable fake session."""
 
         spec = profile_spec(profile)
+        if not spec.persistent:
+            raise CapabilityError("Fake persistent sessions require a persistent profile")
+        if level not in {"low", "medium", "high", "ultra"}:
+            raise CapabilityError(f"Unknown reasoning level: {level}")
         provider_id = self._id_factory()
         descriptor = SessionCodec.encode(
             provider="fake",
             provider_session_id=provider_id,
             identity_fingerprint=self._identity.fingerprint,
-            configuration_fingerprint=f"{profile}:medium",
+            configuration_fingerprint=f"{profile}:{level}",
             profile=profile,
-            level="medium",
+            level=level,
             context_policy=spec.context.value,
             security_policy=spec.security_policy,
         )
-        state = _SessionState(provider_id, descriptor, profile, "medium", spec.security_policy)
+        state = _SessionState(
+            provider_id,
+            descriptor,
+            profile,
+            level,
+            spec.security_policy,
+            spec.context.value,
+        )
         self._sessions[descriptor] = state
         self._emit(RuntimeEventKind.SESSION_CREATED, session_id=descriptor)
         return FakeRuntimeSession(self, state)
@@ -232,6 +256,10 @@ class FakeRuntime:
         if level not in {"low", "medium", "high", "ultra"}:
             raise CapabilityError(f"Unknown reasoning level: {level}")
         spec = profile_spec(profile)
+        if not spec.persistent:
+            raise CapabilityError("Fake session migration requires a persistent profile")
+        if security_policy != old.security_policy or security_policy != spec.security_policy:
+            raise CapabilityError("Session migration cannot expand or change permissions")
         descriptor = SessionCodec.encode(
             provider="fake",
             provider_session_id=old.provider_session_id,
@@ -248,6 +276,9 @@ class FakeRuntime:
         current.profile = profile
         current.level = level
         current.security_policy = security_policy
+        current.context_policy = spec.context.value
+        current.generation += 1
+        self._emit(RuntimeEventKind.SESSION_MIGRATED, session_id=descriptor)
         return FakeRuntimeSession(self, current)
 
     async def _claim(self, state: _SessionState) -> None:
@@ -460,16 +491,157 @@ class FakeRuntimeModel:
         for event in streamed:
             yield event
 
-    def with_structured_output(self, schema: Any) -> FakeRuntimeModel:
-        """Reject structured output because the fake advertises no support."""
+    def with_structured_output(
+        self, schema: Any, *, policy: StructuredOutputPolicy | None = None
+    ) -> _FakeStructuredModel:
+        """Return a deterministic host-validated structured facade."""
 
-        del schema
-        raise CapabilityError("Fake runtime does not implement structured output")
+        return _FakeStructuredModel(self, schema, policy or StructuredOutputPolicy())
 
     async def effective_capabilities(self) -> RuntimeCapabilities:
         """Return capabilities of the underlying fake runtime."""
 
         return await self.runtime.capabilities()
+
+
+class _FakeStructuredModel:
+    """Provider-free structured model used by deterministic tests."""
+
+    def __init__(self, base: FakeRuntimeModel, schema: Any, policy: StructuredOutputPolicy) -> None:
+        """Normalize a Pydantic or Draft 2020-12 schema."""
+
+        self._base = base
+        self._policy = policy
+        self._model_type: type[BaseModel] | None = None
+        self._validator: Draft202012Validator | None = None
+        if isinstance(schema, type) and issubclass(schema, BaseModel):
+            self._model_type = schema
+            self._schema = schema.model_json_schema()
+        elif isinstance(schema, dict):
+            try:
+                Draft202012Validator.check_schema(schema)
+            except (SchemaError, TypeError, ValueError) as exc:
+                raise CapabilityError("Invalid Draft 2020-12 structured schema") from exc
+            self._schema = schema
+            self._validator = Draft202012Validator(schema)
+        else:
+            raise CapabilityError("Structured schema must be a Pydantic model or JSON object")
+
+    def with_structured_output(
+        self, schema: Any, *, policy: StructuredOutputPolicy | None = None
+    ) -> _FakeStructuredModel:
+        """Return a structured facade with an independent schema and policy."""
+
+        return _FakeStructuredModel(self._base, schema, policy or self._policy)
+
+    async def effective_capabilities(self) -> RuntimeCapabilities:
+        """Return capabilities of the fake structured facade."""
+
+        capabilities = await self._base.effective_capabilities()
+        if not capabilities.structured_output:
+            raise CapabilityError("Structured output is unavailable for this fake runtime")
+        return capabilities
+
+    def _validate(self, value: Any) -> Any:
+        """Parse and validate one scripted value."""
+
+        import json
+
+        try:
+            parsed = json.loads(value) if isinstance(value, str) else value
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise ValueError("invalid JSON") from exc
+        if self._model_type is not None:
+            try:
+                return self._model_type.model_validate(parsed)
+            except ValidationError as exc:
+                raise ValueError("schema validation failed") from exc
+        assert self._validator is not None
+        errors = list(self._validator.iter_errors(parsed))
+        if errors:
+            raise ValueError("schema validation failed")
+        return parsed
+
+    async def ainvoke(
+        self,
+        input: str | RuntimeInput,
+        *,
+        config: InvocationConfig | None = None,
+        include_raw: bool | None = None,
+    ) -> RuntimeResult[Any]:
+        """Invoke scripted turns until one validates."""
+
+        terminal: RuntimeResult[Any] | None = None
+        async for event in self.astream(input, config=config, include_raw=include_raw):
+            if event.kind is RuntimeEventKind.INVOCATION_COMPLETED:
+                terminal = event.result
+        if terminal is None:
+            raise StructuredOutputError("Fake structured invocation returned no result")
+        return terminal
+
+    async def astream(
+        self,
+        input: str | RuntimeInput,
+        *,
+        config: InvocationConfig | None = None,
+        include_raw: bool | None = None,
+    ) -> AsyncIterator[RuntimeEvent]:
+        """Yield buffered validation and completion events without raw partial JSON."""
+
+        del config
+        logical_id = self._base.runtime._id_factory()
+        yield self._base.runtime._emit(
+            RuntimeEventKind.INVOCATION_STARTED,
+            invocation_id=logical_id,
+            metadata={"max_attempts": self._policy.max_attempts},
+        )
+        usages: list[RuntimeUsage] = []
+        for attempt in range(1, self._policy.max_attempts + 1):
+            result = await self._base.ainvoke(input)
+            usages.append(result.usage)
+            try:
+                value = self._validate(result.value)
+            except ValueError as exc:
+                yield self._base.runtime._emit(
+                    RuntimeEventKind.VALIDATION_FAILED,
+                    invocation_id=logical_id,
+                    metadata={"attempt": attempt, "paths": ("$",)},
+                )
+                if attempt >= self._policy.max_attempts:
+                    raise StructuredOutputError(
+                        "Structured output validation attempts exhausted",
+                        attempts=attempt,
+                        validation_paths=("$",),
+                        raw=str(result.value) if include_raw else None,
+                    ) from exc
+                yield self._base.runtime._emit(
+                    RuntimeEventKind.RETRY_SCHEDULED,
+                    invocation_id=logical_id,
+                    metadata={"attempt": attempt, "next_attempt": attempt + 1},
+                )
+                continue
+            aggregate = RuntimeUsage(
+                input_tokens=sum(item.input_tokens or 0 for item in usages),
+                output_tokens=sum(item.output_tokens or 0 for item in usages),
+                total_tokens=sum(item.total_tokens or 0 for item in usages),
+                retry_count=max(0, len(usages) - 1),
+            )
+            final = RuntimeResult(
+                value=value,
+                usage=aggregate,
+                runtime=result.runtime,
+                model=result.model,
+                profile=result.profile,
+                reasoning_effort=result.reasoning_effort,
+                turn_id=result.turn_id,
+                raw=result.raw if include_raw else None,
+            )
+            yield self._base.runtime._emit(
+                RuntimeEventKind.INVOCATION_COMPLETED,
+                invocation_id=logical_id,
+                result=final,
+            )
+            return
 
 
 class FakeRuntimeSession:
@@ -480,12 +652,13 @@ class FakeRuntimeSession:
 
         self._runtime, self._state, self.id = runtime, state, state.descriptor
         self._closed = False
+        self._generation = state.generation
 
     @property
-    def descriptor(self) -> SessionDescriptor:
+    def descriptor(self) -> str:
         """Decode and return the opaque session descriptor."""
 
-        return SessionCodec.decode(self.id)
+        return self.id
 
     async def ainvoke(
         self,
@@ -496,11 +669,20 @@ class FakeRuntimeSession:
     ) -> RuntimeResult[Any]:
         """Invoke one turn while enforcing single-active-turn semantics."""
 
-        if self._closed or self._state.deleted:
+        if self._closed or self._state.deleted or self._generation != self._state.generation:
             raise SessionNotFoundError("Session handle is closed or deleted")
+        normalized = RuntimeInput.from_value(input)
+        if self._state.context_policy == "runtime" and any(
+            message.role != "user" for message in normalized.messages
+        ):
+            raise ContextPolicyError("Runtime fake sessions accept user messages only")
+        if self._state.context_policy == "hybrid" and any(
+            message.role not in {"system", "user"} for message in normalized.messages
+        ):
+            raise ContextPolicyError("Hybrid fake sessions reject assistant/tool replay")
         return (
             await self._runtime._execute(
-                RuntimeInput.from_value(input),
+                normalized,
                 model="fake-session",
                 profile=self._state.profile,
                 level=self._state.level,
@@ -517,12 +699,21 @@ class FakeRuntimeSession:
     ) -> AsyncIterator[RuntimeEvent]:
         """Stream one session turn with ordered fake events."""
 
-        if self._closed or self._state.deleted:
+        if self._closed or self._state.deleted or self._generation != self._state.generation:
             raise SessionNotFoundError("Session handle is closed or deleted")
+        normalized = RuntimeInput.from_value(input)
+        if self._state.context_policy == "runtime" and any(
+            message.role != "user" for message in normalized.messages
+        ):
+            raise ContextPolicyError("Runtime fake sessions accept user messages only")
+        if self._state.context_policy == "hybrid" and any(
+            message.role not in {"system", "user"} for message in normalized.messages
+        ):
+            raise ContextPolicyError("Hybrid fake sessions reject assistant/tool replay")
         active_owned = False
         try:
             result, generated, turn = await self._runtime._execute(
-                RuntimeInput.from_value(input),
+                normalized,
                 model="fake-session",
                 profile=self._state.profile,
                 level=self._state.level,
