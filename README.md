@@ -1,14 +1,12 @@
 # Proteo Runtime
 
 Provider-neutral runtime contracts for asynchronous model execution. Version
-0.1.0 establishes the repository and architectural foundation described in the
-Phase 0 SDD.
+`0.2.0` adds the opt-in Codex Core Runtime described by the active Phase 1 SDD.
 
 ## Status
 
-Phase 0 is implemented locally. Provider integrations, LangGraph adapters,
-tool execution, observers, authentication, and security enforcement are
-deliberately deferred.
+Phase 0 contracts remain provider-neutral. Phase 1 adds a Codex provider behind
+`proteo_runtime.providers.codex.CodexRuntime`; real subscription-backed tests pass opt-in; remote CI and strong OS isolation remain explicitly pending.
 
 ## Install
 
@@ -21,26 +19,36 @@ For contributors, install the development environment with `uv sync --extra dev`
 ## Minimal usage
 
 ```python
-from proteo_runtime import RuntimeInput
-from proteo_runtime.testing import FakeRuntime, FakeTurn
+from proteo_runtime.providers.codex import CodexRuntime
 
-runtime = FakeRuntime(turns=[FakeTurn(value="hello")])
+async with CodexRuntime() as runtime:
+    model = await runtime.brain()
+    result = await model.ainvoke("Hello")
 ```
 
-The fake runtime is deterministic and never starts Codex, reads credentials,
-opens a network connection, or consumes provider quota.
+The Codex provider uses the pinned `openai-codex>=0.147,<0.148` SDK and a
+ChatGPT-managed Codex login. The core package never imports the SDK. Default
+unit and contract tests use SDK doubles and never read credentials, access the
+network, or consume quota.
 
 ## Development
 
-Run formatting, linting, typing, import-boundary checks, and tests with:
-
 ```text
-uv run ruff format --check .
-uv run ruff check .
+uv run ruff format --check src tests
+uv run ruff check src tests
 uv run mypy src tests
 uv run lint-imports
-uv run pytest --cov=proteo_runtime --cov-report=term-missing
+uv run pytest -q
+uv build
 ```
 
-See `docs/plans/active/phase-0-repository-architectural-foundation/` for the
-requirements, design, acceptance criteria, and validation evidence.
+Real Codex integration tests are opt-in only:
+
+```text
+PROTEO_CODEX_INTEGRATION=1 uv run pytest -m integration tests/integration/codex -q
+```
+
+Structured output, session migration, host-managed tools, retries, and strong
+OS isolation are reserved for later phases. See
+`docs/plans/active/phase-1-codex-core-runtime/` for requirements, design,
+acceptance criteria, validation evidence, and traceability.

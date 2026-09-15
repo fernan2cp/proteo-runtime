@@ -43,15 +43,15 @@ Task numbers in this table abbreviate the `P1-TASK-` prefix.
 
 | Criteria | Evidence owner | Status |
 |---|---|---|
-| AC-P1-001 | baseline review and clean diff | Pending |
-| AC-P1-002–003 | provider boundary/lifecycle tests | Pending |
-| AC-P1-004–007 | auth, identity, and catalog tests | Pending |
-| AC-P1-008–010 | brain and sandbox tests | Pending |
-| AC-P1-011–015 | session contract and integration tests | Pending |
-| AC-P1-016–021 | runner, usage, event, error, and cleanup tests | Pending |
-| AC-P1-022 | quota-safety test and default suite | Pending |
-| AC-P1-023 | explicit real-runtime smoke evidence | Pending |
-| AC-P1-024 | lint, typing, coverage, build, OS matrix, and docs | Pending |
+| AC-P1-001 | baseline review and preserved worktree | Satisfied locally |
+| AC-P1-002–003 | provider boundary, lifecycle and startup-failure tests | Satisfied locally |
+| AC-P1-004–007 | auth, identity, catalog and effort tests | Satisfied locally |
+| AC-P1-008–010 | brain input and sandbox policy tests | Satisfied locally |
+| AC-P1-011–015 | session unit tests plus real create/turn/close/resume/archive/delete smoke | Satisfied locally and by opt-in integration |
+| AC-P1-016–021 | runner, usage, terminal parity, error, cancellation and cleanup tests | Satisfied locally |
+| AC-P1-022 | quota-safety contract plus default suite | Satisfied: 46 passed, 3 skipped |
+| AC-P1-023 | explicit ChatGPT-backed smoke | Satisfied: 3 passed, 0 failed, 0 skipped |
+| AC-P1-024 | local quality, 90.38% coverage, build, artifacts and docs; remote matrix | Pending: `gh auth status` reports no authenticated GitHub host, so remote GitHub Actions evidence is unavailable |
 
 ## Change-Control Rule
 

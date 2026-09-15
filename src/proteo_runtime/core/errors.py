@@ -24,9 +24,7 @@ class AgentRuntimeError(Exception):
     ) -> None:
         """Initialize an error without retaining credential-shaped values."""
 
-        self.code = code or self.default_code
-        self.runtime = runtime
-        self.retryable = retryable
+        self.code, self.runtime, self.retryable = code or self.default_code, runtime, retryable
         try:
             self.details = freeze_mapping(details)
         except ValueError:
@@ -63,8 +61,8 @@ class ConfigurationError(AgentRuntimeError):
         details = dict(kwargs.pop("details", {}) or {})
         if path:
             details["path"] = path
-        if path and path not in message:
-            message = f"{message} ({path})"
+            if path not in message:
+                message = f"{message} ({path})"
         super().__init__(message, details=details, **kwargs)
         self.path = path
 
@@ -151,3 +149,12 @@ class ObservabilityError(AgentRuntimeError):
     """Indicate a non-fatal observability failure."""
 
     default_code = "observability_error"
+
+
+class TransportError(AgentRuntimeError):
+    """Indicate a provider transport failure."""
+
+    default_code = "transport_error"
+
+
+RuntimeError = AgentRuntimeError

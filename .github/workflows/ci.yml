@@ -63,18 +63,18 @@ jobs:
         run: |
           uv venv .ci-wheel-venv --python 3.11
           uv pip install --python .ci-wheel-venv/bin/python dist/*.whl
-          .ci-wheel-venv/bin/python -c "import proteo_runtime; assert proteo_runtime.__version__ == '0.1.0'"
+          .ci-wheel-venv/bin/python -c "import proteo_runtime; assert proteo_runtime.__version__ == '0.2.0'"
           .ci-wheel-venv/bin/proteo-runtime --version
           .ci-wheel-venv/bin/python -m proteo_runtime --version
       - name: Install and validate sdist in an isolated environment
         run: |
           uv venv .ci-sdist-venv --python 3.11
           uv pip install --python .ci-sdist-venv/bin/python dist/*.tar.gz
-          .ci-sdist-venv/bin/python -c "import proteo_runtime; assert proteo_runtime.__version__ == '0.1.0'"
+          .ci-sdist-venv/bin/python -c "import proteo_runtime; assert proteo_runtime.__version__ == '0.2.0'"
           .ci-sdist-venv/bin/proteo-runtime --version
           .ci-sdist-venv/bin/python -m proteo_runtime --version
       - uses: actions/upload-artifact@v4
         with:
-          name: phase-0-distributions
+          name: phase-1-distributions
           path: dist/
           if-no-files-found: error

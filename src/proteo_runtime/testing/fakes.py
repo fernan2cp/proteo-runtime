@@ -27,7 +27,7 @@ from proteo_runtime.core.input import RuntimeInput
 from proteo_runtime.core.model import InvocationConfig, RuntimeResult
 from proteo_runtime.core.model_info import ModelInfo
 from proteo_runtime.core.profiles import profile_spec
-from proteo_runtime.core.session_codec import SessionCodec
+from proteo_runtime.core.session_codec import SessionCodec, SessionDescriptor
 from proteo_runtime.core.usage import RuntimeUsage
 
 
@@ -109,19 +109,21 @@ class FakeRuntime:
         session_id: str | None = None,
         turn_id: str | None = None,
         metadata: dict[str, Any] | None = None,
+        result: RuntimeResult[Any] | None = None,
     ) -> RuntimeEvent:
         """Append and return one correlated monotonic event."""
 
         event = RuntimeEvent(
-            kind=kind,
-            event_id=self._id_factory(),
-            sequence=self._sequence,
-            occurred_at=self._clock(),
-            runtime=self._identity,
-            invocation_id=invocation_id,
-            session_id=session_id,
-            turn_id=turn_id,
-            metadata=metadata or {},
+            kind,
+            self._id_factory(),
+            self._sequence,
+            self._clock(),
+            self._identity,
+            invocation_id,
+            session_id,
+            turn_id,
+            metadata or {},
+            result,
         )
         self._sequence += 1
         self.events.append(event)
@@ -219,7 +221,7 @@ class FakeRuntime:
         level: str = "medium",
         security_policy: str,
     ) -> FakeRuntimeSession:
-        """Migrate a fake session within the same provider identity."""
+        """Migrate a fake session while preserving its provider identity."""
 
         old = SessionCodec.decode(session_id)
         if old.provider != "fake" or old.identity_fingerprint != self._identity.fingerprint:
@@ -227,9 +229,9 @@ class FakeRuntime:
         current = self._sessions.get(session_id)
         if current is None or current.deleted:
             raise SessionNotFoundError("Fake session was not found")
-        profile_spec(profile)
         if level not in {"low", "medium", "high", "ultra"}:
             raise CapabilityError(f"Unknown reasoning level: {level}")
+        spec = profile_spec(profile)
         descriptor = SessionCodec.encode(
             provider="fake",
             provider_session_id=old.provider_session_id,
@@ -237,9 +239,10 @@ class FakeRuntime:
             configuration_fingerprint=f"{profile}:{level}",
             profile=profile,
             level=level,
-            context_policy=profile_spec(profile).context.value,
+            context_policy=spec.context.value,
             security_policy=security_policy,
         )
+        self._sessions.pop(session_id, None)
         self._sessions[descriptor] = current
         current.descriptor = descriptor
         current.profile = profile
@@ -283,8 +286,7 @@ class FakeRuntime:
         del input
         claimed = False
         completed = False
-        invocation_id = self._id_factory()
-        turn_id = self._id_factory()
+        invocation_id, turn_id = self._id_factory(), self._id_factory()
         session_id = state.descriptor if state else None
         try:
             if state is not None:
@@ -325,8 +327,7 @@ class FakeRuntime:
                 if isinstance(turn.error, AgentRuntimeError):
                     raise turn.error
                 raise RuntimeUnavailableError(
-                    "Fake turn failed",
-                    details={"exception_type": type(turn.error).__name__},
+                    "Fake turn failed", details={"exception_type": type(turn.error).__name__}
                 ) from None
             result = RuntimeResult(
                 value=turn.value,
@@ -341,7 +342,7 @@ class FakeRuntime:
             )
             if not stream:
                 generated.extend(
-                    self._terminal_events(invocation_id, session_id, turn_id, turn.usage)
+                    self._terminal_events(invocation_id, session_id, turn_id, turn.usage, result)
                 )
             completed = True
             return result, generated, turn
@@ -363,6 +364,7 @@ class FakeRuntime:
         session_id: str | None,
         turn_id: str,
         usage: RuntimeUsage,
+        result: RuntimeResult[Any] | None = None,
     ) -> list[RuntimeEvent]:
         """Emit usage and completion events for a successful invocation."""
 
@@ -385,6 +387,7 @@ class FakeRuntime:
                 invocation_id=invocation_id,
                 session_id=session_id,
                 turn_id=turn_id,
+                result=result,
             ),
         ]
 
@@ -395,12 +398,14 @@ class FakeRuntimeModel:
     def __init__(self, runtime: FakeRuntime, profile: str, level: str) -> None:
         """Store the runtime and selected profile."""
 
-        self.runtime = runtime
-        self.profile = profile
-        self.level = level
+        self.runtime, self.profile, self.level = runtime, profile, level
 
     async def ainvoke(
-        self, input: RuntimeInput, *, config: InvocationConfig | None = None
+        self,
+        input: str | RuntimeInput,
+        *,
+        config: InvocationConfig | None = None,
+        include_raw: bool | None = None,
     ) -> RuntimeResult[Any]:
         """Invoke one deterministic fake turn."""
 
@@ -413,26 +418,24 @@ class FakeRuntimeModel:
         )[0]
 
     async def astream(
-        self, input: RuntimeInput, *, config: InvocationConfig | None = None
+        self,
+        input: str | RuntimeInput,
+        *,
+        config: InvocationConfig | None = None,
+        include_raw: bool | None = None,
     ) -> AsyncIterator[RuntimeEvent]:
         """Yield deterministic lifecycle, output, usage, and completion events."""
 
         normalized = RuntimeInput.from_value(input)
         result, generated, turn = await self.runtime._execute(
-            normalized,
-            model="fake-model",
-            profile=self.profile,
-            level=self.level,
-            stream=True,
+            normalized, model="fake-model", profile=self.profile, level=self.level, stream=True
         )
-        del result, config
-        invocation_id = generated[0].invocation_id or ""
-        turn_id = generated[0].turn_id or ""
+        del result, config, include_raw
+        invocation_id, turn_id = generated[0].invocation_id or "", generated[0].turn_id or ""
         streamed = list(generated)
-        if turn.events:
-            streamed.extend(turn.events)
-        else:
-            streamed.extend(
+        streamed.extend(
+            turn.events
+            or (
                 self.runtime._emit(
                     RuntimeEventKind.OUTPUT_TEXT_DELTA,
                     invocation_id=invocation_id,
@@ -441,11 +444,23 @@ class FakeRuntimeModel:
                 )
                 for chunk in _chunks(str(turn.value))
             )
-        streamed.extend(self.runtime._terminal_events(invocation_id, None, turn_id, turn.usage))
+        )
+        result = RuntimeResult(
+            value=turn.value,
+            usage=turn.usage,
+            runtime=self.runtime._identity,
+            model="fake-model",
+            profile=self.profile,
+            reasoning_effort=self.level,
+            turn_id=turn_id,
+        )
+        streamed.extend(
+            self.runtime._terminal_events(invocation_id, None, turn_id, turn.usage, result)
+        )
         for event in streamed:
             yield event
 
-    def with_structured_output(self, schema: type[Any] | dict[str, Any]) -> FakeRuntimeModel:
+    def with_structured_output(self, schema: Any) -> FakeRuntimeModel:
         """Reject structured output because the fake advertises no support."""
 
         del schema
@@ -463,22 +478,29 @@ class FakeRuntimeSession:
     def __init__(self, runtime: FakeRuntime, state: _SessionState) -> None:
         """Bind a handle to retained session state."""
 
-        self._runtime = runtime
-        self._state = state
-        self.id = state.descriptor
+        self._runtime, self._state, self.id = runtime, state, state.descriptor
         self._closed = False
 
+    @property
+    def descriptor(self) -> SessionDescriptor:
+        """Decode and return the opaque session descriptor."""
+
+        return SessionCodec.decode(self.id)
+
     async def ainvoke(
-        self, input: RuntimeInput, *, config: InvocationConfig | None = None
+        self,
+        input: str | RuntimeInput,
+        *,
+        config: InvocationConfig | None = None,
+        include_raw: bool | None = None,
     ) -> RuntimeResult[Any]:
         """Invoke one turn while enforcing single-active-turn semantics."""
 
         if self._closed or self._state.deleted:
             raise SessionNotFoundError("Session handle is closed or deleted")
-        normalized = RuntimeInput.from_value(input)
         return (
             await self._runtime._execute(
-                normalized,
+                RuntimeInput.from_value(input),
                 model="fake-session",
                 profile=self._state.profile,
                 level=self._state.level,
@@ -487,17 +509,20 @@ class FakeRuntimeSession:
         )[0]
 
     async def astream(
-        self, input: RuntimeInput, *, config: InvocationConfig | None = None
+        self,
+        input: str | RuntimeInput,
+        *,
+        config: InvocationConfig | None = None,
+        include_raw: bool | None = None,
     ) -> AsyncIterator[RuntimeEvent]:
         """Stream one session turn with ordered fake events."""
 
         if self._closed or self._state.deleted:
             raise SessionNotFoundError("Session handle is closed or deleted")
-        normalized = RuntimeInput.from_value(input)
         active_owned = False
         try:
             result, generated, turn = await self._runtime._execute(
-                normalized,
+                RuntimeInput.from_value(input),
                 model="fake-session",
                 profile=self._state.profile,
                 level=self._state.level,
@@ -506,14 +531,12 @@ class FakeRuntimeSession:
                 stream=True,
             )
             active_owned = True
-            del result, config
-            invocation_id = generated[0].invocation_id or ""
-            turn_id = generated[0].turn_id or ""
+            del result, config, include_raw
+            invocation_id, turn_id = generated[0].invocation_id or "", generated[0].turn_id or ""
             streamed = list(generated)
-            if turn.events:
-                streamed.extend(turn.events)
-            else:
-                streamed.extend(
+            streamed.extend(
+                turn.events
+                or (
                     self._runtime._emit(
                         RuntimeEventKind.OUTPUT_TEXT_DELTA,
                         invocation_id=invocation_id,
@@ -523,8 +546,19 @@ class FakeRuntimeSession:
                     )
                     for chunk in _chunks(str(turn.value))
                 )
+            )
+            result = RuntimeResult(
+                value=turn.value,
+                usage=turn.usage,
+                runtime=self._runtime._identity,
+                model="fake-session",
+                profile=self._state.profile,
+                reasoning_effort=self._state.level,
+                session_id=self.id,
+                turn_id=turn_id,
+            )
             streamed.extend(
-                self._runtime._terminal_events(invocation_id, self.id, turn_id, turn.usage)
+                self._runtime._terminal_events(invocation_id, self.id, turn_id, turn.usage, result)
             )
             for event in streamed:
                 yield event
@@ -545,19 +579,25 @@ class FakeRuntimeSession:
     async def close(self) -> None:
         """Close this handle while retaining its resumable state."""
 
-        self._closed = True
+        if not self._closed:
+            self._closed = True
+            self._runtime._emit(RuntimeEventKind.SESSION_CLOSED, session_id=self.id)
 
     async def archive(self) -> None:
         """Archive this session without deleting retained state."""
 
-        self._state.archived = True
+        if not self._state.archived:
+            self._state.archived = True
+            self._runtime._emit(RuntimeEventKind.SESSION_ARCHIVED, session_id=self.id)
 
     async def delete(self) -> None:
         """Delete this session from the fake runtime."""
 
-        self._state.deleted = True
-        self._runtime._sessions.pop(self.id, None)
-        self._closed = True
+        if not self._state.deleted:
+            self._state.deleted = True
+            self._runtime._sessions.pop(self.id, None)
+            self._closed = True
+            self._runtime._emit(RuntimeEventKind.SESSION_DELETED, session_id=self.id)
 
 
 def _chunks(value: str, size: int = 8) -> tuple[str, ...]:

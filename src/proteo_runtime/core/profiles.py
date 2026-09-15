@@ -54,26 +54,23 @@ class ProfileSpec:
     host_tools: HostToolsMode
     security_policy: str
 
+    @property
+    def persistent(self) -> bool:
+        """Return whether this profile has persistent lifecycle semantics."""
+
+        return self.lifecycle is LifecycleMode.PERSISTENT
+
 
 DEFAULT_PROFILE_SPECS = MappingProxyType(
     {
         ExecutionProfile.BRAIN.value: ProfileSpec(
-            LifecycleMode.EPHEMERAL,
-            ContextPolicy.EXTERNAL,
-            HostToolsMode.DISABLED,
-            "isolated",
+            LifecycleMode.EPHEMERAL, ContextPolicy.EXTERNAL, HostToolsMode.DISABLED, "isolated"
         ),
         ExecutionProfile.STRUCTURED.value: ProfileSpec(
-            LifecycleMode.EPHEMERAL,
-            ContextPolicy.EXTERNAL,
-            HostToolsMode.DISABLED,
-            "isolated",
+            LifecycleMode.EPHEMERAL, ContextPolicy.EXTERNAL, HostToolsMode.DISABLED, "isolated"
         ),
         ExecutionProfile.SESSION.value: ProfileSpec(
-            LifecycleMode.PERSISTENT,
-            ContextPolicy.RUNTIME,
-            HostToolsMode.DISABLED,
-            "isolated",
+            LifecycleMode.PERSISTENT, ContextPolicy.RUNTIME, HostToolsMode.DISABLED, "isolated"
         ),
         ExecutionProfile.CONTROLLED_AGENT.value: ProfileSpec(
             LifecycleMode.EPHEMERAL,
@@ -82,10 +79,7 @@ DEFAULT_PROFILE_SPECS = MappingProxyType(
             "controlled_tools",
         ),
         ExecutionProfile.NATIVE.value: ProfileSpec(
-            LifecycleMode.PERSISTENT,
-            ContextPolicy.HYBRID,
-            HostToolsMode.PROVIDER_DEFINED,
-            "native",
+            LifecycleMode.PERSISTENT, ContextPolicy.HYBRID, HostToolsMode.PROVIDER_DEFINED, "native"
         ),
     }
 )

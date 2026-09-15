@@ -1,110 +1,104 @@
 # Task Plan — Phase 1
 
-## Conventions
-
-States are `pending`, `in_progress`, `done`, or `blocked`. A task becomes `done` only after its
+States are `pending`, `in_progress`, `done`, or `blocked`. A task is `done` only when its local
 evidence is recorded in `05_validation_plan.md` and `07_traceability.md`.
 
 ### P1-TASK-0001 — Reconfirm baseline and SDK contract
 
-**State:** `pending`  
-**Depends on:** none  
-**Requirements:** P1-REQ-001, P1-REQ-016, P1-REQ-018  
+**State:** `done`
+**Depends on:** none
+**Requirements:** P1-REQ-001, P1-REQ-016, P1-REQ-018
 **Acceptance:** AC-P1-001, AC-P1-022, AC-P1-024
 
-Recheck status, versions, generated SDK types, public methods, current tests, and documentation
-drift. Record deviations before implementation.
+Baseline and the pinned `openai-codex>=0.147,<0.148` SDK contract were recorded in `00_baseline.md`.
 
 ### P1-TASK-0002 — Establish provider boundary and lifecycle
 
-**State:** `pending`  
-**Depends on:** P1-TASK-0001  
-**Requirements:** P1-REQ-001, P1-REQ-002  
+**State:** `done`
+**Depends on:** P1-TASK-0001
+**Requirements:** P1-REQ-001, P1-REQ-002
 **Acceptance:** AC-P1-002, AC-P1-003
 
-Create the Codex package, intentional export, injectable internal SDK boundary, idempotent
-lifecycle, context management, state guards, and resource cleanup.
+Implemented `proteo_runtime.providers.codex.CodexRuntime`, an injectable SDK factory, explicit
+start/close, async context management, and temporary workspace cleanup.
 
 ### P1-TASK-0003 — Implement authentication, identity, and model catalog
 
-**State:** `pending`  
-**Depends on:** P1-TASK-0002  
-**Requirements:** P1-REQ-003, P1-REQ-004, P1-REQ-005  
+**State:** `done`
+**Depends on:** P1-TASK-0002
+**Requirements:** P1-REQ-003, P1-REQ-004, P1-REQ-005
 **Acceptance:** AC-P1-004 through AC-P1-007
 
-Validate ChatGPT-managed auth, generate safe identity metadata, map model entries, resolve one
-default, and validate explicit model/effort choices without fallback.
+ChatGPT-managed account validation, SHA-256 identity fingerprinting, catalog mapping, default
+selection, and effort validation are covered by SDK doubles.
 
 ### P1-TASK-0004 — Implement input mapping and secure model facade
 
-**State:** `pending`  
-**Depends on:** P1-TASK-0003  
-**Requirements:** P1-REQ-006, P1-REQ-007, P1-REQ-013  
+**State:** `done`
+**Depends on:** P1-TASK-0003
+**Requirements:** P1-REQ-006, P1-REQ-007, P1-REQ-013
 **Acceptance:** AC-P1-008 through AC-P1-010
 
-Implement deterministic transcript conversion, ephemeral brain threads, reserved structured
-behavior, temporary workspace ownership, deny-all approvals, and read-only sandbox mapping.
+Brain turns use ephemeral threads, deterministic role transcripts, deny-all approval, read-only
+sandbox, and empty temporary workspaces. Structured output is explicitly reserved for Phase 2.
 
 ### P1-TASK-0005 — Implement shared turn runner
 
-**State:** `pending`  
-**Depends on:** P1-TASK-0004  
-**Requirements:** P1-REQ-011, P1-REQ-012, P1-REQ-014, P1-REQ-015  
+**State:** `done`
+**Depends on:** P1-TASK-0004
+**Requirements:** P1-REQ-011, P1-REQ-012, P1-REQ-014, P1-REQ-015
 **Acceptance:** AC-P1-016 through AC-P1-021
 
-Map notifications, final results, usage, raw snapshots, errors, timeout/cancellation, stream
-abandonment, and unhealthy transport cleanup through one runner.
+`TurnRun` normalizes deltas, completed items, usage, terminal results, interruption, and sanitized
+raw diagnostics for both invocation and streaming paths.
 
 ### P1-TASK-0006 — Implement persistent sessions
 
-**State:** `pending`  
-**Depends on:** P1-TASK-0003, P1-TASK-0005  
-**Requirements:** P1-REQ-008, P1-REQ-009, P1-REQ-010, P1-REQ-017  
+**State:** `done`
+**Depends on:** P1-TASK-0003, P1-TASK-0005
+**Requirements:** P1-REQ-008, P1-REQ-009, P1-REQ-010, P1-REQ-017
 **Acceptance:** AC-P1-011 through AC-P1-015
 
-Implement persistent start/resume, frozen descriptor validation, shared concurrency guards,
-user-only input, close/archive/delete semantics, private delete shim, and explicit migration
-rejection.
+Session create/resume, opaque `prt1.*` descriptors, user-only context policy, fail-fast locks,
+close/archive/delete, and the isolated `thread/delete` shim are implemented. Migration remains a
+capability rejection as planned.
 
 ### P1-TASK-0007 — Complete neutral event contract and fakes
 
-**State:** `pending`  
-**Depends on:** P1-TASK-0005, P1-TASK-0006  
-**Requirements:** P1-REQ-011, P1-REQ-015, P1-REQ-018  
+**State:** `done`
+**Depends on:** P1-TASK-0005, P1-TASK-0006
+**Requirements:** P1-REQ-011, P1-REQ-015, P1-REQ-018
 **Acceptance:** AC-P1-017, AC-P1-021, AC-P1-024
 
-Add terminal results and session lifecycle kinds, update fakes and public contract tests, and
-preserve provider-free core imports.
+Terminal results and session lifecycle event kinds are present, and `FakeRuntime` preserves the
+common lifecycle/streaming contract.
 
 ### P1-TASK-0008 — Add quota-safe unit and contract coverage
 
-**State:** `pending`  
-**Depends on:** P1-TASK-0002 through P1-TASK-0007  
-**Requirements:** P1-REQ-001 through P1-REQ-018  
+**State:** `done`
+**Depends on:** P1-TASK-0002 through P1-TASK-0007
+**Requirements:** P1-REQ-001 through P1-REQ-018
 **Acceptance:** AC-P1-002 through AC-P1-022, AC-P1-024
 
-Add injected SDK doubles and tests for all mappings, lifecycles, failures, cleanup, concurrency,
-compatibility, exports, and quota-safety guards.
+The local suite uses injected SDK doubles; 46 tests pass and three opt-in integration tests are skipped by default. Coverage is 90.38% with branches enabled.
 
 ### P1-TASK-0009 — Add opt-in integration validation
 
-**State:** `pending`  
-**Depends on:** P1-TASK-0008  
-**Requirements:** P1-REQ-002 through P1-REQ-006, P1-REQ-008 through P1-REQ-017  
+**State:** `done`
+**Depends on:** P1-TASK-0008
+**Requirements:** P1-REQ-002 through P1-REQ-006, P1-REQ-008 through P1-REQ-017
 **Acceptance:** AC-P1-003 through AC-P1-008, AC-P1-011 through AC-P1-023
 
-Add environment-gated real-runtime tests for authentication/catalog, brain invoke, streaming,
-session create/resume, archive/delete cleanup, and interruption where deterministic.
+The opt-in real run passed 3 integration tests covering catalog/brain, streaming, and persistent session cleanup; evidence is recorded in `05_validation_plan.md`.
 
 ### P1-TASK-0010 — Document, version, validate, and hand off
 
-**State:** `pending`  
-**Depends on:** P1-TASK-0009  
-**Requirements:** P1-REQ-016, P1-REQ-018  
+**State:** `in_progress`
+**Depends on:** P1-TASK-0009
+**Requirements:** P1-REQ-016, P1-REQ-018
 **Acceptance:** AC-P1-022 through AC-P1-024
 
-Update public documentation and examples, set version `0.2.0`, run every quality gate and OS
-matrix, record evidence, reconcile traceability, and move the SDD only after full acceptance.
+README/version, Ruff, mypy, import-linter, tests, coverage, and build evidence are local. `gh auth status` reported no authenticated GitHub host, so remote CI matrix evidence and the final move to `docs/plans/complete/` remain pending.
 
 ## Dependency Summary
 
@@ -112,8 +106,3 @@ matrix, record evidence, reconcile traceability, and move the SDD only after ful
 0001 -> 0002 -> 0003 -> 0004 -> 0005 -> 0006 -> 0007 -> 0008 -> 0009 -> 0010
                          \--------------------/
 ```
-
-## Implementation Evidence
-
-Pending. Evidence must identify commands, environments, test counts, integration account mode
-without PII, and CI run URLs.

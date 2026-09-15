@@ -29,6 +29,12 @@ class RuntimeMessage:
             raise TypeError("RuntimeMessage content must contain TextContent blocks")
         object.__setattr__(self, "content", tuple(self.content))
 
+    @property
+    def text(self) -> str:
+        """Return concatenated text from all content blocks."""
+
+        return "".join(block.text for block in self.content)
+
 
 @dataclass(frozen=True, slots=True)
 class RuntimeInput:
@@ -55,6 +61,6 @@ class RuntimeInput:
 
     @property
     def text(self) -> str:
-        """Return the concatenated text content for deterministic fakes."""
+        """Return concatenated text content for deterministic providers."""
 
-        return "".join(block.text for message in self.messages for block in message.content)
+        return "".join(message.text for message in self.messages)

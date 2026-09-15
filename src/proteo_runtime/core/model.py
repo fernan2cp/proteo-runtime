@@ -13,10 +13,13 @@ from .diagnostics import RuntimeDiagnostic
 from .events import RuntimeEvent
 from .identity import RuntimeIdentity
 from .input import RuntimeInput
+from .model_info import ModelInfo
 from .types import freeze_mapping
 from .usage import RuntimeUsage
 
 T = TypeVar("T")
+
+__all__ = ["InvocationConfig", "RuntimeResult", "RuntimeModel", "ModelInfo", "RuntimeUsage"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,7 +40,7 @@ class InvocationConfig:
         object.__setattr__(self, "metadata", freeze_mapping(self.metadata))
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class RuntimeResult(Generic[T]):
     """Immutable result returned from an invocation."""
 
@@ -52,10 +55,40 @@ class RuntimeResult(Generic[T]):
     diagnostics: tuple[RuntimeDiagnostic, ...] = ()
     raw: object | None = None
 
-    def __post_init__(self) -> None:
-        """Normalize diagnostics and prevent mutable diagnostic collections."""
+    def __init__(
+        self,
+        value: T | None = None,
+        usage: RuntimeUsage | None = None,
+        runtime: RuntimeIdentity | None = None,
+        model: str = "",
+        profile: str = "brain",
+        reasoning_effort: str | None = None,
+        session_id: str | None = None,
+        turn_id: str | None = None,
+        diagnostics: tuple[RuntimeDiagnostic, ...] = (),
+        raw: object | None = None,
+        output: T | None = None,
+    ) -> None:
+        """Initialize a result using legacy `value` or convenience `output`."""
 
-        object.__setattr__(self, "diagnostics", tuple(self.diagnostics))
+        if value is None and output is not None:
+            value = output
+        object.__setattr__(self, "value", value)
+        object.__setattr__(self, "usage", usage or RuntimeUsage())
+        object.__setattr__(self, "runtime", runtime or RuntimeIdentity("unknown", "unknown"))
+        object.__setattr__(self, "model", model)
+        object.__setattr__(self, "profile", profile)
+        object.__setattr__(self, "reasoning_effort", reasoning_effort)
+        object.__setattr__(self, "session_id", session_id)
+        object.__setattr__(self, "turn_id", turn_id)
+        object.__setattr__(self, "diagnostics", tuple(diagnostics))
+        object.__setattr__(self, "raw", raw)
+
+    @property
+    def output(self) -> T:
+        """Return the result value under the Phase 1 terminology."""
+
+        return self.value
 
 
 @runtime_checkable
@@ -63,12 +96,20 @@ class RuntimeModel(Protocol, Generic[T]):
     """Async-first provider-neutral model contract."""
 
     async def ainvoke(
-        self, input: RuntimeInput, *, config: InvocationConfig | None = None
+        self,
+        input: str | RuntimeInput,
+        *,
+        config: InvocationConfig | None = None,
+        include_raw: bool | None = None,
     ) -> RuntimeResult[T]:
         """Invoke the model once."""
 
     def astream(
-        self, input: RuntimeInput, *, config: InvocationConfig | None = None
+        self,
+        input: str | RuntimeInput,
+        *,
+        config: InvocationConfig | None = None,
+        include_raw: bool | None = None,
     ) -> AsyncIterator[RuntimeEvent]:
         """Return an asynchronous event stream."""
 

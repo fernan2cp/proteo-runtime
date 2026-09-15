@@ -36,11 +36,6 @@ class Runtime(Protocol):
         """Resume a previously created session."""
 
     async def migrate_session(
-        self,
-        session_id: str,
-        *,
-        profile: str,
-        level: str = "medium",
-        security_policy: str,
+        self, session_id: str, *, profile: str, level: str = "medium", security_policy: str
     ) -> RuntimeSession[Any]:
         """Migrate a session to an explicitly requested configuration."""

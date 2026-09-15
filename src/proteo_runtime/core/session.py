@@ -8,6 +8,7 @@ from typing import Generic, Protocol, TypeVar, runtime_checkable
 from .events import RuntimeEvent
 from .input import RuntimeInput
 from .model import InvocationConfig, RuntimeResult
+from .session_codec import SessionDescriptor
 
 T = TypeVar("T")
 
@@ -17,14 +18,23 @@ class RuntimeSession(Protocol, Generic[T]):
     """Async-first lifecycle and invocation contract for a session."""
 
     id: str
+    descriptor: SessionDescriptor
 
     async def ainvoke(
-        self, input: RuntimeInput, *, config: InvocationConfig | None = None
+        self,
+        input: str | RuntimeInput,
+        *,
+        config: InvocationConfig | None = None,
+        include_raw: bool | None = None,
     ) -> RuntimeResult[T]:
         """Invoke a turn in this session."""
 
     def astream(
-        self, input: RuntimeInput, *, config: InvocationConfig | None = None
+        self,
+        input: str | RuntimeInput,
+        *,
+        config: InvocationConfig | None = None,
+        include_raw: bool | None = None,
     ) -> AsyncIterator[RuntimeEvent]:
         """Return an asynchronous stream for a session turn."""
 

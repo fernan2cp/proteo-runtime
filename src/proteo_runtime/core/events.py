@@ -6,10 +6,13 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .identity import RuntimeIdentity
 from .types import freeze_mapping
+
+if TYPE_CHECKING:
+    from .model import RuntimeResult
 
 
 class RuntimeEventKind(StrEnum):
@@ -22,6 +25,9 @@ class RuntimeEventKind(StrEnum):
     INVOCATION_FAILED = "invocation_failed"
     SESSION_CREATED = "session_created"
     SESSION_RESUMED = "session_resumed"
+    SESSION_CLOSED = "session_closed"
+    SESSION_ARCHIVED = "session_archived"
+    SESSION_DELETED = "session_deleted"
     TURN_STARTED = "turn_started"
     TURN_COMPLETED = "turn_completed"
     OUTPUT_TEXT_DELTA = "output_text_delta"
@@ -33,6 +39,8 @@ class RuntimeEventKind(StrEnum):
     VALIDATION_FAILED = "validation_failed"
     CAPABILITY_REJECTED = "capability_rejected"
     INTERRUPTED = "interrupted"
+    TURN_INTERRUPTED = "turn_interrupted"
+    TURN_FAILED = "turn_failed"
     CANCELLED = "cancelled"
 
 
@@ -44,11 +52,12 @@ class RuntimeEvent:
     event_id: str
     sequence: int
     occurred_at: datetime
-    runtime: RuntimeIdentity
+    runtime: RuntimeIdentity | str
     invocation_id: str | None = None
     session_id: str | None = None
     turn_id: str | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
+    result: RuntimeResult[Any] | None = None
 
     def __post_init__(self) -> None:
         """Validate sequencing and normalize timestamps and metadata."""
