@@ -220,7 +220,8 @@ class CodexRuntime:
                 for model in models
                 if not bool(getattr(model, "hidden", False))
             }
-            selected = self._select_default(catalog)
+            self._validate_configured_catalog(catalog)
+            selected = self._select_default(catalog) if self.default_model is not None else None
         except AgentRuntimeError:
             await self._close_sdk(sdk)
             raise
@@ -238,7 +239,7 @@ class CodexRuntime:
         self._emit(RuntimeEventKind.RUNTIME_STARTED)
 
     def _select_default(self, catalog: Mapping[str, Any]) -> str:
-        """Resolve an explicit model or the unique catalog default."""
+        """Resolve an explicitly requested model or a legacy catalog default."""
 
         if self.default_model is not None:
             if self.default_model not in catalog:
@@ -250,6 +251,28 @@ class CodexRuntime:
         if len(defaults) != 1:
             raise CapabilityError("Codex catalog must expose one default model")
         return defaults[0]
+
+    def _validate_configured_catalog(self, catalog: Mapping[str, Any]) -> None:
+        """Validate every configured model and effort against one startup catalog."""
+
+        for profile, levels in self._config.profiles.items():
+            for level, mapping in levels.items():
+                model = mapping.model
+                effort = mapping.reasoning_effort
+                if model not in catalog:
+                    raise CapabilityError(
+                        f"Unknown Codex model at profiles.{profile}.{level}: {model}"
+                    )
+                supported = {
+                    _effort_value(value)
+                    for value in (
+                        getattr(catalog[model], "supported_reasoning_efforts", ()) or ()
+                    )
+                }
+                if supported and effort not in supported:
+                    raise CapabilityError(
+                        f"Unsupported reasoning effort at profiles.{profile}.{level}: {effort}"
+                    )
 
     async def _close_sdk(self, sdk: Any) -> None:
         """Close an SDK object if it exposes the stable close operation."""
@@ -347,7 +370,9 @@ class CodexRuntime:
     def model(self, *, profile: str, level: str = "medium") -> RuntimeModel[str]:
         """Create a model view for a provider-neutral profile."""
 
-        self._profile_spec(profile)
+        spec = self._profile_spec(profile)
+        if spec.persistent or spec.lifecycle.value == "explicit":
+            raise CapabilityError("Persistent and explicit profiles require a session factory")
         return _CodexModel(self, profile, level, InvocationConfig())
 
     async def brain(
@@ -603,7 +628,12 @@ class CodexRuntime:
             return profile_spec(profile)
 
     def _resolve_binding(
-        self, profile: str, level: str, config: InvocationConfig | None = None
+        self,
+        profile: str,
+        level: str,
+        config: InvocationConfig | None = None,
+        *,
+        default_model: str | None = None,
     ) -> _ResolvedBinding:
         """Resolve and validate one immutable profile/model/effort binding."""
 
@@ -612,7 +642,7 @@ class CodexRuntime:
         selected_model = (
             config.model
             if config is not None and config.model is not None
-            else self.default_model or mapping.model
+            else default_model or mapping.model
         )
         selected_effort = (
             config.reasoning_effort
@@ -684,6 +714,7 @@ class _CodexModel:
         self.profile = profile
         self.level = level
         self.config = config
+        self._bound_default_model = runtime.default_model
 
     def with_structured_output(
         self, schema: Any, *, policy: StructuredOutputPolicy | None = None
@@ -699,6 +730,18 @@ class _CodexModel:
 
         capabilities = await self.runtime.capabilities()
         spec = self.runtime._profile_spec(self.profile)
+        if self.profile == "structured":
+            return RuntimeCapabilities(
+                structured_output=False,
+                ephemeral_sessions=capabilities.ephemeral_sessions,
+                persistent_sessions=capabilities.persistent_sessions,
+                streaming=capabilities.streaming,
+                interruption=capabilities.interruption,
+                host_tools=capabilities.host_tools,
+                native_tools=capabilities.native_tools,
+                sandbox=capabilities.sandbox,
+                usage_reporting=capabilities.usage_reporting,
+            )
         if spec.security_policy != "isolated" or spec.host_tools.value != "disabled":
             return RuntimeCapabilities(
                 structured_output=False,
@@ -723,10 +766,19 @@ class _CodexModel:
         """Create an ephemeral thread and start one async turn."""
 
         sdk = self.runtime._require_started()
+        if self.profile == "structured" and output_schema is None:
+            raise ConfigurationError(
+                "Structured profile requires an output schema", path="output_schema"
+            )
         prompt, instructions = serialize_input(value)
         effective = _merge_invocation_config(self.config, config)
         self.runtime._ensure_profile_executable(self.runtime._profile_spec(self.profile))
-        binding = self.runtime._resolve_binding(self.profile, self.level, effective)
+        binding = self.runtime._resolve_binding(
+            self.profile,
+            self.level,
+            effective,
+            default_model=self._bound_default_model,
+        )
         model, effort = binding.model, binding.effort
         workspace = create_workspace()
         try:
