@@ -9,6 +9,12 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
+from proteo_runtime.core.errors import (
+    AgentRuntimeError,
+    InterruptedError,
+    RuntimeUnavailableError,
+    TransportError,
+)
 from proteo_runtime.core.events import RuntimeEvent, RuntimeEventKind
 from proteo_runtime.core.identity import RuntimeIdentity
 from proteo_runtime.core.model import RuntimeResult
@@ -114,6 +120,9 @@ class TurnRun:
     items: list[object] = field(default_factory=list)
     usage: object | None = None
     result: RuntimeResult[str] | None = None
+    terminal_status: str | None = None
+    terminal_error: AgentRuntimeError | None = None
+    finished: asyncio.Event = field(default_factory=asyncio.Event)
     _sequence: int = 0
 
     def _emit(
@@ -143,9 +152,9 @@ class TurnRun:
         """Yield normalized events and attach the terminal result."""
 
         turn_id = str(getattr(self.handle, "id", ""))
-        yield self._emit(RuntimeEventKind.INVOCATION_STARTED, turn_id=turn_id)
-        yield self._emit(RuntimeEventKind.TURN_STARTED, turn_id=turn_id)
         try:
+            yield self._emit(RuntimeEventKind.INVOCATION_STARTED, turn_id=turn_id)
+            yield self._emit(RuntimeEventKind.TURN_STARTED, turn_id=turn_id)
             async for notification in self.handle.stream():
                 method = str(getattr(notification, "method", ""))
                 payload = getattr(notification, "payload", notification)
@@ -177,43 +186,65 @@ class TurnRun:
                     turn = getattr(payload, "turn", payload)
                     if not self.items:
                         self.items.extend(getattr(turn, "items", ()) or ())
-                    self.result = self._result(turn)
                     status = enum_value(getattr(turn, "status", None)) or "completed"
+                    self.terminal_status = status
                     if status == "interrupted":
+                        self.terminal_error = InterruptedError("Codex turn was interrupted")
                         yield self._emit(
                             RuntimeEventKind.TURN_INTERRUPTED,
                             turn_id=turn_id,
                             metadata={"status": status},
                         )
                     elif status == "completed":
+                        self.result = self._result(turn)
                         yield self._emit(
                             RuntimeEventKind.TURN_COMPLETED,
                             turn_id=turn_id,
                             metadata={"status": status},
                         )
                     else:
+                        self.terminal_error = RuntimeUnavailableError(
+                            "Codex turn failed",
+                            details={"provider_status": status},
+                        )
                         yield self._emit(
                             RuntimeEventKind.TURN_FAILED,
                             turn_id=turn_id,
                             metadata={"status": status},
                         )
-                    yield self._emit(
-                        RuntimeEventKind.INVOCATION_COMPLETED,
-                        turn_id=turn_id,
-                        metadata={"status": status},
-                        result=self.result,
-                    )
+                    if self.terminal_error is None:
+                        yield self._emit(
+                            RuntimeEventKind.INVOCATION_COMPLETED,
+                            turn_id=turn_id,
+                            metadata={"status": status},
+                            result=self.result,
+                        )
+                    else:
+                        yield self._emit(
+                            RuntimeEventKind.INVOCATION_FAILED,
+                            turn_id=turn_id,
+                            metadata={"status": status},
+                        )
+                        raise self.terminal_error
         except asyncio.CancelledError:
             with suppress(Exception):
                 await self.interrupt()
             raise
-        if self.result is None:
-            self.result = self._result(None)
+        finally:
+            self.finished.set()
+        if self.terminal_status is None:
+            self.terminal_error = TransportError("Codex returned no terminal turn event")
             yield self._emit(
-                RuntimeEventKind.INVOCATION_COMPLETED,
+                RuntimeEventKind.INVOCATION_FAILED,
                 turn_id=turn_id,
-                result=self.result,
+                metadata={"reason": "missing_terminal"},
             )
+            raise self.terminal_error
+
+    async def wait_finished(self) -> None:
+        """Wait until the normalized event stream has finalized."""
+
+        await self.finished.wait()
 
     def _result(self, turn: object | None) -> RuntimeResult[str]:
         """Build a normalized result from collected items and usage."""

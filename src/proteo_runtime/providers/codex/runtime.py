@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Mapping
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -262,12 +263,15 @@ class CodexRuntime:
 
         if self._closed and self._sdk is None:
             return
+        self._closed = True
         active = list(self._active_runs.values())
         for run in active:
             try:
                 await asyncio.wait_for(run.interrupt(), timeout=5.0)
+                await asyncio.wait_for(run.wait_finished(), timeout=5.0)
             except Exception:
-                self._closed = True
+                # A transport that cannot confirm interruption is never reused.
+                self._active_runs.pop(run.invocation_id, None)
         if self._sdk is not None:
             await self._close_sdk(self._sdk)
         for state in self._sessions.values():
@@ -276,7 +280,6 @@ class CodexRuntime:
         self._sdk = None
         was_started = self._started
         self._started = False
-        self._closed = True
         if was_started:
             self._emit(RuntimeEventKind.RUNTIME_STOPPED)
 
@@ -795,6 +798,8 @@ class _CodexModel:
                 raise
             raise _map_sdk_error(exc, "brain invocation") from exc
         finally:
+            if run.terminal_status is None:
+                await self._interrupt_or_invalidate(run)
             self.runtime._unregister_run(run)
             remove_workspace(workspace)
 
@@ -970,6 +975,8 @@ class _CodexSession:
             raise CancellationError("Codex session stream was cancelled") from exc
         finally:
             if run is not None:
+                if run.terminal_status is None:
+                    await self._interrupt_or_invalidate(run)
                 self._state.runtime._unregister_run(run)
             self._state.active = None
             self._state.lock.release()
@@ -1040,8 +1047,11 @@ class _CodexSession:
             self._closed = True
             return
         if not self._closed:
-            if self._state.active is not None:
-                await self._state.active.interrupt()
+            active = self._state.active
+            if active is not None:
+                await active.interrupt()
+                with suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(active.wait_finished(), timeout=5.0)
             self._closed = True
             self._state.closed_handles += 1
             remove_workspace(self._state.workspace)
