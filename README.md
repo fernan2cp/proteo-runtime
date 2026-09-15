@@ -1,7 +1,8 @@
 # Proteo Runtime
 
 Provider-neutral runtime contracts for asynchronous model execution. Version
-`0.5.0` adds provider-neutral observability with optional LangSmith and OpenTelemetry
+`0.6.0` adds provider-neutral host-managed tools with optional experimental Codex dynamic tools,
+alongside observability with optional LangSmith and OpenTelemetry.
 exporters while preserving the deterministic lifecycle behavior and host-owned session model.
 
 ## Status
