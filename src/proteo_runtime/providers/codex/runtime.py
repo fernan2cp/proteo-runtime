@@ -143,6 +143,7 @@ class _SessionState:
     profile: str
     level: str
     context_policy: str
+    security_policy: str
     workspace: Path
     config: InvocationConfig = field(default_factory=InvocationConfig)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -415,7 +416,7 @@ class CodexRuntime:
                 profile,
                 level,
                 spec.context.value,
-                spec.security_policy,
+                spec.security_policy.value,
                 str(getattr(thread, "id", "")),
             )
             state = _SessionState(
@@ -427,6 +428,7 @@ class CodexRuntime:
                 profile,
                 level,
                 spec.context.value,
+                spec.security_policy.value,
                 workspace,
                 config or InvocationConfig(),
             )
@@ -481,11 +483,13 @@ class CodexRuntime:
             }
         )
 
-    async def resume_session(self, descriptor: str | object) -> _CodexSession:
+    async def resume_session(self, descriptor: str) -> _CodexSession:
         """Validate and resume a persistent session descriptor."""
 
         sdk = self._require_started()
-        raw = descriptor if isinstance(descriptor, str) else str(descriptor)
+        if not isinstance(descriptor, str):
+            raise TypeError("Session descriptor must be a string")
+        raw = descriptor
         decoded = SessionCodec.decode(raw)
         if (
             decoded.provider != "codex"
@@ -494,14 +498,29 @@ class CodexRuntime:
             raise SessionMismatchError("Session identity does not match the runtime")
         spec = self._profile_spec(decoded.profile)
         self._ensure_profile_executable(spec)
+        if (
+            decoded.context_policy != spec.context.value
+            or decoded.security_policy != spec.security_policy.value
+        ):
+            raise SessionMismatchError("Session policy does not match the runtime")
         binding = self._resolve_binding(decoded.profile, decoded.level)
         model = binding.model
         expected = self._configuration_fingerprint(
-            model, binding.effort, decoded.profile, decoded.context_policy, decoded.security_policy
+            model,
+            binding.effort,
+            decoded.profile,
+            spec.context.value,
+            spec.security_policy.value,
         )
         if decoded.configuration_fingerprint != expected:
             raise SessionMismatchError("Session configuration does not match the runtime")
         existing = self._sessions.get(raw)
+        if (
+            existing is not None
+            and not existing.deleted
+            and (existing.active is not None or existing.lock.locked())
+        ):
+            raise SessionBusyError("Cannot resume an active Codex session")
         workspace = create_workspace()
         try:
             thread = await sdk.thread_resume(
@@ -515,10 +534,17 @@ class CodexRuntime:
             remove_workspace(workspace)
             raise SessionNotFoundError("Codex session was not found") from exc
         if existing is not None and not existing.deleted:
+            previous_workspace = existing.workspace
             existing.thread = thread
             existing.workspace = workspace
             existing.closed_handles = 0
+            existing.model = model
+            existing.effort = binding.effort
+            existing.context_policy = spec.context.value
+            existing.security_policy = spec.security_policy.value
+            existing.generation += 1
             state = existing
+            remove_workspace(previous_workspace)
         else:
             state = _SessionState(
                 self,
@@ -528,7 +554,8 @@ class CodexRuntime:
                 binding.effort,
                 decoded.profile,
                 decoded.level,
-                decoded.context_policy,
+                spec.context.value,
+                spec.security_policy.value,
                 workspace,
                 InvocationConfig(),
             )
@@ -546,18 +573,19 @@ class CodexRuntime:
         if old.provider != "codex" or old.identity_fingerprint != self._identity_fingerprint:
             raise SessionMismatchError("Only same-identity Codex sessions can migrate")
         state = self._sessions.get(session_id)
-        if state is None or state.deleted:
-            raise SessionNotFoundError("Codex session was not found")
-        if state.active is not None or state.lock.locked():
+        if state is not None and state.deleted:
+            state = None
+        if state is not None and (state.active is not None or state.lock.locked()):
             raise SessionBusyError("Cannot migrate an active Codex session")
         target = self._profile_spec(profile)
         if not target.persistent:
             raise CapabilityError("Session migration requires a persistent profile")
         self._ensure_profile_executable(target)
-        if security_policy != old.security_policy or security_policy != target.security_policy:
+        if security_policy != old.security_policy or security_policy != target.security_policy.value:
             raise CapabilityError("Session migration cannot expand or change permissions")
         binding = self._resolve_binding(profile, level)
-        thread_id = str(getattr(state.thread, "id", ""))
+        thread_id = old.provider_session_id
+        previous_workspace = state.workspace if state is not None else None
         workspace = create_workspace()
         try:
             thread = await sdk.thread_resume(
@@ -576,24 +604,50 @@ class CodexRuntime:
             profile,
             level,
             target.context.value,
-            target.security_policy,
+            target.security_policy.value,
             thread_id,
         )
-        self._sessions.pop(session_id, None)
-        state.thread = thread
-        state.descriptor = new_descriptor
-        state.model = binding.model
-        state.effort = binding.effort
-        state.profile = profile
-        state.level = level
-        state.context_policy = target.context.value
-        state.workspace = workspace
-        state.config = InvocationConfig()
-        state.generation += 1
+        if state is None:
+            state = _SessionState(
+                self,
+                thread,
+                new_descriptor,
+                binding.model,
+                binding.effort,
+                profile,
+                level,
+                target.context.value,
+                target.security_policy.value,
+                workspace,
+                InvocationConfig(),
+            )
+        else:
+            self._sessions.pop(session_id, None)
+            state.thread = thread
+            state.descriptor = new_descriptor
+            state.model = binding.model
+            state.effort = binding.effort
+            state.profile = profile
+            state.level = level
+            state.context_policy = target.context.value
+            state.security_policy = target.security_policy.value
+            state.workspace = workspace
+            state.config = InvocationConfig()
+            state.generation += 1
         self._sessions[new_descriptor] = state
+        if previous_workspace is not None:
+            remove_workspace(previous_workspace)
         self._emit(
             RuntimeEventKind.SESSION_MIGRATED,
             session_id=new_descriptor,
+            metadata={
+                "old_session_id": old.provider_session_id,
+                "new_session_id": thread_id,
+                "old_profile": old.profile,
+                "new_profile": profile,
+                "old_level": old.level,
+                "new_level": level,
+            },
         )
         return _CodexSession(state)
 
