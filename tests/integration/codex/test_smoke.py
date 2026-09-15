@@ -7,8 +7,11 @@ subscription-backed integration suite.
 from __future__ import annotations
 
 import os
+from typing import Any
 
 import pytest
+
+from proteo_runtime.core.model import RuntimeResult
 
 pytestmark = [
     pytest.mark.integration,
@@ -16,6 +19,16 @@ pytestmark = [
         os.getenv("PROTEO_CODEX_INTEGRATION") != "1", reason="Codex integration is opt-in"
     ),
 ]
+
+LUNA_MODEL = "gpt-5.6-luna"
+LUNA_LEVEL = "low"
+
+
+def _assert_luna(result: RuntimeResult[Any]) -> None:
+    """Assert that a live inference used the authorized Luna/low configuration."""
+
+    assert result.model == LUNA_MODEL
+    assert result.reasoning_effort == LUNA_LEVEL
 
 
 @pytest.mark.asyncio
@@ -26,7 +39,8 @@ async def test_codex_catalog_and_brain_smoke() -> None:
 
     async with CodexRuntime() as runtime:
         assert await runtime.models()
-        result = await (await runtime.brain()).ainvoke("Reply with one word.")
+        result = await (await runtime.brain(level=LUNA_LEVEL)).ainvoke("Reply with one word.")
+        _assert_luna(result)
         assert result.output
 
 
@@ -55,9 +69,10 @@ async def test_codex_session_lifecycle_smoke() -> None:
     from proteo_runtime.providers.codex import CodexRuntime
 
     async with CodexRuntime() as runtime:
-        session = await runtime.session()
+        session = await runtime.session(level=LUNA_LEVEL)
         descriptor = session.descriptor
-        await session.ainvoke("Reply with one word.")
+        result = await session.ainvoke("Reply with one word.")
+        _assert_luna(result)
         await session.close()
         resumed = await runtime.resume_session(descriptor)
         await resumed.archive()
@@ -72,12 +87,18 @@ async def test_codex_streaming_smoke() -> None:
     from proteo_runtime.providers.codex import CodexRuntime
 
     async with CodexRuntime() as runtime:
-        events = [event async for event in (await runtime.brain()).astream("Reply with one word.")]
+        events = [
+            event
+            async for event in (await runtime.brain(level=LUNA_LEVEL)).astream(
+                "Reply with one word."
+            )
+        ]
         assert any(event.kind is RuntimeEventKind.OUTPUT_TEXT_DELTA for event in events)
         terminal = events[-1]
         assert terminal.kind is RuntimeEventKind.INVOCATION_COMPLETED
         assert terminal.result is not None
         assert terminal.result.output
+        _assert_luna(terminal.result)
 
 
 @pytest.mark.asyncio
@@ -96,11 +117,12 @@ async def test_codex_phase2_structured_and_same_thread_migration() -> None:
         decision: str
 
     async with CodexRuntime() as runtime:
-        structured = (await runtime.brain()).with_structured_output(DecisionModel)
+        structured = (await runtime.brain(level=LUNA_LEVEL)).with_structured_output(DecisionModel)
         result = await structured.ainvoke(
             'Return exactly JSON matching {"decision":"yes"} and no markdown.'
         )
         assert result.value.decision
+        _assert_luna(result)
         schema = {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "type": "object",
@@ -110,14 +132,16 @@ async def test_codex_phase2_structured_and_same_thread_migration() -> None:
         }
         events = [
             event
-            async for event in (await runtime.brain())
+            async for event in (await runtime.brain(level=LUNA_LEVEL))
             .with_structured_output(schema)
             .astream('Return exactly JSON matching {"decision":"yes"} and no markdown.')
         ]
         assert events[-1].kind is RuntimeEventKind.INVOCATION_COMPLETED
         assert events[-1].result is not None
-        session = await runtime.session()
-        await session.ainvoke("Reply with one word.")
+        _assert_luna(events[-1].result)
+        session = await runtime.session(level=LUNA_LEVEL)
+        session_result = await session.ainvoke("Reply with one word.")
+        _assert_luna(session_result)
         migrated = await runtime.migrate_session(
             session.id, profile="session", level="low", security_policy="isolated"
         )

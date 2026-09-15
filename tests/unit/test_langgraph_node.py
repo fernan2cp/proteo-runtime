@@ -1,0 +1,417 @@
+"""Unit tests for the optional LangGraph RuntimeNode adapter."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import math
+from collections.abc import AsyncIterator, Callable
+from datetime import UTC, datetime
+from typing import Any, cast
+
+import pytest
+from langchain_core.runnables import RunnableConfig
+from pydantic import BaseModel
+
+from proteo_runtime import (
+    CancellationError,
+    ConfigurationError,
+    RuntimeEvent,
+    RuntimeEventKind,
+    RuntimeIdentity,
+    RuntimeUnavailableError,
+)
+from proteo_runtime.core.input import RuntimeInput
+from proteo_runtime.core.model import InvocationConfig, RuntimeModel, RuntimeResult
+from proteo_runtime.core.runtime import Runtime
+from proteo_runtime.integrations import langgraph as langgraph_integration
+from proteo_runtime.integrations.langgraph import node as node_module
+from proteo_runtime.testing import FakeRuntime, FakeTurn
+
+
+class Decision(BaseModel):
+    """Structured value used by adapter tests."""
+
+    decision: str
+
+
+def _writer(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    """Install a deterministic custom stream writer for direct node calls."""
+
+    events: list[dict[str, Any]] = []
+    monkeypatch.setattr(node_module, "get_stream_writer", lambda: events.append)
+    return events
+
+
+@pytest.mark.asyncio
+async def test_runtime_node_default_mapping_and_structured_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Default keys return only the neutral value, including structured values."""
+
+    events = _writer(monkeypatch)
+    runtime = FakeRuntime(turns=[FakeTurn(value='{"decision":"yes"}')])
+    model = runtime.model(profile="brain").with_structured_output(Decision)
+
+    result = await langgraph_integration.RuntimeNode[Any](model)({"input": "choose"})
+
+    assert isinstance(result["output"], Decision)
+    assert result["output"].decision == "yes"
+    assert all("result" not in event["event"] for event in events)
+
+
+@pytest.mark.asyncio
+async def test_runtime_node_custom_mappers_copy_state_update(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Custom mappers can use arbitrary state while returning a copied update."""
+
+    _writer(monkeypatch)
+    runtime = FakeRuntime(turns=[FakeTurn(value="answer")])
+    node = langgraph_integration.RuntimeNode[Any](
+        runtime.model(profile="brain"),
+        input_mapper=lambda state: state["question"],
+        output_mapper=lambda result: {"answer": result.value, "usage": result.usage.total_tokens},
+    )
+
+    result = await node({"question": "what?"})
+
+    assert result == {"answer": "answer", "usage": None}
+    assert isinstance(result, dict)
+
+
+@pytest.mark.asyncio
+async def test_runtime_node_rejects_missing_input_and_session_descriptor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Invalid default state and persistent configuration fail before provider work."""
+
+    _writer(monkeypatch)
+    runtime = FakeRuntime()
+    with pytest.raises(ConfigurationError, match="input key"):
+        await langgraph_integration.RuntimeNode[Any](runtime.model(profile="brain"))({})
+    with pytest.raises(ConfigurationError, match="requires a non-empty session descriptor"):
+        await langgraph_integration.RuntimeNode[Any](cast(Runtime, runtime))({"input": "work"})
+
+
+def test_runtime_node_constructor_and_projection_security() -> None:
+    """Constructor and event projection reject unsafe or resumable data exposure."""
+
+    with pytest.raises(ValueError):
+        langgraph_integration.RuntimeNode[Any](cast(Runtime, FakeRuntime()), input_key="")
+    event = RuntimeEvent(
+        RuntimeEventKind.OUTPUT_TEXT_DELTA,
+        "event-1",
+        0,
+        datetime.now(UTC),
+        RuntimeIdentity("fake", "fingerprint"),
+        session_id="prt1.secret-descriptor",
+        metadata={"nested": {"token": "secret"}, "text": "api_key=secret-value"},
+    )
+
+    projected = node_module._project_event(event)
+
+    assert projected["event"]["session_correlation_id"].startswith("sha256:")
+    assert "prt1.secret-descriptor" not in json.dumps(projected)
+    assert "token" not in json.dumps(projected)
+    assert "secret-value" not in json.dumps(projected)
+    json.dumps(projected)
+
+
+def test_runtime_node_rejects_non_executor_and_projects_json_shapes() -> None:
+    """Reject an unrecognised executor and normalize all supported JSON shapes."""
+
+    with pytest.raises(TypeError, match="exactly one"):
+        langgraph_integration.RuntimeNode[Any](cast(Any, object()))
+    assert node_module._project_json({"values": (1, 2), "set": {"a"}, "nan": math.nan}) == {
+        "values": [1, 2],
+        "set": ["a"],
+        "nan": None,
+    }
+    assert node_module._project_json(object()) is None
+    assert node_module._session_correlation_id(None) is None
+    assert node_module._configurable(None) == {}
+
+
+def test_invocation_config_allowlist_and_validation() -> None:
+    """Keep only approved metadata and reject unsafe or non-JSON values."""
+
+    config = cast(
+        RunnableConfig,
+        {
+            "metadata": {
+                "proteo": {"nested": [1, {"ok": True}]},
+                "langgraph_node": "proteo",
+                "langgraph_step": 2,
+                "unknown": "ignored",
+            },
+            "tags": ["safe"],
+            "run_id": "run-1",
+            "configurable": {"other": "ignored"},
+            "callbacks": object(),
+        },
+    )
+    invocation = node_module._invocation_config(config)
+    assert invocation.metadata["proteo"]["nested"][1]["ok"] is True
+    assert invocation.metadata["langgraph"] == {
+        "langgraph_node": "proteo",
+        "langgraph_step": 2,
+    }
+    assert invocation.metadata["langgraph_tags"] == ("safe",)
+    assert invocation.metadata["langgraph_run_id"] == "run-1"
+    invalid = [
+        {"metadata": []},
+        {"metadata": {"proteo": []}},
+        {"metadata": {"proteo": {"token": "secret"}}},
+        {"metadata": {"proteo": {"value": object()}}},
+        {"metadata": {"proteo": {"value": math.inf}}},
+        {"tags": "not-a-list"},
+        {"tags": ["safe", object()]},
+    ]
+    for raw in invalid:
+        with pytest.raises(ConfigurationError):
+            node_module._invocation_config(cast(RunnableConfig, raw))
+    with pytest.raises(ConfigurationError, match="configurable"):
+        node_module._configurable(cast(RunnableConfig, {"configurable": []}))
+
+
+@pytest.mark.asyncio
+async def test_runtime_node_forwards_only_safe_invocation_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pass a copied allowlisted InvocationConfig to the model stream."""
+
+    _writer(monkeypatch)
+    runtime = FakeRuntime(turns=[FakeTurn(value="answer")])
+    model = runtime.model(profile="brain")
+    captured: list[InvocationConfig | None] = []
+    original = model.astream
+
+    def capture(
+        input: str | RuntimeInput,
+        *,
+        config: InvocationConfig | None = None,
+        include_raw: bool | None = None,
+    ) -> AsyncIterator[RuntimeEvent]:
+        """Capture the config and delegate to the deterministic model."""
+
+        captured.append(config)
+        return original(input, config=config, include_raw=include_raw)
+
+    monkeypatch.setattr(cast(Any, model), "astream", capture)
+    original_config: dict[str, Any] = {
+        "metadata": {"proteo": {"request": "one"}, "langgraph_node": "node"},
+        "tags": ["tag"],
+        "run_id": "run",
+        "configurable": {"thread_id": "thread"},
+    }
+    result = await langgraph_integration.RuntimeNode[Any](model)(
+        {"input": "question"}, cast(RunnableConfig, original_config)
+    )
+    assert result == {"output": "answer"}
+    assert captured and captured[0] is not None
+    captured_config = captured[0]
+    assert captured_config is not None
+    assert captured_config.metadata["proteo"] == {"request": "one"}
+    assert original_config["metadata"]["proteo"] == {"request": "one"}
+
+
+@pytest.mark.asyncio
+async def test_runtime_node_preserves_provider_cancellation_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Preserve provider cancellation when the caller task is not cancelling."""
+
+    _writer(monkeypatch)
+    runtime = FakeRuntime(turns=[FakeTurn(error=CancellationError("cancelled"))])
+    with pytest.raises(CancellationError, match="cancelled"):
+        await langgraph_integration.RuntimeNode[Any](runtime.model(profile="brain"))(
+            {"input": "cancel"}
+        )
+
+
+@pytest.mark.asyncio
+async def test_runtime_node_rejects_descriptor_and_invalid_state_or_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reject mixed model/session configuration and malformed mapper boundaries."""
+
+    _writer(monkeypatch)
+    runtime = FakeRuntime(turns=[FakeTurn(value="answer")])
+    model = runtime.model(profile="brain")
+    node = langgraph_integration.RuntimeNode[Any](model)
+    with pytest.raises(ConfigurationError, match="not accepted"):
+        await node(
+            {"input": "question"},
+            cast(RunnableConfig, {"configurable": {"proteo_session_id": "descriptor"}}),
+        )
+    with pytest.raises(TypeError, match="Mapping"):
+        await node(cast(Any, "not-a-state"))
+    bad_output = langgraph_integration.RuntimeNode[Any](
+        runtime.model(profile="brain"), output_mapper=lambda result: cast(Any, [result.value])
+    )
+    with pytest.raises(TypeError, match="output_mapper"):
+        await bad_output({"input": "question"})
+
+
+@pytest.mark.asyncio
+async def test_runtime_node_terminal_state_machine_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reject EOF and duplicate successful terminal events."""
+
+    _writer(monkeypatch)
+    identity = RuntimeIdentity("fake", "fingerprint")
+    result = RuntimeResult(output="done", runtime=identity)
+    terminal = RuntimeEvent(
+        RuntimeEventKind.INVOCATION_COMPLETED,
+        "terminal",
+        1,
+        datetime.now(UTC),
+        identity,
+        result=result,
+    )
+
+    async def eof() -> AsyncIterator[RuntimeEvent]:
+        """Yield no events."""
+
+        events: tuple[RuntimeEvent, ...] = ()
+        for event in events:
+            yield event
+
+    async def duplicate() -> AsyncIterator[RuntimeEvent]:
+        """Yield two successful terminals."""
+
+        yield terminal
+        yield terminal
+
+    with pytest.raises(RuntimeUnavailableError, match="ended"):
+        await langgraph_integration.RuntimeNode[Any](cast(RuntimeModel[Any], _StreamModel(eof)))(
+            {"input": "question"}
+        )
+    with pytest.raises(RuntimeUnavailableError, match="multiple"):
+        await langgraph_integration.RuntimeNode[Any](
+            cast(RuntimeModel[Any], _StreamModel(duplicate))
+        )({"input": "question"})
+
+
+class _StreamModel:
+    """Minimal model-shaped stream provider for terminal state tests."""
+
+    def __init__(self, factory: Callable[[], AsyncIterator[RuntimeEvent]]) -> None:
+        """Store the async event factory."""
+
+        self._factory = factory
+
+    def astream(self, input: Any, **kwargs: Any) -> AsyncIterator[RuntimeEvent]:
+        """Return the scripted event stream."""
+
+        del input, kwargs
+        return self._factory()
+
+    async def ainvoke(self, input: Any, **kwargs: Any) -> RuntimeResult[Any]:
+        """Satisfy the model protocol without being called."""
+
+        del input, kwargs
+        raise AssertionError("ainvoke must not be selected")
+
+    def with_structured_output(self, schema: Any, **kwargs: Any) -> Any:
+        """Return self for protocol completeness."""
+
+        del schema, kwargs
+        return self
+
+    async def effective_capabilities(self) -> Any:
+        """Return no-op capabilities for protocol completeness."""
+
+        return await FakeRuntime().capabilities()
+
+
+@pytest.mark.asyncio
+async def test_runtime_node_resumes_and_closes_session_without_leaking_descriptor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Session mode resumes one handle and keeps the raw descriptor out of events/state."""
+
+    events = _writer(monkeypatch)
+    runtime = FakeRuntime(turns=[FakeTurn(value="session answer")])
+    created = await runtime.session()
+    descriptor = created.descriptor
+    await created.close()
+
+    result = await langgraph_integration.RuntimeNode[Any](cast(Runtime, runtime))(
+        {"input": "continue"},
+        {"configurable": {"proteo_session_id": descriptor}},
+    )
+
+    assert result == {"output": "session answer"}
+    serialized_events = json.dumps(events)
+    assert descriptor not in serialized_events
+    assert any(event["event"]["session_correlation_id"] for event in events)
+
+
+@pytest.mark.asyncio
+async def test_runtime_node_restores_task_cancellation_after_provider_normalization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cancelled LangGraph task surfaces CancelledError after provider cleanup."""
+
+    _writer(monkeypatch)
+    runtime = FakeRuntime(turns=[FakeTurn(delay_seconds=0.2)])
+    task = asyncio.create_task(
+        langgraph_integration.RuntimeNode[Any](runtime.model(profile="brain"))({"input": "wait"})
+    )
+    await asyncio.sleep(0.01)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.asyncio
+async def test_runtime_node_rejects_invalid_terminal_event(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A completed event without a neutral result cannot fabricate state."""
+
+    _writer(monkeypatch)
+    runtime = FakeRuntime()
+    node = langgraph_integration.RuntimeNode[Any](runtime.model(profile="brain"))
+    event = RuntimeEvent(
+        RuntimeEventKind.INVOCATION_COMPLETED,
+        "event-1",
+        0,
+        datetime.now(UTC),
+        RuntimeIdentity("fake", "fingerprint"),
+    )
+
+    async def events() -> Any:
+        """Yield one malformed terminal event."""
+
+        yield event
+
+    class MalformedModel:
+        """RuntimeModel-shaped executor with a malformed stream."""
+
+        async def ainvoke(self, input: Any, **kwargs: Any) -> Any:
+            """Provide the required protocol method."""
+
+            del input, kwargs
+            raise AssertionError("ainvoke must not be selected")
+
+        def astream(self, input: Any, **kwargs: Any) -> Any:
+            """Return the malformed event stream."""
+
+            del input, kwargs
+            return events()
+
+        def with_structured_output(self, schema: Any, **kwargs: Any) -> Any:
+            """Provide the required protocol method."""
+
+            del schema, kwargs
+            return self
+
+        async def effective_capabilities(self) -> Any:
+            """Provide the required protocol method."""
+
+            return await runtime.capabilities()
+
+    node = langgraph_integration.RuntimeNode[Any](cast(RuntimeModel[Any], MalformedModel()))
+    with pytest.raises(RuntimeUnavailableError, match="without a result"):
+        await node({"input": "invalid"})

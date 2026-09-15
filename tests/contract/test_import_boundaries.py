@@ -8,18 +8,19 @@ from pathlib import Path
 def test_core_does_not_import_provider_sdk_or_frameworks() -> None:
     """Core and testing imports remain provider-neutral at runtime and in source."""
 
-    import proteo_runtime.core as core
-    import proteo_runtime.testing as testing
-
-    assert hasattr(core, "Runtime")
-    assert hasattr(testing, "FakeRuntime")
     forbidden = {
         "openai_codex",
         "langgraph",
         "langsmith",
         "opentelemetry",
     }
-    assert forbidden.isdisjoint(sys.modules)
+    imported_before = {name for name in forbidden if name in sys.modules}
+    import proteo_runtime.core as core
+    import proteo_runtime.testing as testing
+
+    assert hasattr(core, "Runtime")
+    assert hasattr(testing, "FakeRuntime")
+    assert imported_before == {name for name in forbidden if name in sys.modules}
     roots = [
         Path(__file__).parents[2] / "src" / "proteo_runtime" / "core",
         Path(__file__).parents[2] / "src" / "proteo_runtime" / "testing",
