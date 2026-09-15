@@ -6,6 +6,7 @@ import asyncio
 import json
 import math
 import sys
+from importlib import metadata
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -34,7 +35,6 @@ from proteo_runtime.providers.codex.experimental import (
     resume_thread,
     start_thread,
 )
-from proteo_runtime.providers.codex import experimental as codex_experimental
 from proteo_runtime.providers.codex.runtime import CodexRuntime, _create_sdk
 from proteo_runtime.testing.fakes import FakeRuntime, FakeTurn
 from proteo_runtime.tools import (
@@ -819,12 +819,12 @@ def test_probe_rejects_unvalidated_sdk_versions(monkeypatch: pytest.MonkeyPatch)
     def missing(_: str) -> str:
         """Raise the same error as an absent installed distribution."""
 
-        raise codex_experimental.importlib.metadata.PackageNotFoundError
+        raise metadata.PackageNotFoundError
 
-    monkeypatch.setattr(codex_experimental.importlib.metadata, "version", missing)
+    monkeypatch.setattr(metadata, "version", missing)
     assert probe_dynamic_tools().reason == "openai-codex is not installed"
 
-    monkeypatch.setattr(codex_experimental.importlib.metadata, "version", lambda _: "0.0.0")
+    monkeypatch.setattr(metadata, "version", lambda _: "0.0.0")
     result = probe_dynamic_tools()
     assert result.supported is False
     assert "unsupported openai-codex version" in result.reason
