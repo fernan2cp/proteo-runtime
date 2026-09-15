@@ -63,7 +63,7 @@ jobs:
         run: |
           uv venv .ci-wheel-venv --python 3.11
           uv pip install --python .ci-wheel-venv/bin/python dist/*.whl
-          .ci-wheel-venv/bin/python -c "import proteo_runtime; assert proteo_runtime.__version__ == '0.4.0'; import importlib.util; assert importlib.util.find_spec('langgraph') is None"
+          .ci-wheel-venv/bin/python -c "import proteo_runtime; assert proteo_runtime.__version__ == '0.6.0'; import importlib.util; assert importlib.util.find_spec('langgraph') is None"
           .ci-wheel-venv/bin/python -c "import subprocess,sys; result=subprocess.run([sys.executable,'-c','from proteo_runtime.integrations.langgraph import RuntimeNode'],capture_output=True,text=True); assert result.returncode != 0 and 'proteo-runtime[langgraph]' in result.stderr"
           .ci-wheel-venv/bin/proteo-runtime --version
           .ci-wheel-venv/bin/python -m proteo_runtime --version
@@ -71,7 +71,7 @@ jobs:
         run: |
           uv venv .ci-sdist-venv --python 3.11
           uv pip install --python .ci-sdist-venv/bin/python dist/*.tar.gz
-          .ci-sdist-venv/bin/python -c "import proteo_runtime; assert proteo_runtime.__version__ == '0.4.0'; import importlib.util; assert importlib.util.find_spec('langgraph') is None"
+          .ci-sdist-venv/bin/python -c "import proteo_runtime; assert proteo_runtime.__version__ == '0.6.0'; import importlib.util; assert importlib.util.find_spec('langgraph') is None"
           .ci-sdist-venv/bin/python -c "import subprocess,sys; result=subprocess.run([sys.executable,'-c','from proteo_runtime.integrations.langgraph import RuntimeNode'],capture_output=True,text=True); assert result.returncode != 0 and 'proteo-runtime[langgraph]' in result.stderr"
           .ci-sdist-venv/bin/proteo-runtime --version
           .ci-sdist-venv/bin/python -m proteo_runtime --version
@@ -83,6 +83,6 @@ jobs:
           .ci-langgraph-venv/bin/python -c "from importlib.metadata import version; from proteo_runtime.integrations.langgraph import RuntimeNode; assert RuntimeNode and version('langgraph').startswith('1.2.')"
       - uses: actions/upload-artifact@v4
         with:
-          name: phase-3-langgraph-distributions
+          name: phase-5-host-managed-tools-distributions
           path: dist/
           if-no-files-found: error
