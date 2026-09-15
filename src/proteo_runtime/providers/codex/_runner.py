@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -45,6 +45,7 @@ def _event(
     turn_id: str | None,
     metadata: Mapping[str, Any] | None = None,
     result: RuntimeResult[Any] | None = None,
+    payload: Mapping[str, Any] | None = None,
 ) -> RuntimeEvent:
     """Build one provider-neutral event."""
 
@@ -59,6 +60,7 @@ def _event(
         turn_id=turn_id,
         metadata=dict(metadata or {}),
         result=result,
+        payload=dict(payload or {}),
     )
 
 
@@ -115,7 +117,13 @@ class TurnRun:
     effort: str
     session_id: str | None = None
     include_raw: bool = False
+    context_policy: str | None = None
+    security_policy: str | None = None
+    invocation_metadata: Mapping[str, Any] = field(default_factory=dict)
+    ephemeral: bool = True
+    structured_output: bool = False
     provider_thread: Any | None = None
+    event_sink: Callable[[RuntimeEvent], Awaitable[RuntimeEvent]] | None = None
     deltas: list[str] = field(default_factory=list)
     items: list[object] = field(default_factory=list)
     usage: object | None = None
@@ -132,6 +140,7 @@ class TurnRun:
         turn_id: str | None,
         metadata: Mapping[str, Any] | None = None,
         result: RuntimeResult[Any] | None = None,
+        payload: Mapping[str, Any] | None = None,
     ) -> RuntimeEvent:
         """Create the next monotonic event."""
 
@@ -144,17 +153,42 @@ class TurnRun:
             turn_id=turn_id,
             metadata=metadata,
             result=result,
+            payload=payload,
         )
         self._sequence += 1
         return event
+
+    async def _publish(self, event: RuntimeEvent) -> RuntimeEvent:
+        """Send an event through the runtime bus and retain enriched results."""
+
+        published = await self.event_sink(event) if self.event_sink is not None else event
+        if published.result is not None:
+            self.result = published.result
+        return published
 
     async def events(self) -> AsyncIterator[RuntimeEvent]:
         """Yield normalized events and attach the terminal result."""
 
         turn_id = str(getattr(self.handle, "id", ""))
         try:
-            yield self._emit(RuntimeEventKind.INVOCATION_STARTED, turn_id=turn_id)
-            yield self._emit(RuntimeEventKind.TURN_STARTED, turn_id=turn_id)
+            yield await self._publish(
+                self._emit(
+                    RuntimeEventKind.INVOCATION_STARTED,
+                    turn_id=turn_id,
+                    metadata={
+                        **dict(self.invocation_metadata),
+                        "model": self.model,
+                        "profile": self.profile,
+                        "reasoning_effort": self.effort,
+                        "context_policy": self.context_policy,
+                        "security_policy": self.security_policy,
+                        "ephemeral": self.ephemeral,
+                        "structured_output": self.structured_output,
+                        "thread_id": getattr(self.provider_thread, "id", None),
+                    },
+                )
+            )
+            yield await self._publish(self._emit(RuntimeEventKind.TURN_STARTED, turn_id=turn_id))
             async for notification in self.handle.stream():
                 method = str(getattr(notification, "method", ""))
                 payload = getattr(notification, "payload", notification)
@@ -164,10 +198,12 @@ class TurnRun:
                 elif method == "item/agentMessage/delta":
                     delta = str(getattr(payload, "delta", "") or "")
                     self.deltas.append(delta)
-                    yield self._emit(
-                        RuntimeEventKind.OUTPUT_TEXT_DELTA,
-                        turn_id=turn_id,
-                        metadata={"text": delta},
+                    yield await self._publish(
+                        self._emit(
+                            RuntimeEventKind.OUTPUT_TEXT_DELTA,
+                            turn_id=turn_id,
+                            payload={"text": delta},
+                        )
                     )
                 elif method == "item/completed":
                     item = getattr(payload, "item", None)
@@ -177,10 +213,12 @@ class TurnRun:
                     self.usage = getattr(
                         payload, "token_usage", getattr(payload, "tokenUsage", None)
                     )
-                    yield self._emit(
-                        RuntimeEventKind.TOKEN_USAGE_UPDATED,
-                        turn_id=turn_id,
-                        metadata={"usage": _usage_metadata(self.usage)},
+                    yield await self._publish(
+                        self._emit(
+                            RuntimeEventKind.TOKEN_USAGE_UPDATED,
+                            turn_id=turn_id,
+                            metadata={"usage": _usage_metadata(self.usage)},
+                        )
                     )
                 elif method == "turn/completed":
                     turn = getattr(payload, "turn", payload)
@@ -190,59 +228,104 @@ class TurnRun:
                     self.terminal_status = status
                     if status == "interrupted":
                         self.terminal_error = InterruptedError("Codex turn was interrupted")
-                        yield self._emit(
-                            RuntimeEventKind.TURN_INTERRUPTED,
-                            turn_id=turn_id,
-                            metadata={"status": status},
+                        yield await self._publish(
+                            self._emit(
+                                RuntimeEventKind.TURN_INTERRUPTED,
+                                turn_id=turn_id,
+                                metadata={"status": status},
+                            )
                         )
-                        yield self._emit(
-                            RuntimeEventKind.INTERRUPTED,
-                            turn_id=turn_id,
-                            metadata={"status": status},
+                        yield await self._publish(
+                            self._emit(
+                                RuntimeEventKind.INTERRUPTED,
+                                turn_id=turn_id,
+                                metadata={"status": status},
+                            )
                         )
                     elif status == "completed":
                         self.result = self._result(turn)
-                        yield self._emit(
-                            RuntimeEventKind.TURN_COMPLETED,
-                            turn_id=turn_id,
-                            metadata={"status": status},
+                        yield await self._publish(
+                            self._emit(
+                                RuntimeEventKind.TURN_COMPLETED,
+                                turn_id=turn_id,
+                                metadata={"status": status},
+                            )
                         )
                     else:
                         self.terminal_error = RuntimeUnavailableError(
                             "Codex turn failed",
                             details={"provider_status": status},
                         )
-                        yield self._emit(
-                            RuntimeEventKind.TURN_FAILED,
-                            turn_id=turn_id,
-                            metadata={"status": status},
+                        yield await self._publish(
+                            self._emit(
+                                RuntimeEventKind.TURN_FAILED,
+                                turn_id=turn_id,
+                                metadata={"status": status},
+                            )
                         )
                     if self.terminal_error is None:
-                        yield self._emit(
-                            RuntimeEventKind.INVOCATION_COMPLETED,
-                            turn_id=turn_id,
-                            metadata={"status": status},
-                            result=self.result,
+                        yield await self._publish(
+                            self._emit(
+                                RuntimeEventKind.INVOCATION_COMPLETED,
+                                turn_id=turn_id,
+                                metadata={"status": status},
+                                result=self.result,
+                            )
                         )
                     else:
-                        yield self._emit(
-                            RuntimeEventKind.INVOCATION_FAILED,
-                            turn_id=turn_id,
-                            metadata={"status": status},
+                        yield await self._publish(
+                            self._emit(
+                                RuntimeEventKind.INVOCATION_FAILED,
+                                turn_id=turn_id,
+                                metadata={"status": status},
+                            )
                         )
                         raise self.terminal_error
         except asyncio.CancelledError:
             with suppress(Exception):
                 await self.interrupt()
+            with suppress(Exception):
+                await self._publish(
+                    self._emit(
+                        RuntimeEventKind.CANCELLED,
+                        turn_id=turn_id,
+                        metadata={"reason": "cancelled"},
+                    )
+                )
             raise
+        except AgentRuntimeError:
+            if self.terminal_status is None:
+                yield await self._publish(
+                    self._emit(
+                        RuntimeEventKind.INVOCATION_FAILED,
+                        turn_id=turn_id,
+                        metadata={"reason": "transport"},
+                    )
+                )
+            raise
+        except Exception as exc:
+            self.terminal_error = TransportError(
+                "Codex turn stream failed",
+                details={"exception_type": type(exc).__name__},
+            )
+            yield await self._publish(
+                self._emit(
+                    RuntimeEventKind.INVOCATION_FAILED,
+                    turn_id=turn_id,
+                    metadata={"reason": "transport"},
+                )
+            )
+            raise self.terminal_error from exc
         finally:
             self.finished.set()
         if self.terminal_status is None:
             self.terminal_error = TransportError("Codex returned no terminal turn event")
-            yield self._emit(
-                RuntimeEventKind.INVOCATION_FAILED,
-                turn_id=turn_id,
-                metadata={"reason": "missing_terminal"},
+            yield await self._publish(
+                self._emit(
+                    RuntimeEventKind.INVOCATION_FAILED,
+                    turn_id=turn_id,
+                    metadata={"reason": "missing_terminal"},
+                )
             )
             raise self.terminal_error
 

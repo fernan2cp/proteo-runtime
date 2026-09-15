@@ -270,17 +270,22 @@ class StructuredCodexModel:
             config,
             output_schema=self._schema.schema,
         )
+        # Provider attempt events are remapped to one logical structured invocation below.
+        # Disable the attempt sink so the shared bus sees each logical event exactly once.
+        run.event_sink = None
         thread = getattr(run, "provider_thread", None)
         usages: list[RuntimeUsage] = []
         last_output = ""
         last_paths: tuple[str, ...] = ("$",)
         sequence = 0
         try:
-            yield self._event(
-                RuntimeEventKind.INVOCATION_STARTED,
-                logical_id,
-                sequence,
-                {"max_attempts": self._policy.max_attempts},
+            yield await self._base.runtime._dispatch(
+                self._event(
+                    RuntimeEventKind.INVOCATION_STARTED,
+                    logical_id,
+                    sequence,
+                    {**dict(config.metadata), "max_attempts": self._policy.max_attempts},
+                )
             )
             sequence += 1
             for attempt in range(1, self._policy.max_attempts + 1):
@@ -295,6 +300,16 @@ class StructuredCodexModel:
                     self._base.runtime._unregister_run(run)
                     active[0] = None
                 if run.result is None:
+                    yield await self._base.runtime._dispatch(
+                        self._event(
+                            RuntimeEventKind.INVOCATION_FAILED,
+                            logical_id,
+                            sequence,
+                            {"attempt": attempt, "reason": "missing_result"},
+                            turn_id=run.result.turn_id if run.result is not None else None,
+                        )
+                    )
+                    sequence += 1
                     raise StructuredOutputError(
                         "Codex returned no structured result", attempts=attempt
                     )
@@ -307,39 +322,60 @@ class StructuredCodexModel:
                         RuntimeEventKind.INVOCATION_STARTED,
                     }:
                         continue
-                    yield replace(
-                        event,
-                        event_id=f"{logical_id}:{sequence}",
-                        invocation_id=logical_id,
-                        sequence=sequence,
-                        metadata={**event.metadata, "attempt": attempt},
+                    yield await self._base.runtime._dispatch(
+                        replace(
+                            event,
+                            event_id=f"{logical_id}:{sequence}",
+                            invocation_id=logical_id,
+                            sequence=sequence,
+                            metadata={**event.metadata, "attempt": attempt},
+                        )
                     )
                     sequence += 1
                 try:
                     value = self._schema.validate(last_output)
                 except _ValidationFailure as failure:
                     last_paths = failure.paths
-                    yield self._event(
-                        RuntimeEventKind.VALIDATION_FAILED,
-                        logical_id,
-                        sequence,
-                        {"attempt": attempt, "paths": last_paths},
-                        turn_id=run.result.turn_id,
+                    yield await self._base.runtime._dispatch(
+                        self._event(
+                            RuntimeEventKind.VALIDATION_FAILED,
+                            logical_id,
+                            sequence,
+                            {"attempt": attempt, "paths": last_paths},
+                            turn_id=run.result.turn_id,
+                        )
                     )
                     sequence += 1
                     if attempt >= self._policy.max_attempts:
-                        raise StructuredOutputError(
+                        error = StructuredOutputError(
                             "Structured output validation attempts exhausted",
                             attempts=attempt,
                             validation_paths=last_paths,
                             raw=_redact_raw(last_output) if raw_requested else None,
-                        ) from failure
-                    yield self._event(
-                        RuntimeEventKind.RETRY_SCHEDULED,
-                        logical_id,
-                        sequence,
-                        {"attempt": attempt, "next_attempt": attempt + 1},
-                        turn_id=run.result.turn_id,
+                        )
+                        yield await self._base.runtime._dispatch(
+                            self._event(
+                                RuntimeEventKind.INVOCATION_FAILED,
+                                logical_id,
+                                sequence,
+                                {
+                                    "attempt": attempt,
+                                    "reason": "validation_exhausted",
+                                    "validation_paths": last_paths,
+                                },
+                                turn_id=run.result.turn_id,
+                            )
+                        )
+                        sequence += 1
+                        raise error from failure
+                    yield await self._base.runtime._dispatch(
+                        self._event(
+                            RuntimeEventKind.RETRY_SCHEDULED,
+                            logical_id,
+                            sequence,
+                            {"attempt": attempt, "next_attempt": attempt + 1},
+                            turn_id=run.result.turn_id,
+                        )
                     )
                     sequence += 1
                     if thread is None:
@@ -369,6 +405,11 @@ class StructuredCodexModel:
                         profile=run.profile,
                         effort=run.effort,
                         include_raw=raw_requested,
+                        event_sink=None,
+                        context_policy=run.context_policy,
+                        security_policy=run.security_policy,
+                        ephemeral=run.ephemeral,
+                        structured_output=True,
                     )
                     run.provider_thread = thread
                     self._base.runtime._register_run(run)
@@ -385,12 +426,14 @@ class StructuredCodexModel:
                     diagnostics=run.result.diagnostics,
                     raw=run.result.raw if raw_requested else None,
                 )
-                yield self._event(
-                    RuntimeEventKind.INVOCATION_COMPLETED,
-                    logical_id,
-                    sequence,
-                    {"attempt": attempt},
-                    result,
+                yield await self._base.runtime._dispatch(
+                    self._event(
+                        RuntimeEventKind.INVOCATION_COMPLETED,
+                        logical_id,
+                        sequence,
+                        {"attempt": attempt},
+                        result,
+                    )
                 )
                 sequence += 1
                 return

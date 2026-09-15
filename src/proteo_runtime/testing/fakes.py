@@ -7,6 +7,7 @@ import json
 import re
 from collections import deque
 from collections.abc import AsyncIterator, Callable, Iterable, Mapping
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -35,9 +36,11 @@ from proteo_runtime.core.identity import RuntimeIdentity
 from proteo_runtime.core.input import RuntimeInput
 from proteo_runtime.core.model import InvocationConfig, RuntimeResult, StructuredOutputPolicy
 from proteo_runtime.core.model_info import ModelInfo
+from proteo_runtime.core.observability import ObservabilityStatus
 from proteo_runtime.core.profiles import profile_spec
 from proteo_runtime.core.session_codec import SessionCodec
 from proteo_runtime.core.usage import RuntimeUsage
+from proteo_runtime.observability import ObservabilityConfig, RuntimeEventBus
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +85,7 @@ class FakeRuntime:
         id_factory: Callable[[], str] | None = None,
         capabilities: RuntimeCapabilities | None = None,
         identity: RuntimeIdentity | None = None,
+        observability: ObservabilityConfig | None = None,
     ) -> None:
         """Initialize scripted turns and injectable deterministic dependencies."""
 
@@ -107,6 +111,12 @@ class FakeRuntime:
         self._started = False
         self._closed = False
         self.events: list[RuntimeEvent] = []
+        self._observability = RuntimeEventBus(observability)
+
+    def observability_status(self) -> ObservabilityStatus:
+        """Return the aggregate health of configured observers."""
+
+        return self._observability.status
 
     def _default_id(self) -> str:
         """Generate a stable local identifier."""
@@ -123,6 +133,7 @@ class FakeRuntime:
         turn_id: str | None = None,
         metadata: dict[str, Any] | None = None,
         result: RuntimeResult[Any] | None = None,
+        payload: Mapping[str, Any] | None = None,
     ) -> RuntimeEvent:
         """Append and return one correlated monotonic event."""
 
@@ -137,6 +148,7 @@ class FakeRuntime:
             turn_id,
             metadata or {},
             result,
+            payload or {},
         )
         self._sequence += 1
         self.events.append(event)
@@ -148,7 +160,12 @@ class FakeRuntime:
         if not self._started:
             self._started = True
             self._closed = False
-            self._emit(RuntimeEventKind.RUNTIME_STARTED)
+            try:
+                await self._dispatch(self._emit(RuntimeEventKind.RUNTIME_STARTED))
+            except AgentRuntimeError:
+                with suppress(AgentRuntimeError):
+                    await self.close()
+                raise
 
     async def __aenter__(self) -> FakeRuntime:
         """Start the runtime and return it for async context manager use."""
@@ -167,7 +184,17 @@ class FakeRuntime:
 
         if self._started and not self._closed:
             self._closed = True
-            self._emit(RuntimeEventKind.RUNTIME_STOPPED)
+            observability_error: AgentRuntimeError | None = None
+            try:
+                await self._dispatch(self._emit(RuntimeEventKind.RUNTIME_STOPPED))
+            except AgentRuntimeError as exc:
+                observability_error = exc
+            try:
+                await self._observability.close()
+            except AgentRuntimeError as exc:
+                observability_error = observability_error or exc
+            if observability_error is not None:
+                raise observability_error
 
     async def capabilities(self) -> RuntimeCapabilities:
         """Return fake runtime capabilities."""
@@ -227,7 +254,7 @@ class FakeRuntime:
             spec.context.value,
         )
         self._sessions[descriptor] = state
-        self._emit(RuntimeEventKind.SESSION_CREATED, session_id=descriptor)
+        await self._dispatch(self._emit(RuntimeEventKind.SESSION_CREATED, session_id=descriptor))
         return FakeRuntimeSession(self, state)
 
     async def resume_session(self, session_id: str) -> FakeRuntimeSession:
@@ -266,7 +293,7 @@ class FakeRuntime:
             self._sessions[session_id] = state
         else:
             state.generation += 1
-        self._emit(RuntimeEventKind.SESSION_RESUMED, session_id=session_id)
+        await self._dispatch(self._emit(RuntimeEventKind.SESSION_RESUMED, session_id=session_id))
         return FakeRuntimeSession(self, state)
 
     async def migrate_session(
@@ -323,17 +350,19 @@ class FakeRuntime:
             current.context_policy = spec.context.value
             current.generation += 1
         self._sessions[descriptor] = current
-        self._emit(
-            RuntimeEventKind.SESSION_MIGRATED,
-            session_id=descriptor,
-            metadata={
-                "old_session_id": session_id,
-                "new_session_id": descriptor,
-                "old_profile": old.profile,
-                "new_profile": profile,
-                "old_level": old.level,
-                "new_level": level,
-            },
+        await self._dispatch(
+            self._emit(
+                RuntimeEventKind.SESSION_MIGRATED,
+                session_id=descriptor,
+                metadata={
+                    "old_session_id": session_id,
+                    "new_session_id": descriptor,
+                    "old_profile": old.profile,
+                    "new_profile": profile,
+                    "old_level": old.level,
+                    "new_level": level,
+                },
+            )
         )
         return FakeRuntimeSession(self, current)
 
@@ -352,6 +381,20 @@ class FakeRuntime:
         async with state.guard:
             state.active = False
 
+    async def _dispatch(self, event: RuntimeEvent) -> RuntimeEvent:
+        """Dispatch one event through the shared observer bus."""
+
+        return await self._observability.emit(event)
+
+    async def _publish_events(self, events: list[RuntimeEvent]) -> list[RuntimeEvent]:
+        """Dispatch a sequence and retain any terminal result enrichment."""
+
+        published: list[RuntimeEvent] = []
+        for event in events:
+            published_event = await self._dispatch(event)
+            published.append(published_event)
+        return published
+
     def _next_turn(self) -> FakeTurn:
         """Pop the next scripted turn or return a default response."""
 
@@ -367,12 +410,15 @@ class FakeRuntime:
         state: _SessionState | None = None,
         keep_active: bool = False,
         stream: bool = False,
+        invocation_metadata: Mapping[str, Any] | None = None,
     ) -> tuple[RuntimeResult[Any], list[RuntimeEvent], FakeTurn]:
         """Execute one scripted turn and collect lifecycle events."""
 
         del input
         claimed = False
         completed = False
+        generated: list[RuntimeEvent] = []
+        published = False
         invocation_id, turn_id = self._id_factory(), self._id_factory()
         session_id = state.descriptor if state else None
         try:
@@ -385,6 +431,16 @@ class FakeRuntime:
                     invocation_id=invocation_id,
                     session_id=session_id,
                     turn_id=turn_id,
+                    metadata={
+                        **dict(invocation_metadata or {}),
+                        "model": model,
+                        "profile": profile,
+                        "reasoning_effort": level,
+                        "ephemeral": state is None,
+                        "structured_output": profile == "structured",
+                        "context_policy": state.context_policy if state else None,
+                        "security_policy": state.security_policy if state else None,
+                    },
                 ),
                 self._emit(
                     RuntimeEventKind.TURN_STARTED,
@@ -397,45 +453,57 @@ class FakeRuntime:
             if turn.delay_seconds:
                 await asyncio.sleep(turn.delay_seconds)
             if state and state.interrupted:
-                self._emit(
-                    RuntimeEventKind.TURN_INTERRUPTED,
-                    invocation_id=invocation_id,
-                    session_id=session_id,
-                    turn_id=turn_id,
-                )
-                self._emit(
-                    RuntimeEventKind.INTERRUPTED,
-                    invocation_id=invocation_id,
-                    session_id=session_id,
-                    turn_id=turn_id,
+                generated.extend(
+                    [
+                        self._emit(
+                            RuntimeEventKind.TURN_INTERRUPTED,
+                            invocation_id=invocation_id,
+                            session_id=session_id,
+                            turn_id=turn_id,
+                        ),
+                        self._emit(
+                            RuntimeEventKind.INTERRUPTED,
+                            invocation_id=invocation_id,
+                            session_id=session_id,
+                            turn_id=turn_id,
+                        ),
+                    ]
                 )
                 raise InterruptedError("Fake turn was interrupted")
             if turn.error:
                 if isinstance(turn.error, InterruptedError):
-                    self._emit(
-                        RuntimeEventKind.TURN_INTERRUPTED,
-                        invocation_id=invocation_id,
-                        session_id=session_id,
-                        turn_id=turn_id,
-                    )
-                    self._emit(
-                        RuntimeEventKind.INTERRUPTED,
-                        invocation_id=invocation_id,
-                        session_id=session_id,
-                        turn_id=turn_id,
+                    generated.extend(
+                        [
+                            self._emit(
+                                RuntimeEventKind.TURN_INTERRUPTED,
+                                invocation_id=invocation_id,
+                                session_id=session_id,
+                                turn_id=turn_id,
+                            ),
+                            self._emit(
+                                RuntimeEventKind.INTERRUPTED,
+                                invocation_id=invocation_id,
+                                session_id=session_id,
+                                turn_id=turn_id,
+                            ),
+                        ]
                     )
                 else:
-                    self._emit(
-                        RuntimeEventKind.TURN_FAILED,
-                        invocation_id=invocation_id,
-                        session_id=session_id,
-                        turn_id=turn_id,
-                    )
-                    self._emit(
-                        RuntimeEventKind.INVOCATION_FAILED,
-                        invocation_id=invocation_id,
-                        session_id=session_id,
-                        turn_id=turn_id,
+                    generated.extend(
+                        [
+                            self._emit(
+                                RuntimeEventKind.TURN_FAILED,
+                                invocation_id=invocation_id,
+                                session_id=session_id,
+                                turn_id=turn_id,
+                            ),
+                            self._emit(
+                                RuntimeEventKind.INVOCATION_FAILED,
+                                invocation_id=invocation_id,
+                                session_id=session_id,
+                                turn_id=turn_id,
+                            ),
+                        ]
                     )
                 if isinstance(turn.error, AgentRuntimeError):
                     raise turn.error
@@ -457,16 +525,32 @@ class FakeRuntime:
                 generated.extend(
                     self._terminal_events(invocation_id, session_id, turn_id, turn.usage, result)
                 )
+                generated = await self._publish_events(generated)
+                published = True
+                terminal = next(
+                    (event.result for event in reversed(generated) if event.result is not None),
+                    None,
+                )
+                if terminal is not None:
+                    result = terminal
             completed = True
             return result, generated, turn
         except asyncio.CancelledError as exc:
-            self._emit(
-                RuntimeEventKind.CANCELLED,
-                invocation_id=invocation_id,
-                session_id=session_id,
-                turn_id=turn_id,
+            generated.append(
+                self._emit(
+                    RuntimeEventKind.CANCELLED,
+                    invocation_id=invocation_id,
+                    session_id=session_id,
+                    turn_id=turn_id,
+                )
             )
+            if not published:
+                await self._publish_events(generated)
             raise CancellationError("Fake turn was cancelled") from exc
+        except Exception:
+            if not published and generated:
+                await self._publish_events(generated)
+            raise
         finally:
             if state is not None and claimed and (not keep_active or not completed):
                 await self._release(state)
@@ -530,7 +614,11 @@ class FakeRuntimeModel:
         selected = config.model if config and config.model else "fake-model"
         return (
             await self.runtime._execute(
-                normalized, model=selected, profile=self.profile, level=self.level
+                normalized,
+                model=selected,
+                profile=self.profile,
+                level=self.level,
+                invocation_metadata=config.metadata if config is not None else None,
             )
         )[0]
 
@@ -545,17 +633,24 @@ class FakeRuntimeModel:
 
         normalized = RuntimeInput.from_value(input)
         result, generated, turn = await self.runtime._execute(
-            normalized, model="fake-model", profile=self.profile, level=self.level, stream=True
+            normalized,
+            model="fake-model",
+            profile=self.profile,
+            level=self.level,
+            stream=True,
+            invocation_metadata=config.metadata if config is not None else None,
         )
-        del result, config, include_raw
+        del result, include_raw
         invocation_id, turn_id = generated[0].invocation_id or "", generated[0].turn_id or ""
         streamed = list(generated)
         if turn.missing_terminal:
-            self.runtime._emit(
-                RuntimeEventKind.INVOCATION_FAILED,
-                invocation_id=invocation_id,
-                turn_id=turn_id,
-                metadata={"reason": "missing_terminal"},
+            await self.runtime._dispatch(
+                self.runtime._emit(
+                    RuntimeEventKind.INVOCATION_FAILED,
+                    invocation_id=invocation_id,
+                    turn_id=turn_id,
+                    metadata={"reason": "missing_terminal"},
+                )
             )
             raise TransportError("Fake turn returned no terminal event")
         streamed.extend(
@@ -565,7 +660,7 @@ class FakeRuntimeModel:
                     RuntimeEventKind.OUTPUT_TEXT_DELTA,
                     invocation_id=invocation_id,
                     turn_id=turn_id,
-                    metadata={"text": chunk},
+                    payload={"text": chunk},
                 )
                 for chunk in _chunks(str(turn.value))
             )
@@ -582,7 +677,7 @@ class FakeRuntimeModel:
         streamed.extend(
             self.runtime._terminal_events(invocation_id, None, turn_id, turn.usage, result)
         )
-        for event in streamed:
+        for event in await self.runtime._publish_events(streamed):
             yield event
 
     def with_structured_output(
@@ -687,38 +782,61 @@ class _FakeStructuredModel:
             include_raw if include_raw is not None else config.include_raw if config else False
         )
         logical_id = self._base.runtime._id_factory()
-        yield self._base.runtime._emit(
-            RuntimeEventKind.INVOCATION_STARTED,
-            invocation_id=logical_id,
-            metadata={"max_attempts": self._policy.max_attempts},
+        yield await self._base.runtime._dispatch(
+            self._base.runtime._emit(
+                RuntimeEventKind.INVOCATION_STARTED,
+                invocation_id=logical_id,
+                metadata={
+                    **(dict(config.metadata) if config is not None else {}),
+                    "max_attempts": self._policy.max_attempts,
+                },
+            )
         )
         usages: list[RuntimeUsage] = []
         for attempt in range(1, self._policy.max_attempts + 1):
-            result = await self._base.ainvoke(
-                input,
-                config=config,
-                include_raw=raw_requested,
+            normalized = RuntimeInput.from_value(input)
+            selected_model = config.model if config and config.model else "fake-model"
+            result, _generated, _turn = await self._base.runtime._execute(
+                normalized,
+                model=selected_model,
+                profile=self._base.profile,
+                level=self._base.level,
+                stream=True,
+                invocation_metadata=config.metadata if config is not None else None,
             )
             usages.append(result.usage)
             try:
                 value = self._validate(result.value)
             except ValueError as exc:
-                yield self._base.runtime._emit(
-                    RuntimeEventKind.VALIDATION_FAILED,
-                    invocation_id=logical_id,
-                    metadata={"attempt": attempt, "paths": ("$",)},
+                yield await self._base.runtime._dispatch(
+                    self._base.runtime._emit(
+                        RuntimeEventKind.VALIDATION_FAILED,
+                        invocation_id=logical_id,
+                        metadata={"attempt": attempt, "paths": ("$",)},
+                    )
                 )
                 if attempt >= self._policy.max_attempts:
-                    raise StructuredOutputError(
+                    error = StructuredOutputError(
                         "Structured output validation attempts exhausted",
                         attempts=attempt,
                         validation_paths=("$",),
                         raw=_sanitize_raw(result.value) if raw_requested else None,
-                    ) from exc
-                yield self._base.runtime._emit(
-                    RuntimeEventKind.RETRY_SCHEDULED,
-                    invocation_id=logical_id,
-                    metadata={"attempt": attempt, "next_attempt": attempt + 1},
+                    )
+                    yield await self._base.runtime._dispatch(
+                        self._base.runtime._emit(
+                            RuntimeEventKind.INVOCATION_FAILED,
+                            invocation_id=logical_id,
+                            turn_id=result.turn_id,
+                            metadata={"attempt": attempt, "reason": "validation_exhausted"},
+                        )
+                    )
+                    raise error from exc
+                yield await self._base.runtime._dispatch(
+                    self._base.runtime._emit(
+                        RuntimeEventKind.RETRY_SCHEDULED,
+                        invocation_id=logical_id,
+                        metadata={"attempt": attempt, "next_attempt": attempt + 1},
+                    )
                 )
                 continue
             aggregate = RuntimeUsage(
@@ -737,10 +855,12 @@ class _FakeStructuredModel:
                 turn_id=result.turn_id,
                 raw=result.raw if raw_requested else None,
             )
-            yield self._base.runtime._emit(
-                RuntimeEventKind.INVOCATION_COMPLETED,
-                invocation_id=logical_id,
-                result=final,
+            yield await self._base.runtime._dispatch(
+                self._base.runtime._emit(
+                    RuntimeEventKind.INVOCATION_COMPLETED,
+                    invocation_id=logical_id,
+                    result=final,
+                )
             )
             return
 
@@ -788,6 +908,7 @@ class FakeRuntimeSession:
                 profile=self._state.profile,
                 level=self._state.level,
                 state=self._state,
+                invocation_metadata=config.metadata if config is not None else None,
             )
         )[0]
 
@@ -821,9 +942,10 @@ class FakeRuntimeSession:
                 state=self._state,
                 keep_active=True,
                 stream=True,
+                invocation_metadata=config.metadata if config is not None else None,
             )
             active_owned = True
-            del result, config, include_raw
+            del result, include_raw
             invocation_id, turn_id = generated[0].invocation_id or "", generated[0].turn_id or ""
             streamed = list(generated)
             streamed.extend(
@@ -834,7 +956,7 @@ class FakeRuntimeSession:
                         invocation_id=invocation_id,
                         session_id=self.id,
                         turn_id=turn_id,
-                        metadata={"text": chunk},
+                        payload={"text": chunk},
                     )
                     for chunk in _chunks(str(turn.value))
                 )
@@ -852,10 +974,12 @@ class FakeRuntimeSession:
             streamed.extend(
                 self._runtime._terminal_events(invocation_id, self.id, turn_id, turn.usage, result)
             )
-            for event in streamed:
+            for event in await self._runtime._publish_events(streamed):
                 yield event
         except asyncio.CancelledError as exc:
-            self._runtime._emit(RuntimeEventKind.CANCELLED, session_id=self.id)
+            await self._runtime._dispatch(
+                self._runtime._emit(RuntimeEventKind.CANCELLED, session_id=self.id)
+            )
             raise CancellationError("Fake turn was cancelled") from exc
         finally:
             if active_owned:
@@ -873,14 +997,18 @@ class FakeRuntimeSession:
 
         if not self._closed:
             self._closed = True
-            self._runtime._emit(RuntimeEventKind.SESSION_CLOSED, session_id=self.id)
+            await self._runtime._dispatch(
+                self._runtime._emit(RuntimeEventKind.SESSION_CLOSED, session_id=self.id)
+            )
 
     async def archive(self) -> None:
         """Archive this session without deleting retained state."""
 
         if not self._state.archived:
             self._state.archived = True
-            self._runtime._emit(RuntimeEventKind.SESSION_ARCHIVED, session_id=self.id)
+            await self._runtime._dispatch(
+                self._runtime._emit(RuntimeEventKind.SESSION_ARCHIVED, session_id=self.id)
+            )
 
     async def delete(self) -> None:
         """Delete this session from the fake runtime."""
@@ -890,7 +1018,9 @@ class FakeRuntimeSession:
             self._runtime._sessions.pop(self.id, None)
             self._runtime._deleted_sessions.add(self.id)
             self._closed = True
-            self._runtime._emit(RuntimeEventKind.SESSION_DELETED, session_id=self.id)
+            await self._runtime._dispatch(
+                self._runtime._emit(RuntimeEventKind.SESSION_DELETED, session_id=self.id)
+            )
 
 
 def _chunks(value: str, size: int = 8) -> tuple[str, ...]:

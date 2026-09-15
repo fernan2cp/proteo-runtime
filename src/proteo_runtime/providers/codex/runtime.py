@@ -36,8 +36,10 @@ from proteo_runtime.core.model import (
     RuntimeResult,
     StructuredOutputPolicy,
 )
+from proteo_runtime.core.observability import ObservabilityStatus
 from proteo_runtime.core.profiles import profile_spec
 from proteo_runtime.core.session_codec import SessionCodec
+from proteo_runtime.observability import ObservabilityConfig, RuntimeEventBus
 
 from ._compat import delete_thread
 from ._mapping import account_value, fingerprint, identity_metadata, serialize_input
@@ -174,11 +176,13 @@ class CodexRuntime:
         *,
         config_path: str | Path | None = None,
         config: RuntimeConfigV1 | None = None,
+        observability: ObservabilityConfig | None = None,
     ) -> None:
         """Initialize a lazy runtime without reading authentication."""
 
         self.default_model = default_model
         self._config = load_runtime_config(config_path=config_path, config=config)
+        self._observability = RuntimeEventBus(observability)
         self._sdk: Any | None = None
         self._identity: RuntimeIdentity | None = None
         self._identity_fingerprint: str | None = None
@@ -191,6 +195,11 @@ class CodexRuntime:
         self._active_runs: dict[str, TurnRun] = {}
         self._sequence = 0
         self.events: list[RuntimeEvent] = []
+
+    def observability_status(self) -> ObservabilityStatus:
+        """Return the aggregate health of configured observers."""
+
+        return self._observability.status
 
     @property
     def identity(self) -> RuntimeIdentity:
@@ -237,7 +246,12 @@ class CodexRuntime:
         self._selected_model = selected
         self._started = True
         self._closed = False
-        self._emit(RuntimeEventKind.RUNTIME_STARTED)
+        try:
+            await self._dispatch(self._emit(RuntimeEventKind.RUNTIME_STARTED))
+        except AgentRuntimeError:
+            with suppress(AgentRuntimeError):
+                await self.close()
+            raise
 
     def _select_default(self, catalog: Mapping[str, Any]) -> str:
         """Resolve an explicitly requested model or a legacy catalog default."""
@@ -302,8 +316,18 @@ class CodexRuntime:
         self._sdk = None
         was_started = self._started
         self._started = False
+        observability_error: AgentRuntimeError | None = None
         if was_started:
-            self._emit(RuntimeEventKind.RUNTIME_STOPPED)
+            try:
+                await self._dispatch(self._emit(RuntimeEventKind.RUNTIME_STOPPED))
+            except AgentRuntimeError as exc:
+                observability_error = exc
+        try:
+            await self._observability.close()
+        except AgentRuntimeError as exc:
+            observability_error = observability_error or exc
+        if observability_error is not None:
+            raise observability_error
 
     async def __aenter__(self) -> CodexRuntime:
         """Start the runtime for an async context manager."""
@@ -431,7 +455,9 @@ class CodexRuntime:
                 config or InvocationConfig(),
             )
             self._sessions[descriptor] = state
-            self._emit(RuntimeEventKind.SESSION_CREATED, session_id=descriptor)
+            await self._dispatch(
+                self._emit(RuntimeEventKind.SESSION_CREATED, session_id=descriptor)
+            )
             return _CodexSession(state)
         except Exception as exc:
             remove_workspace(workspace)
@@ -560,7 +586,7 @@ class CodexRuntime:
                 InvocationConfig(),
             )
             self._sessions[raw] = state
-        self._emit(RuntimeEventKind.SESSION_RESUMED, session_id=raw)
+        await self._dispatch(self._emit(RuntimeEventKind.SESSION_RESUMED, session_id=raw))
         return _CodexSession(state)
 
     async def migrate_session(
@@ -641,17 +667,19 @@ class CodexRuntime:
         self._sessions[new_descriptor] = state
         if previous_workspace is not None:
             remove_workspace(previous_workspace)
-        self._emit(
-            RuntimeEventKind.SESSION_MIGRATED,
-            session_id=new_descriptor,
-            metadata={
-                "old_session_id": session_id,
-                "new_session_id": new_descriptor,
-                "old_profile": old.profile,
-                "new_profile": profile,
-                "old_level": old.level,
-                "new_level": level,
-            },
+        await self._dispatch(
+            self._emit(
+                RuntimeEventKind.SESSION_MIGRATED,
+                session_id=new_descriptor,
+                metadata={
+                    "old_session_id": session_id,
+                    "new_session_id": new_descriptor,
+                    "old_profile": old.profile,
+                    "new_profile": profile,
+                    "old_level": old.level,
+                    "new_level": level,
+                },
+            )
         )
         return _CodexSession(state)
 
@@ -744,13 +772,18 @@ class CodexRuntime:
 
         self._active_runs.pop(run.invocation_id, None)
 
+    async def _dispatch(self, event: RuntimeEvent) -> RuntimeEvent:
+        """Dispatch one event through the shared observer bus."""
+
+        return await self._observability.emit(event)
+
     def _emit(
         self,
         kind: RuntimeEventKind,
         *,
         session_id: str | None = None,
         metadata: Mapping[str, Any] | None = None,
-    ) -> None:
+    ) -> RuntimeEvent:
         """Record a provider-neutral lifecycle event."""
 
         identity = self._identity or RuntimeIdentity("codex", "uninitialized")
@@ -765,6 +798,7 @@ class CodexRuntime:
         )
         self._sequence += 1
         self.events.append(event)
+        return event
 
 
 class _CodexModel:
@@ -875,6 +909,11 @@ class _CodexModel:
             profile=self.profile,
             effort=effort,
             include_raw=include_raw,
+            event_sink=self.runtime._dispatch,
+            context_policy=binding.spec.context.value,
+            security_policy=binding.spec.security_policy.value,
+            invocation_metadata=effective.metadata,
+            structured_output=output_schema is not None,
         )
         run.provider_thread = thread
         self.runtime._register_run(run)
@@ -1052,6 +1091,11 @@ class _CodexSession:
             effort=self._state.effort,
             session_id=self.id,
             include_raw=bool(effective.include_raw),
+            event_sink=self._state.runtime._dispatch,
+            context_policy=self._state.context_policy,
+            security_policy=self._state.security_policy,
+            invocation_metadata=effective.metadata,
+            ephemeral=False,
         )
         self._state.active = run
         self._state.runtime._register_run(run)
@@ -1174,7 +1218,9 @@ class _CodexSession:
             self._closed = True
             self._state.closed_handles += 1
             remove_workspace(self._state.workspace)
-            self._state.runtime._emit(RuntimeEventKind.SESSION_CLOSED, session_id=self.id)
+            await self._state.runtime._dispatch(
+                self._state.runtime._emit(RuntimeEventKind.SESSION_CLOSED, session_id=self.id)
+            )
 
     async def archive(self) -> None:
         """Archive the provider thread through the stable API."""
@@ -1187,7 +1233,9 @@ class _CodexSession:
             except Exception as exc:
                 raise _map_sdk_error(exc, "session archive") from exc
             self._state.archived = True
-            self._state.runtime._emit(RuntimeEventKind.SESSION_ARCHIVED, session_id=self.id)
+            await self._state.runtime._dispatch(
+                self._state.runtime._emit(RuntimeEventKind.SESSION_ARCHIVED, session_id=self.id)
+            )
 
     async def delete(self) -> None:
         """Delete the provider thread through the isolated compatibility shim."""
@@ -1207,4 +1255,6 @@ class _CodexSession:
             self._state.deleted = True
             self._closed = True
             remove_workspace(self._state.workspace)
-            self._state.runtime._emit(RuntimeEventKind.SESSION_DELETED, session_id=self.id)
+            await self._state.runtime._dispatch(
+                self._state.runtime._emit(RuntimeEventKind.SESSION_DELETED, session_id=self.id)
+            )
