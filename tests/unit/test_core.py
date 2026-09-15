@@ -78,7 +78,7 @@ def test_profile_and_message_boundaries_fail_closed() -> None:
         LifecycleMode.EPHEMERAL,
         ContextPolicy.EXTERNAL,
         HostToolsMode.DISABLED,
-        "isolated",
+        cast(Any, "isolated"),
     )
     assert compatible.security_policy is SecurityPolicy.ISOLATED
     with pytest.raises(ValueError):

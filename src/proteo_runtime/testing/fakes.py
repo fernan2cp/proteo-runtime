@@ -518,7 +518,9 @@ class FakeRuntimeModel:
 
         normalized = RuntimeInput.from_value(input)
         if self.profile == "structured":
-            raise ConfigurationError("Structured profile requires an output schema", path="output_schema")
+            raise ConfigurationError(
+                "Structured profile requires an output schema", path="output_schema"
+            )
         selected = config.model if config and config.model else "fake-model"
         return (
             await self.runtime._execute(
@@ -675,7 +677,9 @@ class _FakeStructuredModel:
     ) -> AsyncIterator[RuntimeEvent]:
         """Yield buffered validation and completion events without raw partial JSON."""
 
-        raw_requested = bool(include_raw if include_raw is not None else config.include_raw if config else False)
+        raw_requested = bool(
+            include_raw if include_raw is not None else config.include_raw if config else False
+        )
         logical_id = self._base.runtime._id_factory()
         yield self._base.runtime._emit(
             RuntimeEventKind.INVOCATION_STARTED,

@@ -31,6 +31,24 @@ async def test_codex_catalog_and_brain_smoke() -> None:
 
 
 @pytest.mark.asyncio
+async def test_codex_configured_mapping_catalog() -> None:
+    """Verify every configured model/effort mapping against one live catalog."""
+
+    from proteo_runtime.providers.codex import CodexRuntime
+
+    expected = {
+        "gpt-5.6-luna": {"low"},
+        "gpt-5.6-terra": {"medium"},
+        "gpt-5.6-sol": {"high", "ultra"},
+    }
+    async with CodexRuntime() as runtime:
+        models = {model.id: model for model in await runtime.models()}
+    for model_id, efforts in expected.items():
+        assert model_id in models
+        assert efforts <= set(models[model_id].supported_reasoning_efforts)
+
+
+@pytest.mark.asyncio
 async def test_codex_session_lifecycle_smoke() -> None:
     """Verify create, resume, archive, and delete with explicit opt-in."""
 

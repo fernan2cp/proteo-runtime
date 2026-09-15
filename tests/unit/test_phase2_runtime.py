@@ -578,9 +578,7 @@ def test_custom_mapping_requires_profile_spec() -> None:
                 **_config_payload(),
                 "profiles": {
                     **_config_payload()["profiles"],
-                    "orphan": {
-                        "medium": {"model": "x", "reasoning_effort": "medium"}
-                    },
+                    "orphan": {"medium": {"model": "x", "reasoning_effort": "medium"}},
                 },
             }
         )
@@ -610,16 +608,20 @@ async def test_startup_fails_closed_for_unsupported_configured_effort(monkeypatc
     )
     install_sdk(monkeypatch, sdk)
     with pytest.raises(CapabilityError, match="profiles.brain.high"):
-        await codex_runtime.CodexRuntime(config=validate_config({
-            "schema_version": 1,
-            "runtime": "codex",
-            "profiles": {
-                "brain": {
-                    level: {"model": "gpt-5.6-terra", "reasoning_effort": level}
-                    for level in ("low", "medium", "high", "ultra")
+        await codex_runtime.CodexRuntime(
+            config=validate_config(
+                {
+                    "schema_version": 1,
+                    "runtime": "codex",
+                    "profiles": {
+                        "brain": {
+                            level: {"model": "gpt-5.6-terra", "reasoning_effort": level}
+                            for level in ("low", "medium", "high", "ultra")
+                        }
+                    },
                 }
-            },
-        })).start()
+            )
+        ).start()
 
 
 def test_persistent_model_factory_is_rejected_before_start() -> None:
@@ -687,7 +689,7 @@ async def test_abandoned_codex_stream_interrupts_provider_turn(monkeypatch: Any)
     install_sdk(monkeypatch, sdk)
     runtime = codex_runtime.CodexRuntime()
     await runtime.start()
-    stream = (await runtime.brain()).astream("abandon")
+    stream = cast(Any, (await runtime.brain()).astream("abandon"))
     await anext(stream)
     await stream.aclose()
     await asyncio.sleep(0)

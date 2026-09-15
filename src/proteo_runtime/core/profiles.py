@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 from types import MappingProxyType
+from typing import Any
 
 from .context import ContextPolicy
 from .security import SecurityPolicy
@@ -58,7 +59,7 @@ class ProfileSpec:
     def __post_init__(self) -> None:
         """Normalize compatible policy strings and reject unknown policies."""
 
-        policy = self.security_policy
+        policy: Any = self.security_policy
         if not isinstance(policy, SecurityPolicy):
             try:
                 policy = SecurityPolicy(policy)

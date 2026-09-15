@@ -266,9 +266,7 @@ class CodexRuntime:
                     )
                 supported = {
                     _effort_value(value)
-                    for value in (
-                        getattr(catalog[model], "supported_reasoning_efforts", ()) or ()
-                    )
+                    for value in (getattr(catalog[model], "supported_reasoning_efforts", ()) or ())
                 }
                 if supported and effort not in supported:
                     raise CapabilityError(
@@ -583,7 +581,10 @@ class CodexRuntime:
         if not target.persistent:
             raise CapabilityError("Session migration requires a persistent profile")
         self._ensure_profile_executable(target)
-        if security_policy != old.security_policy or security_policy != target.security_policy.value:
+        if (
+            security_policy != old.security_policy
+            or security_policy != target.security_policy.value
+        ):
             raise CapabilityError("Session migration cannot expand or change permissions")
         binding = self._resolve_binding(profile, level)
         thread_id = old.provider_session_id
