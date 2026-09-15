@@ -7,6 +7,7 @@ from enum import StrEnum
 from types import MappingProxyType
 
 from .context import ContextPolicy
+from .security import SecurityPolicy
 
 
 class ExecutionProfile(StrEnum):
@@ -52,7 +53,18 @@ class ProfileSpec:
     lifecycle: LifecycleMode
     context: ContextPolicy
     host_tools: HostToolsMode
-    security_policy: str
+    security_policy: SecurityPolicy
+
+    def __post_init__(self) -> None:
+        """Normalize compatible policy strings and reject unknown policies."""
+
+        policy = self.security_policy
+        if not isinstance(policy, SecurityPolicy):
+            try:
+                policy = SecurityPolicy(policy)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"Unknown security policy: {policy!r}") from exc
+            object.__setattr__(self, "security_policy", policy)
 
     @property
     def persistent(self) -> bool:
@@ -64,22 +76,34 @@ class ProfileSpec:
 DEFAULT_PROFILE_SPECS = MappingProxyType(
     {
         ExecutionProfile.BRAIN.value: ProfileSpec(
-            LifecycleMode.EPHEMERAL, ContextPolicy.EXTERNAL, HostToolsMode.DISABLED, "isolated"
+            LifecycleMode.EPHEMERAL,
+            ContextPolicy.EXTERNAL,
+            HostToolsMode.DISABLED,
+            SecurityPolicy.ISOLATED,
         ),
         ExecutionProfile.STRUCTURED.value: ProfileSpec(
-            LifecycleMode.EPHEMERAL, ContextPolicy.EXTERNAL, HostToolsMode.DISABLED, "isolated"
+            LifecycleMode.EPHEMERAL,
+            ContextPolicy.EXTERNAL,
+            HostToolsMode.DISABLED,
+            SecurityPolicy.ISOLATED,
         ),
         ExecutionProfile.SESSION.value: ProfileSpec(
-            LifecycleMode.PERSISTENT, ContextPolicy.RUNTIME, HostToolsMode.DISABLED, "isolated"
+            LifecycleMode.PERSISTENT,
+            ContextPolicy.RUNTIME,
+            HostToolsMode.DISABLED,
+            SecurityPolicy.ISOLATED,
         ),
         ExecutionProfile.CONTROLLED_AGENT.value: ProfileSpec(
             LifecycleMode.EPHEMERAL,
             ContextPolicy.EXTERNAL,
             HostToolsMode.CONTROLLED,
-            "controlled_tools",
+            SecurityPolicy.CONTROLLED_TOOLS,
         ),
         ExecutionProfile.NATIVE.value: ProfileSpec(
-            LifecycleMode.PERSISTENT, ContextPolicy.HYBRID, HostToolsMode.PROVIDER_DEFINED, "native"
+            LifecycleMode.EXPLICIT,
+            ContextPolicy.EXPLICIT,
+            HostToolsMode.PROVIDER_DEFINED,
+            SecurityPolicy.NATIVE,
         ),
     }
 )

@@ -46,7 +46,7 @@ class ProfileConfig(BaseModel):
             lifecycle=self.lifecycle,
             context=self.context_policy,
             host_tools=self.host_tools,
-            security_policy=self.security_policy.value,
+            security_policy=self.security_policy,
         )
 
 
@@ -93,23 +93,43 @@ class RuntimeConfigV1(BaseModel):
         object.__setattr__(self, "profile_specs", MappingProxyType(dict(self.profile_specs)))
 
         builtin_names = set(DEFAULT_PROFILE_SPECS)
+        for profile in self.profiles:
+            if profile in builtin_names:
+                continue
+            if profile not in self.profile_specs:
+                raise ConfigurationError(
+                    f"Custom profile {profile!r} requires a profile specification",
+                    path=f"profile_specs.{profile}",
+                )
         for profile, spec in self.profile_specs.items():
             if profile in builtin_names:
                 raise ValueError(f"profile_specs cannot redefine built-in profile {profile!r}")
             if profile not in self.profiles:
-                raise ValueError(f"profile_specs entry {profile!r} has no model mapping")
+                raise ConfigurationError(
+                    f"Profile spec {profile!r} has no model mapping",
+                    path=f"profiles.{profile}",
+                )
             if (
                 spec.context_policy is ContextPolicy.EXTERNAL
                 and spec.lifecycle is not LifecycleMode.EPHEMERAL
             ):
-                raise ValueError("external context requires ephemeral lifecycle")
+                raise ConfigurationError(
+                    "external context requires ephemeral lifecycle",
+                    path=f"profile_specs.{profile}.lifecycle",
+                )
             if (
                 spec.context_policy in {ContextPolicy.RUNTIME, ContextPolicy.HYBRID}
                 and spec.lifecycle is not LifecycleMode.PERSISTENT
             ):
-                raise ValueError("runtime or hybrid context requires persistent lifecycle")
+                raise ConfigurationError(
+                    "runtime or hybrid context requires persistent lifecycle",
+                    path=f"profile_specs.{profile}.lifecycle",
+                )
             if spec.lifecycle is LifecycleMode.EXPLICIT:
-                raise ValueError("explicit lifecycle is reserved for the native profile")
+                raise ConfigurationError(
+                    "explicit lifecycle is reserved for the native profile",
+                    path=f"profile_specs.{profile}.lifecycle",
+                )
 
     def lookup(self, profile: str, level: LogicalLevel | str) -> ModelMapping:
         """Return a mapping or raise a path-aware configuration error."""

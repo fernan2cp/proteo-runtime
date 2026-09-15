@@ -23,6 +23,8 @@ class RuntimeMessage:
     def __post_init__(self) -> None:
         """Normalize content to a tuple and reject empty messages."""
 
+        if self.role not in {"system", "user", "assistant", "tool"}:
+            raise ValueError(f"Unsupported runtime message role: {self.role!r}")
         if not self.content:
             raise ValueError("A runtime message must contain content")
         if any(not isinstance(item, TextContent) for item in self.content):
