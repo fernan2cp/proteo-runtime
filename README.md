@@ -1,8 +1,8 @@
 # Proteo Runtime
 
 Provider-neutral runtime contracts for asynchronous model execution. Version
-`0.4.0` adds the optional LangGraph integration while preserving the provider-neutral
-core, deterministic lifecycle behavior, and host-owned session model from Phase 2.
+`0.5.0` adds provider-neutral observability with optional LangSmith and OpenTelemetry
+exporters while preserving the deterministic lifecycle behavior and host-owned session model.
 
 ## Status
 
@@ -11,8 +11,8 @@ Phase 0 contracts remain provider-neutral. Phase 1 adds a Codex provider behind
 configuration, immutable profile resolution, host-validated structured output,
 and same-thread session migration. Phase 3 adds the optional
 `proteo_runtime.integrations.langgraph.RuntimeNode`; host-managed tools, native
-tools, strong OS isolation, general retries, and framework-specific observability
-remain out of scope.
+tools, strong OS isolation, general retries, and operational doctor flows remain out of scope.
+Observability is opt-in through `proteo_runtime.observability`.
 
 ## Install
 
@@ -26,6 +26,30 @@ Install LangGraph support explicitly when building a graph:
 ```text
 uv add "proteo-runtime[langgraph]"
 ```
+
+Optional exporters can be installed independently:
+
+```text
+uv add "proteo-runtime[langsmith]"
+uv add "proteo-runtime[otel]"
+```
+
+Observability is disabled by default. Bind an observer with metadata-only payloads
+to preserve a provider-neutral, secret-safe event stream:
+
+```python
+from proteo_runtime.observability import ObserverBinding, ObservabilityConfig, PayloadMode
+from proteo_runtime.providers.codex import CodexRuntime
+
+config = ObservabilityConfig(
+    observers=(ObserverBinding(my_observer, PayloadMode.METADATA_ONLY),),
+)
+async with CodexRuntime(observability=config) as runtime:
+    result = await (await runtime.brain(level="low")).ainvoke("Hello")
+```
+
+See [`examples/observability_metadata_only.py`](examples/observability_metadata_only.py) for a
+complete metadata-only observer with no credential configuration.
 
 ## Minimal usage
 
