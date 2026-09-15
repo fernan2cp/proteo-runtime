@@ -88,6 +88,11 @@ funcionales desde `900bdd5` hasta `47606cd` y CI remoto `35027524386`/`350277647
 La confirmación del propietario sólo podrá aplicarse después de corregir y volver a validar los
 IDs reabiertos.
 
+La remediación local quedó respaldada por `4c2304f`, `9554d24` y `2976eb2`, con cobertura
+branch-aware `90.10%`, smoke real Luna/low y gates de packaging/encoding verdes. La columna de
+validación remota se completará con el run generado por el push de hardening; `35027984595` queda
+marcado como baseline previo y no satisface por sí solo los IDs reabiertos.
+
 ## Regla de control de cambios
 
 Cualquier cambio a symbols, schemas, permission matching, approval defaults, timeout/retry,

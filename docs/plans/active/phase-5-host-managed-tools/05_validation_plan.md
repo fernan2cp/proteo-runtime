@@ -199,3 +199,24 @@ Esta evidencia corresponde al baseline pre-Phase 5 y no cambia criterios a `done
 
 La evidencia de este bloque habilita revisión, pero no autoriza por sí sola mover el paquete a
 `complete/`.
+
+## Evidencia ejecutada — hardening 2026-09-15
+
+- `uv lock --check`: `Resolved 82 packages`.
+- Ruff format/check, mypy estricto (`69` archivos), import-linter (`79` archivos, `326`
+  dependencias) y pre-commit: verdes.
+- `pytest tests -q --cov=proteo_runtime --cov-branch --cov-fail-under=90`: `144 passed, 8
+  skipped`, cobertura branch-aware `90.10%`.
+- Quota safety: `1 passed`; integración default: `8 skipped`, sin red, credenciales, subprocess
+  Codex ni consumo de cuota.
+- `uv build` y `scripts/check_artifacts.py dist`: wheel/sdist `0.6.0` válidos. Wheel SHA-256
+  `9E97A55A146A6A1A17692323411943BA4313FAE6766BB1B11DF79FDAC339FC50`; sdist SHA-256
+  `48E4332F87F2FC3DB79EE92A8919D1CDEC447C02C4A2D8B2DB1F9BC78A5F4DF4`.
+- Smoke real separado con `PROTEO_CODEX_DYNAMIC_TOOLS_INTEGRATION=1`: `1 passed in 9.27s`,
+  Luna/low y al menos dos llamadas host-managed; el primer intento sandboxed fue bloqueado sólo
+  por permisos de `C:\Users\FAJ30\.codex` y se repitió con acceso aprobado.
+- Encoding guard sobre `src`, `tests`, `docs`, `examples`, `README.md`, `pyproject.toml` y
+  `.github`: `CLEAN`.
+
+La evidencia remota de hardening y del commit final queda pendiente de registrar después del push;
+el run histórico `35027984595` se conserva únicamente como baseline previo.

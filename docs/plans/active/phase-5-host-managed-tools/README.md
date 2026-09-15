@@ -85,5 +85,22 @@ crea un plan paralelo de cierre.
   sobre el commit de evidencia; ambos cubren Ubuntu/Windows y Python 3.11–3.14, incluyendo
   packaging.
 
+### Evidencia de hardening — 2026-09-15
+
+- Hardening adicional: `4c2304f`, `9554d24` y `2976eb2`; se reforzaron serialización JSON,
+  cleanup/deduplicación, multiplexado Codex y pruebas de compatibilidad.
+- Gates locales posteriores: `uv lock --check` (`Resolved 82 packages`), Ruff format/check,
+  mypy estricto sobre 69 archivos, import-linter sobre 79 archivos/326 dependencias y
+  pre-commit completo, todos verdes.
+- Suite: `144 passed, 8 skipped`; cobertura branch-aware `90.10%`; quota safety `1 passed` e
+  integración default `8 skipped` sin red, credenciales, subprocess Codex ni cuota.
+- Packaging: `uv build` y `scripts/check_artifacts.py dist` verdes para wheel/sdist `0.6.0`.
+  SHA-256 wheel `9E97A55A146A6A1A17692323411943BA4313FAE6766BB1B11DF79FDAC339FC50`; sdist
+  `48E4332F87F2FC3DB79EE92A8919D1CDEC447C02C4A2D8B2DB1F9BC78A5F4DF4`.
+- Encoding guard acotado a fuentes/documentación: `CLEAN`.
+- Smoke real opt-in elevado: `1 passed in 9.27s`, `gpt-5.6-luna`/`low`, dos calls host-side,
+  registry descartable y evidencia sanitizada.
+- Se verificó y eliminó el artefacto local `.ci-wheel-venv/`; `.ci-*-venv/` queda ignorado.
+
 El estado global y `P5-TASK-0009` permanecen `in_progress — owner review pending` por decisión
 del propietario. Esta carpeta no se mueve hasta recibir confirmación explícita.

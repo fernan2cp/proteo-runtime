@@ -98,3 +98,8 @@ remoto previo verde en los runs
 [35027764791](https://github.com/fernan2cp/proteo-runtime/actions/runs/35027764791) y
 [35027984595](https://github.com/fernan2cp/proteo-runtime/actions/runs/35027984595). El release
 queda reabierto por auditoría; `P5-TASK-0009` permanece `in_progress` y no se ha movido la carpeta.
+
+La validación local posterior al hardening está verde (`144 passed, 8 skipped`, cobertura `90.10%`,
+smoke Luna/low `1 passed`, packaging y encoding limpios). El run `35027984595` no se considera
+prueba del hardening; el SDD se actualizará con la URL y SHA del CI posterior al push antes de
+marcar requisitos y criterios como `done`.
