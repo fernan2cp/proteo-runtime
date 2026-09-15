@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "runtime": "codex",
+  "profiles": {
+    "brain": {
+      "low": {"model": "gpt-5.6-luna", "reasoning_effort": "low"},
+      "medium": {"model": "gpt-5.6-terra", "reasoning_effort": "medium"},
+      "high": {"model": "gpt-5.6-sol", "reasoning_effort": "high"},
+      "ultra": {"model": "gpt-5.6-sol", "reasoning_effort": "ultra"}
+    },
+    "structured": {
+      "low": {"model": "gpt-5.6-luna", "reasoning_effort": "low"},
+      "medium": {"model": "gpt-5.6-terra", "reasoning_effort": "medium"},
+      "high": {"model": "gpt-5.6-sol", "reasoning_effort": "high"},
+      "ultra": {"model": "gpt-5.6-sol", "reasoning_effort": "ultra"}
+    },
+    "session": {
+      "low": {"model": "gpt-5.6-luna", "reasoning_effort": "low"},
+      "medium": {"model": "gpt-5.6-terra", "reasoning_effort": "medium"},
+      "high": {"model": "gpt-5.6-sol", "reasoning_effort": "high"},
+      "ultra": {"model": "gpt-5.6-sol", "reasoning_effort": "ultra"}
+    }
+  }
+}

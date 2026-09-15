@@ -9,12 +9,14 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from proteo_runtime.config import RuntimeConfigV1, load_runtime_config
 from proteo_runtime.core.capabilities import RuntimeCapabilities
 from proteo_runtime.core.errors import (
     AgentRuntimeError,
     AuthenticationError,
     CancellationError,
     CapabilityError,
+    ConfigurationError,
     ContextPolicyError,
     InterruptedError,
     RuntimeTimeoutError,
@@ -27,7 +29,12 @@ from proteo_runtime.core.errors import (
 from proteo_runtime.core.events import RuntimeEvent, RuntimeEventKind
 from proteo_runtime.core.identity import RuntimeIdentity
 from proteo_runtime.core.input import RuntimeInput
-from proteo_runtime.core.model import InvocationConfig, RuntimeModel, RuntimeResult
+from proteo_runtime.core.model import (
+    InvocationConfig,
+    RuntimeModel,
+    RuntimeResult,
+    StructuredOutputPolicy,
+)
 from proteo_runtime.core.profiles import profile_spec
 from proteo_runtime.core.session_codec import SessionCodec
 
@@ -72,6 +79,7 @@ def _map_sdk_error(exc: Exception, operation: str) -> AgentRuntimeError:
     if isinstance(exc, AgentRuntimeError):
         return exc
     name = type(exc).__name__.lower()
+    text = str(exc).casefold()
     message = f"Codex {operation} failed"
     if "auth" in name or "login" in name or "credential" in name:
         return AuthenticationError(message)
@@ -79,13 +87,47 @@ def _map_sdk_error(exc: Exception, operation: str) -> AgentRuntimeError:
         return RuntimeTimeoutError(message)
     if "cancel" in name:
         return CancellationError(message)
-    if "notfound" in name or "not_found" in name:
+    if (
+        "notfound" in name
+        or "not_found" in name
+        or "lookup" in name
+        or "no rollout" in text
+        or "not found" in text
+    ):
         return SessionNotFoundError(message)
     if "interrupt" in name:
         return InterruptedError(message)
     if "capab" in name or "unsupported" in name:
         return CapabilityError(message)
     return TransportError(message, details={"exception_type": type(exc).__name__})
+
+
+def _merge_invocation_config(
+    base: InvocationConfig, override: InvocationConfig | None
+) -> InvocationConfig:
+    """Merge an optional invocation override without mutating the bound model."""
+
+    if override is None:
+        return base
+    metadata = dict(base.metadata)
+    metadata.update(override.metadata)
+    return InvocationConfig(
+        model=override.model if override.model is not None else base.model,
+        reasoning_effort=(
+            override.reasoning_effort
+            if override.reasoning_effort is not None
+            else base.reasoning_effort
+        ),
+        include_raw=(
+            override.include_raw if override.include_raw is not None else base.include_raw
+        ),
+        timeout_seconds=(
+            override.timeout_seconds
+            if override.timeout_seconds is not None
+            else base.timeout_seconds
+        ),
+        metadata=metadata,
+    )
 
 
 @dataclass
@@ -98,21 +140,43 @@ class _SessionState:
     model: str
     effort: str
     profile: str
+    level: str
+    context_policy: str
     workspace: Path
+    config: InvocationConfig = field(default_factory=InvocationConfig)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     active: TurnRun | None = None
     closed_handles: int = 0
     archived: bool = False
     deleted: bool = False
+    generation: int = 0
+
+
+@dataclass(frozen=True)
+class _ResolvedBinding:
+    """Immutable profile resolution used by one model or session handle."""
+
+    profile: str
+    level: str
+    model: str
+    effort: str
+    spec: Any
 
 
 class CodexRuntime:
     """Proteo runtime backed by the managed ChatGPT Codex SDK."""
 
-    def __init__(self, default_model: str | None = None) -> None:
+    def __init__(
+        self,
+        default_model: str | None = None,
+        *,
+        config_path: str | Path | None = None,
+        config: RuntimeConfigV1 | None = None,
+    ) -> None:
         """Initialize a lazy runtime without reading authentication."""
 
         self.default_model = default_model
+        self._config = load_runtime_config(config_path=config_path, config=config)
         self._sdk: Any | None = None
         self._identity: RuntimeIdentity | None = None
         self._identity_fingerprint: str | None = None
@@ -141,6 +205,10 @@ class CodexRuntime:
             return
         sdk = _create_sdk()
         try:
+            if self._config.runtime != "codex":
+                raise ConfigurationError(
+                    "Runtime configuration does not target Codex", path="runtime"
+                )
             response = await sdk.account(refresh_token=False)
             fingerprint_value, metadata = identity_metadata(response)
             account_value(response)
@@ -232,10 +300,10 @@ class CodexRuntime:
         return self._sdk
 
     async def capabilities(self) -> RuntimeCapabilities:
-        """Return the provider capabilities available in Phase 1."""
+        """Return the provider capabilities available in Phase 2."""
 
         return RuntimeCapabilities(
-            structured_output=False,
+            structured_output=True,
             ephemeral_sessions=True,
             persistent_sessions=True,
             streaming=True,
@@ -276,26 +344,34 @@ class CodexRuntime:
     def model(self, *, profile: str, level: str = "medium") -> RuntimeModel[str]:
         """Create a model view for a provider-neutral profile."""
 
-        profile_spec(profile)
-        return _CodexModel(self, profile, InvocationConfig(reasoning_effort=level))
+        self._profile_spec(profile)
+        return _CodexModel(self, profile, level, InvocationConfig())
 
-    async def brain(self, config: InvocationConfig | None = None) -> RuntimeModel[str]:
+    async def brain(
+        self, config: InvocationConfig | None = None, *, level: str = "medium"
+    ) -> RuntimeModel[str]:
         """Return the ephemeral brain model after checking lifecycle."""
 
         self._require_started()
-        return _CodexModel(self, "brain", config or InvocationConfig())
+        self._profile_spec("brain")
+        return _CodexModel(self, "brain", level, config or InvocationConfig())
 
     async def session(
-        self, profile: str = "session", config: InvocationConfig | None = None
+        self,
+        profile: str = "session",
+        *,
+        level: str = "medium",
+        config: InvocationConfig | None = None,
     ) -> _CodexSession:
         """Create a persistent Codex session with an opaque descriptor."""
 
         self._require_started()
-        spec = profile_spec(profile)
+        spec = self._profile_spec(profile)
         if not spec.persistent:
-            raise CapabilityError("Codex persistent sessions require the session profile")
-        model = self._resolve_model(config)
-        effort = self._resolve_effort(config, model)
+            raise CapabilityError("Codex persistent sessions require a persistent profile")
+        self._ensure_profile_executable(spec)
+        binding = self._resolve_binding(profile, level, config)
+        model, effort = binding.model, binding.effort
         workspace = create_workspace()
         try:
             thread = await self._require_started().thread_start(
@@ -309,11 +385,23 @@ class CodexRuntime:
                 model,
                 effort,
                 profile,
+                level,
                 spec.context.value,
                 spec.security_policy,
                 str(getattr(thread, "id", "")),
             )
-            state = _SessionState(self, thread, descriptor, model, effort, profile, workspace)
+            state = _SessionState(
+                self,
+                thread,
+                descriptor,
+                model,
+                effort,
+                profile,
+                level,
+                spec.context.value,
+                workspace,
+                config or InvocationConfig(),
+            )
             self._sessions[descriptor] = state
             self._emit(RuntimeEventKind.SESSION_CREATED, session_id=descriptor)
             return _CodexSession(state)
@@ -326,6 +414,7 @@ class CodexRuntime:
         model: str,
         effort: str,
         profile: str,
+        level: str,
         context_policy: str,
         security_policy: str,
         provider_id: str,
@@ -340,7 +429,7 @@ class CodexRuntime:
                 model, effort, profile, context_policy, security_policy
             ),
             profile=profile,
-            level=effort,
+            level=level,
             context_policy=context_policy,
             security_policy=security_policy,
         )
@@ -375,10 +464,12 @@ class CodexRuntime:
             or decoded.identity_fingerprint != self._identity_fingerprint
         ):
             raise SessionMismatchError("Session identity does not match the runtime")
-        profile_spec(decoded.profile)
-        model = self._selected_model or ""
+        spec = self._profile_spec(decoded.profile)
+        self._ensure_profile_executable(spec)
+        binding = self._resolve_binding(decoded.profile, decoded.level)
+        model = binding.model
         expected = self._configuration_fingerprint(
-            model, decoded.level, decoded.profile, decoded.context_policy, decoded.security_policy
+            model, binding.effort, decoded.profile, decoded.context_policy, decoded.security_policy
         )
         if decoded.configuration_fingerprint != expected:
             raise SessionMismatchError("Session configuration does not match the runtime")
@@ -402,7 +493,16 @@ class CodexRuntime:
             state = existing
         else:
             state = _SessionState(
-                self, thread, raw, model, decoded.level, decoded.profile, workspace
+                self,
+                thread,
+                raw,
+                model,
+                binding.effort,
+                decoded.profile,
+                decoded.level,
+                decoded.context_policy,
+                workspace,
+                InvocationConfig(),
             )
             self._sessions[raw] = state
         self._emit(RuntimeEventKind.SESSION_RESUMED, session_id=raw)
@@ -411,18 +511,68 @@ class CodexRuntime:
     async def migrate_session(
         self, session_id: str, *, profile: str, level: str = "medium", security_policy: str
     ) -> _CodexSession:
-        """Reject migration until Phase 2 without contacting the provider."""
+        """Rebind one existing Codex thread without replaying or copying history."""
 
-        del session_id, profile, level, security_policy
-        raise CapabilityError("Session migration is reserved for Phase 2")
+        sdk = self._require_started()
+        old = SessionCodec.decode(session_id)
+        if old.provider != "codex" or old.identity_fingerprint != self._identity_fingerprint:
+            raise SessionMismatchError("Only same-identity Codex sessions can migrate")
+        state = self._sessions.get(session_id)
+        if state is None or state.deleted:
+            raise SessionNotFoundError("Codex session was not found")
+        if state.active is not None or state.lock.locked():
+            raise SessionBusyError("Cannot migrate an active Codex session")
+        target = self._profile_spec(profile)
+        if not target.persistent:
+            raise CapabilityError("Session migration requires a persistent profile")
+        self._ensure_profile_executable(target)
+        if security_policy != old.security_policy or security_policy != target.security_policy:
+            raise CapabilityError("Session migration cannot expand or change permissions")
+        binding = self._resolve_binding(profile, level)
+        thread_id = str(getattr(state.thread, "id", ""))
+        workspace = create_workspace()
+        try:
+            thread = await sdk.thread_resume(
+                thread_id,
+                model=binding.model,
+                cwd=str(workspace),
+                approval_mode=_enum("ApprovalMode", "deny_all"),
+                sandbox=_enum("Sandbox", "read_only"),
+            )
+        except Exception as exc:
+            remove_workspace(workspace)
+            raise _map_sdk_error(exc, "session migration") from exc
+        new_descriptor = self._make_descriptor(
+            binding.model,
+            binding.effort,
+            profile,
+            level,
+            target.context.value,
+            target.security_policy,
+            thread_id,
+        )
+        self._sessions.pop(session_id, None)
+        state.thread = thread
+        state.descriptor = new_descriptor
+        state.model = binding.model
+        state.effort = binding.effort
+        state.profile = profile
+        state.level = level
+        state.context_policy = target.context.value
+        state.workspace = workspace
+        state.config = InvocationConfig()
+        state.generation += 1
+        self._sessions[new_descriptor] = state
+        self._emit(
+            RuntimeEventKind.SESSION_MIGRATED,
+            session_id=new_descriptor,
+        )
+        return _CodexSession(state)
 
     def _resolve_model(self, config: InvocationConfig | None) -> str:
         """Resolve and validate a configured model."""
 
-        selected = config.model if config is not None and config.model else self._selected_model
-        if selected not in self._catalog:
-            raise CapabilityError(f"Unknown Codex model: {selected}")
-        return str(selected)
+        return self._resolve_binding("brain", "medium", config).model
 
     def _resolve_effort(self, config: InvocationConfig | None, model: str) -> str:
         """Resolve and validate reasoning effort against the catalog."""
@@ -440,6 +590,58 @@ class CodexRuntime:
         if supported and effort not in supported:
             raise CapabilityError(f"Unsupported reasoning effort: {effort}")
         return effort
+
+    def _profile_spec(self, profile: str) -> Any:
+        """Resolve a built-in or configured custom profile."""
+
+        try:
+            return self._config.profile_spec(profile)
+        except ConfigurationError:
+            return profile_spec(profile)
+
+    def _resolve_binding(
+        self, profile: str, level: str, config: InvocationConfig | None = None
+    ) -> _ResolvedBinding:
+        """Resolve and validate one immutable profile/model/effort binding."""
+
+        spec = self._profile_spec(profile)
+        mapping = self._config.lookup(profile, level)
+        selected_model = (
+            config.model
+            if config is not None and config.model is not None
+            else self.default_model or mapping.model
+        )
+        selected_effort = (
+            config.reasoning_effort
+            if config is not None and config.reasoning_effort is not None
+            else mapping.reasoning_effort
+        )
+        self._validate_model_effort(str(selected_model), str(selected_effort))
+        return _ResolvedBinding(
+            profile=profile,
+            level=str(level),
+            model=str(selected_model),
+            effort=str(selected_effort),
+            spec=spec,
+        )
+
+    def _validate_model_effort(self, model: str, effort: str) -> None:
+        """Validate a concrete catalog model and provider reasoning effort."""
+
+        if model not in self._catalog:
+            raise CapabilityError(f"Unknown Codex model: {model}")
+        supported = {
+            _effort_value(value)
+            for value in (getattr(self._catalog[model], "supported_reasoning_efforts", ()) or ())
+        }
+        if supported and effort not in supported:
+            raise CapabilityError(f"Unsupported reasoning effort: {effort}")
+
+    def _ensure_profile_executable(self, spec: Any) -> None:
+        """Reject Phase 2 profiles whose permissions are not implemented."""
+
+        if spec.security_policy != "isolated" or spec.host_tools.value != "disabled":
+            raise CapabilityError("The requested profile requires a deferred Phase 2 capability")
 
     def _register_run(self, run: TurnRun) -> None:
         """Register one active turn for coordinated cleanup."""
@@ -470,24 +672,31 @@ class CodexRuntime:
 class _CodexModel:
     """Internal model implementation shared by brain and session factories."""
 
-    def __init__(self, runtime: CodexRuntime, profile: str, config: InvocationConfig) -> None:
+    def __init__(
+        self, runtime: CodexRuntime, profile: str, level: str, config: InvocationConfig
+    ) -> None:
         """Store model configuration without contacting Codex."""
 
         self.runtime = runtime
         self.profile = profile
+        self.level = level
         self.config = config
 
-    def with_structured_output(self, schema: Any) -> RuntimeModel[Any]:
-        """Reject structured output before any provider access."""
+    def with_structured_output(
+        self, schema: Any, *, policy: StructuredOutputPolicy | None = None
+    ) -> RuntimeModel[Any]:
+        """Return a structured facade after validating its schema locally."""
 
-        del schema
-        raise CapabilityError("Structured output is reserved for Phase 2")
+        from ._structured import StructuredCodexModel
+
+        return StructuredCodexModel(self, schema, policy)
 
     async def effective_capabilities(self) -> RuntimeCapabilities:
         """Return effective capabilities for this model profile."""
 
         capabilities = await self.runtime.capabilities()
-        if self.profile in {"structured", "controlled_agent", "native"}:
+        spec = self.runtime._profile_spec(self.profile)
+        if spec.security_policy != "isolated" or spec.host_tools.value != "disabled":
             return RuntimeCapabilities(
                 structured_output=False,
                 ephemeral_sessions=capabilities.ephemeral_sessions,
@@ -502,14 +711,20 @@ class _CodexModel:
         return capabilities
 
     async def _start_run(
-        self, value: str | RuntimeInput, include_raw: bool
+        self,
+        value: str | RuntimeInput,
+        include_raw: bool,
+        config: InvocationConfig | None = None,
+        output_schema: dict[str, Any] | None = None,
     ) -> tuple[TurnRun, Path]:
         """Create an ephemeral thread and start one async turn."""
 
         sdk = self.runtime._require_started()
         prompt, instructions = serialize_input(value)
-        model = self.runtime._resolve_model(self.config)
-        effort = self.runtime._resolve_effort(self.config, model)
+        effective = _merge_invocation_config(self.config, config)
+        self.runtime._ensure_profile_executable(self.runtime._profile_spec(self.profile))
+        binding = self.runtime._resolve_binding(self.profile, self.level, effective)
+        model, effort = binding.model, binding.effort
         workspace = create_workspace()
         try:
             thread = await sdk.thread_start(
@@ -524,6 +739,7 @@ class _CodexModel:
                 prompt,
                 model=model,
                 effort=effort,
+                output_schema=output_schema,
                 approval_mode=_enum("ApprovalMode", "deny_all"),
                 sandbox=_enum("Sandbox", "read_only"),
             )
@@ -540,6 +756,7 @@ class _CodexModel:
             effort=effort,
             include_raw=include_raw,
         )
+        run.provider_thread = thread
         self.runtime._register_run(run)
         return run, workspace
 
@@ -552,11 +769,9 @@ class _CodexModel:
     ) -> RuntimeResult[str]:
         """Invoke one ephemeral Codex turn and collect its result."""
 
-        effective_config = config or self.config
-        effective_raw = self.config.include_raw if include_raw is None else include_raw
-        original = self.config
-        self.config = effective_config
-        run, workspace = await self._start_run(input, effective_raw)
+        effective_config = _merge_invocation_config(self.config, config)
+        effective_raw = bool(effective_config.include_raw if include_raw is None else include_raw)
+        run, workspace = await self._start_run(input, effective_raw, effective_config)
         try:
             timeout = effective_config.timeout_seconds
             if timeout is None:
@@ -580,7 +795,6 @@ class _CodexModel:
                 raise
             raise _map_sdk_error(exc, "brain invocation") from exc
         finally:
-            self.config = original
             self.runtime._unregister_run(run)
             remove_workspace(workspace)
 
@@ -601,11 +815,9 @@ class _CodexModel:
     ) -> AsyncIterator[RuntimeEvent]:
         """Stream one ephemeral Codex turn through the shared runner."""
 
-        effective_config = config or self.config
-        effective_raw = self.config.include_raw if include_raw is None else include_raw
-        original = self.config
-        self.config = effective_config
-        run, workspace = await self._start_run(input, effective_raw)
+        effective_config = _merge_invocation_config(self.config, config)
+        effective_raw = bool(effective_config.include_raw if include_raw is None else include_raw)
+        run, workspace = await self._start_run(input, effective_raw, effective_config)
         try:
             timeout = effective_config.timeout_seconds
             if timeout is None:
@@ -626,7 +838,6 @@ class _CodexModel:
                 raise
             raise _map_sdk_error(exc, "brain streaming") from exc
         finally:
-            self.config = original
             self.runtime._unregister_run(run)
             remove_workspace(workspace)
 
@@ -639,18 +850,20 @@ class _CodexSession:
 
         self._state = state
         self._closed = False
+        self._generation = state.generation
+        self._descriptor = state.descriptor
 
     @property
     def id(self) -> str:
         """Return the opaque descriptor identifier."""
 
-        return self._state.descriptor
+        return self._descriptor
 
     @property
     def descriptor(self) -> str:
         """Return the opaque descriptor."""
 
-        return self._state.descriptor
+        return self._descriptor
 
     async def ainvoke(
         self,
@@ -667,10 +880,11 @@ class _CodexSession:
         if self._state.lock.locked():
             raise SessionBusyError("Session already has an active turn")
         async with self._state.lock:
-            prompt, _ = serialize_input(runtime_input)
+            prompt = self._serialize_context(runtime_input)
             run = await self._start_turn(prompt, config, include_raw)
             try:
-                timeout = (config or InvocationConfig()).timeout_seconds
+                effective = self._effective_config(config, include_raw)
+                timeout = effective.timeout_seconds
                 if timeout is None:
                     async for _ in run.events():
                         pass
@@ -684,6 +898,9 @@ class _CodexSession:
             except TimeoutError as exc:
                 await self._interrupt_or_invalidate(run)
                 raise RuntimeTimeoutError("Codex session turn timed out") from exc
+            except asyncio.CancelledError as exc:
+                await self._interrupt_or_invalidate(run)
+                raise CancellationError("Codex session turn was cancelled") from exc
             finally:
                 self._state.active = None
                 self._state.runtime._unregister_run(run)
@@ -693,7 +910,7 @@ class _CodexSession:
     ) -> TurnRun:
         """Start one turn on the shared persistent thread."""
 
-        del config
+        effective = self._effective_config(config, include_raw)
         handle = await self._state.thread.turn(
             prompt,
             model=self._state.model,
@@ -710,7 +927,7 @@ class _CodexSession:
             profile=self._state.profile,
             effort=self._state.effort,
             session_id=self.id,
-            include_raw=bool(include_raw),
+            include_raw=bool(effective.include_raw),
         )
         self._state.active = run
         self._state.runtime._register_run(run)
@@ -733,9 +950,9 @@ class _CodexSession:
         await self._state.lock.acquire()
         run: TurnRun | None = None
         try:
-            prompt, _ = serialize_input(runtime_input)
+            prompt = self._serialize_context(runtime_input)
             run = await self._start_turn(prompt, config, include_raw)
-            timeout = (config or InvocationConfig()).timeout_seconds
+            timeout = self._effective_config(config, include_raw).timeout_seconds
             if timeout is None:
                 async for event in run.events():
                     yield event
@@ -760,13 +977,46 @@ class _CodexSession:
     def _validate_user_input(self, value: RuntimeInput) -> None:
         """Reject system, assistant, and tool replay in persistent sessions."""
 
-        if any(message.role != "user" for message in value.messages):
-            raise ContextPolicyError("Persistent Codex sessions accept user messages only")
+        policy = self._state.context_policy
+        if policy == "runtime" and any(message.role != "user" for message in value.messages):
+            raise ContextPolicyError("Runtime Codex sessions accept user messages only")
+        if policy == "hybrid" and any(
+            message.role not in {"system", "user"} for message in value.messages
+        ):
+            raise ContextPolicyError("Hybrid Codex sessions reject assistant/tool replay")
+
+    def _serialize_context(self, value: RuntimeInput) -> str:
+        """Serialize the current turn according to the session context policy."""
+
+        prompt, instructions = serialize_input(value)
+        if self._state.context_policy == "hybrid" and instructions:
+            return f"[system]\n{instructions}\n\n{prompt}"
+        return prompt
+
+    def _effective_config(
+        self, config: InvocationConfig | None, include_raw: bool | None
+    ) -> InvocationConfig:
+        """Merge invocation metadata while keeping session model binding frozen."""
+
+        effective = _merge_invocation_config(self._state.config, config)
+        if config is not None and config.model is not None and config.model != self._state.model:
+            raise CapabilityError("Session model configuration is immutable")
+        if (
+            config is not None
+            and config.reasoning_effort is not None
+            and str(config.reasoning_effort) != self._state.effort
+        ):
+            raise CapabilityError("Session reasoning configuration is immutable")
+        if include_raw is not None:
+            effective = _merge_invocation_config(
+                effective, InvocationConfig(include_raw=include_raw)
+            )
+        return effective
 
     def _ensure_open(self) -> None:
         """Reject operations after local close or provider deletion."""
 
-        if self._closed or self._state.deleted:
+        if self._closed or self._state.deleted or self._generation != self._state.generation:
             raise SessionNotFoundError("Codex session handle is closed or deleted")
 
     async def _interrupt_or_invalidate(self, run: TurnRun) -> None:
@@ -786,6 +1036,9 @@ class _CodexSession:
     async def close(self) -> None:
         """Close this local handle while preserving provider history."""
 
+        if self._generation != self._state.generation:
+            self._closed = True
+            return
         if not self._closed:
             if self._state.active is not None:
                 await self._state.active.interrupt()

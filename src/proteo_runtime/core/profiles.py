@@ -74,7 +74,7 @@ DEFAULT_PROFILE_SPECS = MappingProxyType(
         ),
         ExecutionProfile.CONTROLLED_AGENT.value: ProfileSpec(
             LifecycleMode.EPHEMERAL,
-            ContextPolicy.HYBRID,
+            ContextPolicy.EXTERNAL,
             HostToolsMode.CONTROLLED,
             "controlled_tools",
         ),
