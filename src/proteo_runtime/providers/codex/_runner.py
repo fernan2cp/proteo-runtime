@@ -123,6 +123,7 @@ class TurnRun:
     ephemeral: bool = True
     structured_output: bool = False
     provider_thread: Any | None = None
+    cleanup: Callable[[], None] | None = None
     event_sink: Callable[[RuntimeEvent], Awaitable[RuntimeEvent]] | None = None
     deltas: list[str] = field(default_factory=list)
     items: list[object] = field(default_factory=list)
@@ -317,6 +318,9 @@ class TurnRun:
             )
             raise self.terminal_error from exc
         finally:
+            if self.cleanup is not None:
+                self.cleanup()
+                self.cleanup = None
             self.finished.set()
         if self.terminal_status is None:
             self.terminal_error = TransportError("Codex returned no terminal turn event")
