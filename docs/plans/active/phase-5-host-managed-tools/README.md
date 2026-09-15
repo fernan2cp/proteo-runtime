@@ -68,8 +68,9 @@ crea un plan paralelo de cierre.
 
 ## Evidencia de implementación
 
-- Commits funcionales: `900bdd5`, `b4f0c14`, `5300776`, `b99131c`, `f747468`, `9737373` y
-  `b2379f9`; el commit inicial del SDD `ba78016` se conserva.
+- Commits funcionales: `900bdd5`, `b4f0c14`, `5300776`, `b99131c`, `f747468`, `9737373`,
+  `b2379f9` y la corrección del bridge `08445fc`; el commit inicial del SDD `ba78016` se
+  conserva.
 - Gates locales: `uv lock --check`, Ruff format/check, mypy strict (69 archivos), import-linter
   (79 archivos/325 dependencias), pre-commit, pytest branch-aware (`138 passed, 8 skipped`,
   cobertura `90.11%`), quota safety, build, inspección de artefactos e instalaciones aisladas.
@@ -77,8 +78,9 @@ crea un plan paralelo de cierre.
   `BEABD6DBF4BA225B8C9CFF6ED4DE4C2D750B22E0B78945E8A8CD397A64C594A6`; sdist SHA-256
   `4B56C551BEF28E4F7BA1CD051035125E1D6A7384CB0DF234D117F59C54EF5B72`.
 - Smoke Codex opt-in: `tests/integration/codex/test_dynamic_tools_smoke.py` pasó con
-  `PROTEO_CODEX_DYNAMIC_TOOLS_INTEGRATION=1`, `gpt-5.6-luna`/`low` y dos tools host-side.
-- CI remoto verde: [run 35025491793](https://github.com/fernan2cp/proteo-runtime/actions/runs/35025491793),
+  `PROTEO_CODEX_DYNAMIC_TOOLS_INTEGRATION=1`, `gpt-5.6-luna`/`low` y dos ejecuciones host-side
+  reales, verificadas por eventos `tool_completed`.
+- CI remoto verde: [run 35027524386](https://github.com/fernan2cp/proteo-runtime/actions/runs/35027524386),
   Ubuntu/Windows y Python 3.11–3.14, incluyendo packaging.
 
 El estado global y `P5-TASK-0009` permanecen `in_progress — owner review pending` por decisión

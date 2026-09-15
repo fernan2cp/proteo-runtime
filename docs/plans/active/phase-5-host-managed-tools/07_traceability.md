@@ -78,7 +78,7 @@ Extraer todos los IDs `P5-REQ-*`, `P5-TASK-*` y `AC-P5-*` y comprobar:
 - Estado global: `in_progress — owner review pending`.
 
 La evidencia reproducible está en `05_validation_plan.md`, con commits funcionales desde
-`900bdd5` hasta `b2379f9` y CI remoto `35025491793`. El estado pendiente es deliberado: sólo la
+`900bdd5` hasta `08445fc` y CI remoto `35027524386`. El estado pendiente es deliberado: sólo la
 confirmación explícita del propietario permite marcar `P5-TASK-0009` como `done`, actualizar el
 estado final y mover esta misma carpeta a `docs/plans/complete/`.
 

@@ -94,6 +94,6 @@ La release y el cierre sólo avanzan cuando `P5-REQ-001`–`P5-REQ-024`,
 
 La rama `arch/phase-5-host-managed-tools` está publicada con `0.6.0`, commits granulares y CI
 remoto verde en el run
-[35025491793](https://github.com/fernan2cp/proteo-runtime/actions/runs/35025491793). El release
+[35027524386](https://github.com/fernan2cp/proteo-runtime/actions/runs/35027524386). El release
 queda listo para revisión del propietario; `P5-TASK-0009` permanece
 `in_progress — owner review pending` y no se ha movido la carpeta.
