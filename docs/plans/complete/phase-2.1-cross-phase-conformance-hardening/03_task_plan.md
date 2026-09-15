@@ -37,7 +37,8 @@ Criterios: `AC-C21-005`–`AC-C21-009`
 Acciones: implement exclusive terminal state, missing-terminal failure, stream finalizer and
 awaited runtime cleanup in provider code and fakes.
 
-Evidencia: `92d89ef`; suite semántica cubre terminales fallidos/interrumpidos, EOF y cleanup.
+Evidencia: `92d89ef` y `26b94c2`; suite semántica cubre terminales fallidos/interrumpidos, EOF,
+los eventos `TURN_INTERRUPTED`/`INTERRUPTED` y cleanup.
 
 ### C21-TASK-0004 — Validate configuration and freeze bindings
 
