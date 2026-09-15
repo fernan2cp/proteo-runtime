@@ -79,13 +79,13 @@ Extraer todos los IDs `P5-REQ-*`, `P5-TASK-*` y `AC-P5-*` y comprobar:
 - Estado global: `done`.
 
 La auditoría se corrigió mediante `4c2304f`, `9554d24`, `2976eb2` y `f7e677f`; la suite local,
-smoke y CI `35033800136` validan los IDs reabiertos sobre `f7e677f`. El propietario autorizó el
-cierre explícito en la solicitud actual.
+smoke y CI `35033800136` validaron los IDs reabiertos sobre `f7e677f`. El cierre se registró en
+`a3a046f` y su CI final `35034093284` terminó `success`; el propietario autorizó explícitamente
+la operación.
 
 La remediación local quedó respaldada por `4c2304f`, `9554d24` y `2976eb2`, con cobertura
-branch-aware `90.10%`, smoke real Luna/low y gates de packaging/encoding verdes. La columna de
-validación remota se completará con el run generado por el push de hardening; `35027984595` queda
-marcado como baseline previo y no satisface por sí solo los IDs reabiertos.
+branch-aware `90.10%`, smoke real Luna/low y gates de packaging/encoding verdes. `35027984595`
+queda marcado como baseline previo y no satisface por sí solo los IDs reabiertos.
 
 ## Regla de control de cambios
 

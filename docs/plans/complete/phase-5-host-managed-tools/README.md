@@ -105,4 +105,4 @@ crea un plan paralelo de cierre.
 El propietario autorizó explícitamente el cierre en la solicitud actual. Tras el hardening, el
 run CI [35033800136](https://github.com/fernan2cp/proteo-runtime/actions/runs/35033800136) terminó
 `success` sobre `f7e677f`, con Ubuntu/Windows, Python 3.11–3.14 y packaging. Todos los IDs quedan
-`done`; el movimiento a `complete/` y su commit de cierre son la siguiente operación.
+`done` y el cierre se registró en `a3a046f`.

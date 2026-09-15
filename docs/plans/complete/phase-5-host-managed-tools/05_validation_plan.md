@@ -223,5 +223,6 @@ La evidencia de este bloque habilita revisión, pero no autoriza por sí sola mo
 - Encoding guard sobre `src`, `tests`, `docs`, `examples`, `README.md`, `pyproject.toml` y
   `.github`: `CLEAN`.
 
-La evidencia remota de hardening y del commit final queda pendiente de registrar después del push;
-el run histórico `35027984595` se conserva únicamente como baseline previo.
+CI posterior al commit de cierre: [run 35034093284](https://github.com/fernan2cp/proteo-runtime/actions/runs/35034093284)
+terminó `success` sobre `a3a046f`, con pre-commit, Ubuntu/Windows Python 3.11–3.14 y packaging
+aislado. El run histórico `35027984595` se conserva únicamente como baseline previo.

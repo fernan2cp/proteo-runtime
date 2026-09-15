@@ -99,7 +99,8 @@ remoto verde en los runs previos
 [35027984595](https://github.com/fernan2cp/proteo-runtime/actions/runs/35027984595), además del
 run de hardening [35033800136](https://github.com/fernan2cp/proteo-runtime/actions/runs/35033800136)
 sobre `f7e677f`. Todos los requisitos, criterios y tareas están `done`; el commit de movimiento
-del paquete queda como cierre separado.
+del paquete quedó registrado en `a3a046f`; su CI final es el run
+[35034093284](https://github.com/fernan2cp/proteo-runtime/actions/runs/35034093284), `success`.
 
 La validación local posterior al hardening está verde (`144 passed, 8 skipped`, cobertura `90.10%`,
 smoke Luna/low `1 passed`, packaging y encoding limpios). El run `35027984595` se conserva sólo
