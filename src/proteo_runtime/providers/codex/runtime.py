@@ -45,14 +45,22 @@ from ._compat import delete_thread
 from ._mapping import account_value, fingerprint, identity_metadata, serialize_input
 from ._runner import TurnRun
 from ._workspace import create_workspace, remove_workspace
+from .native_otel import CodexNativeOtelConfig, native_otel_capabilities
 
 
-def _create_sdk() -> Any:
+def _create_sdk(native_otel: Any | None = None) -> Any:
     """Construct the pinned asynchronous Codex SDK client."""
 
     from openai_codex import AsyncCodex
 
-    return AsyncCodex()
+    if native_otel is None:
+        return AsyncCodex()
+    from openai_codex import CodexConfig
+
+    capabilities = native_otel_capabilities(native_otel)
+    if not capabilities.supported:
+        raise ConfigurationError("Codex-native OpenTelemetry is unsupported by this SDK")
+    return AsyncCodex(config=CodexConfig(config_overrides=native_otel.overrides()))
 
 
 def _enum(name: str, member: str) -> Any:
@@ -177,12 +185,14 @@ class CodexRuntime:
         config_path: str | Path | None = None,
         config: RuntimeConfigV1 | None = None,
         observability: ObservabilityConfig | None = None,
+        codex_native_otel: CodexNativeOtelConfig | None = None,
     ) -> None:
         """Initialize a lazy runtime without reading authentication."""
 
         self.default_model = default_model
         self._config = load_runtime_config(config_path=config_path, config=config)
         self._observability = RuntimeEventBus(observability)
+        self._codex_native_otel = codex_native_otel
         self._sdk: Any | None = None
         self._identity: RuntimeIdentity | None = None
         self._identity_fingerprint: str | None = None
@@ -201,6 +211,11 @@ class CodexRuntime:
 
         return self._observability.status
 
+    def codex_native_otel_capabilities(self) -> Any:
+        """Report native Codex telemetry support without starting inference."""
+
+        return native_otel_capabilities(self._codex_native_otel)
+
     @property
     def identity(self) -> RuntimeIdentity:
         """Return the sanitized runtime identity after startup."""
@@ -214,7 +229,11 @@ class CodexRuntime:
 
         if self._started and not self._closed:
             return
-        sdk = _create_sdk()
+        sdk = (
+            _create_sdk()
+            if self._codex_native_otel is None
+            else _create_sdk(self._codex_native_otel)
+        )
         try:
             if self._config.runtime != "codex":
                 raise ConfigurationError(
