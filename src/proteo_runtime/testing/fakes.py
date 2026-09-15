@@ -398,6 +398,12 @@ class FakeRuntime:
                 await asyncio.sleep(turn.delay_seconds)
             if state and state.interrupted:
                 self._emit(
+                    RuntimeEventKind.TURN_INTERRUPTED,
+                    invocation_id=invocation_id,
+                    session_id=session_id,
+                    turn_id=turn_id,
+                )
+                self._emit(
                     RuntimeEventKind.INTERRUPTED,
                     invocation_id=invocation_id,
                     session_id=session_id,

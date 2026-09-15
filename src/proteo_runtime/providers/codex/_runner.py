@@ -195,6 +195,11 @@ class TurnRun:
                             turn_id=turn_id,
                             metadata={"status": status},
                         )
+                        yield self._emit(
+                            RuntimeEventKind.INTERRUPTED,
+                            turn_id=turn_id,
+                            metadata={"status": status},
+                        )
                     elif status == "completed":
                         self.result = self._result(turn)
                         yield self._emit(

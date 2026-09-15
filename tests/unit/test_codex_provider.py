@@ -670,6 +670,7 @@ async def test_runner_failed_interrupted_and_fallback_terminal(
         async for event in model.astream("interrupted"):
             interrupted.append(event)
     assert any(event.kind is RuntimeEventKind.TURN_INTERRUPTED for event in interrupted)
+    assert any(event.kind is RuntimeEventKind.INTERRUPTED for event in interrupted)
     fallback: list[Any] = []
     with pytest.raises(TransportError):
         async for event in model.astream("fallback"):
