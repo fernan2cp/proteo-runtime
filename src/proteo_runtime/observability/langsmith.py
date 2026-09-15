@@ -58,7 +58,10 @@ class LangSmithObserver:
         root = self._runs.get((invocation, "runtime"))
         if event.kind is RuntimeEventKind.TURN_STARTED:
             self._create_run((invocation, "turn"), "proteo.turn", event, root)
-        elif event.kind is RuntimeEventKind.RETRY_SCHEDULED:
+        elif event.kind in {
+            RuntimeEventKind.RETRY_SCHEDULED,
+            RuntimeEventKind.TOOL_RETRY_SCHEDULED,
+        }:
             key = (invocation, f"retry:{event.metadata.get('attempt', '')}")
             self._create_run(
                 key,
@@ -76,14 +79,22 @@ class LangSmithObserver:
                 self._runs.get((invocation, "turn")) or root,
             )
             self._finish_keys((key,), event)
-        elif event.kind in {RuntimeEventKind.TOOL_REQUESTED, RuntimeEventKind.TOOL_STARTED}:
+        elif event.kind in {
+            RuntimeEventKind.TOOL_REQUESTED,
+            RuntimeEventKind.TOOL_STARTED,
+            RuntimeEventKind.TOOL_APPROVAL_REQUESTED,
+        }:
             self._create_run(
                 (invocation, self._tool_key(event)),
                 "proteo.tool",
                 event,
                 self._runs.get((invocation, "turn")) or root,
             )
-        elif event.kind is RuntimeEventKind.TOOL_COMPLETED:
+        elif event.kind in {
+            RuntimeEventKind.TOOL_COMPLETED,
+            RuntimeEventKind.TOOL_DENIED,
+            RuntimeEventKind.TOOL_FAILED,
+        }:
             key = (invocation, self._tool_key(event))
             if key not in self._runs:
                 open_tools = [

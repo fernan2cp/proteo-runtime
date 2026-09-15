@@ -67,9 +67,13 @@ class OpenTelemetryObserver:
         self._record_metric(self._event_counter, 1, {"event.kind": event.kind.value})
         if event.kind is RuntimeEventKind.INVOCATION_STARTED:
             self._record_metric(self._invocation_counter, 1, {"runtime": _runtime_name(event)})
-        if event.kind is RuntimeEventKind.RETRY_SCHEDULED:
+        if event.kind in {RuntimeEventKind.RETRY_SCHEDULED, RuntimeEventKind.TOOL_RETRY_SCHEDULED}:
             self._record_metric(self._retry_counter, 1, {"runtime": _runtime_name(event)})
-        if event.kind is RuntimeEventKind.TOOL_COMPLETED:
+        if event.kind in {
+            RuntimeEventKind.TOOL_COMPLETED,
+            RuntimeEventKind.TOOL_DENIED,
+            RuntimeEventKind.TOOL_FAILED,
+        }:
             self._record_metric(self._tool_counter, 1, {"runtime": _runtime_name(event)})
         if event.kind in {
             RuntimeEventKind.INVOCATION_FAILED,
@@ -120,8 +124,10 @@ class OpenTelemetryObserver:
                 RuntimeEventKind.INVOCATION_STARTED,
                 RuntimeEventKind.TURN_STARTED,
                 RuntimeEventKind.RETRY_SCHEDULED,
+                RuntimeEventKind.TOOL_RETRY_SCHEDULED,
                 RuntimeEventKind.VALIDATION_FAILED,
                 RuntimeEventKind.TOOL_STARTED,
+                RuntimeEventKind.TOOL_APPROVAL_REQUESTED,
             }
             and key not in self._spans
         ):
@@ -134,7 +140,12 @@ class OpenTelemetryObserver:
             RuntimeEventKind.TURN_INTERRUPTED,
         }:
             self._end_span((invocation, "turn"), event)
-        if event.kind in {RuntimeEventKind.RETRY_SCHEDULED, RuntimeEventKind.VALIDATION_FAILED}:
+        if event.kind in {
+            RuntimeEventKind.RETRY_SCHEDULED,
+            RuntimeEventKind.TOOL_RETRY_SCHEDULED,
+            RuntimeEventKind.VALIDATION_FAILED,
+            RuntimeEventKind.TOOL_APPROVAL_RESOLVED,
+        }:
             parent = self._spans.get((invocation, "turn")) or self._spans.get(
                 (invocation, "invocation")
             )
@@ -146,7 +157,11 @@ class OpenTelemetryObserver:
                     },
                 )
             self._end_span(key, event)
-        if event.kind in {RuntimeEventKind.TOOL_COMPLETED}:
+        if event.kind in {
+            RuntimeEventKind.TOOL_COMPLETED,
+            RuntimeEventKind.TOOL_DENIED,
+            RuntimeEventKind.TOOL_FAILED,
+        }:
             self._end_span((invocation, "tool"), event)
         if event.kind in {
             RuntimeEventKind.INVOCATION_COMPLETED,
@@ -279,9 +294,28 @@ def _span_kind(kind: RuntimeEventKind) -> str:
         return "turn"
     if kind is RuntimeEventKind.INVOCATION_STARTED:
         return "invocation"
-    if kind in {RuntimeEventKind.RETRY_SCHEDULED, RuntimeEventKind.VALIDATION_FAILED}:
-        return "retry" if kind is RuntimeEventKind.RETRY_SCHEDULED else "validation"
-    if kind in {RuntimeEventKind.TOOL_STARTED, RuntimeEventKind.TOOL_COMPLETED}:
+    if kind in {
+        RuntimeEventKind.RETRY_SCHEDULED,
+        RuntimeEventKind.TOOL_RETRY_SCHEDULED,
+        RuntimeEventKind.VALIDATION_FAILED,
+    }:
+        return (
+            "retry"
+            if kind
+            in {
+                RuntimeEventKind.RETRY_SCHEDULED,
+                RuntimeEventKind.TOOL_RETRY_SCHEDULED,
+            }
+            else "validation"
+        )
+    if kind in {
+        RuntimeEventKind.TOOL_STARTED,
+        RuntimeEventKind.TOOL_COMPLETED,
+        RuntimeEventKind.TOOL_APPROVAL_REQUESTED,
+        RuntimeEventKind.TOOL_APPROVAL_RESOLVED,
+        RuntimeEventKind.TOOL_DENIED,
+        RuntimeEventKind.TOOL_FAILED,
+    }:
         return "tool"
     return "runtime"
 
