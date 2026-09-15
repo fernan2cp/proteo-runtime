@@ -54,6 +54,24 @@ async def test_stategraph_brain_and_structured_nodes_return_neutral_state() -> N
 
 
 @pytest.mark.asyncio
+async def test_stategraph_json_schema_output_passes_through_validated_value() -> None:
+    """StateGraph can execute a model linked with a JSON Schema output contract."""
+
+    schema = {
+        "type": "object",
+        "properties": {"decision": {"type": "string"}},
+        "required": ["decision"],
+        "additionalProperties": False,
+    }
+    runtime = FakeRuntime(turns=[FakeTurn(value='{"decision":"yes"}')])
+    structured = runtime.model(profile="brain").with_structured_output(schema)
+
+    result = await _graph(RuntimeNode[Any](structured)).ainvoke({"input": "choose"})
+
+    assert result["output"] == {"decision": "yes"}
+
+
+@pytest.mark.asyncio
 async def test_stategraph_custom_stream_is_json_safe_and_ordered() -> None:
     """LangGraph custom mode receives ordered neutral envelopes without raw state objects."""
 

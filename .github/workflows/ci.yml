@@ -64,6 +64,7 @@ jobs:
           uv venv .ci-wheel-venv --python 3.11
           uv pip install --python .ci-wheel-venv/bin/python dist/*.whl
           .ci-wheel-venv/bin/python -c "import proteo_runtime; assert proteo_runtime.__version__ == '0.4.0'; import importlib.util; assert importlib.util.find_spec('langgraph') is None"
+          .ci-wheel-venv/bin/python -c "import subprocess,sys; result=subprocess.run([sys.executable,'-c','from proteo_runtime.integrations.langgraph import RuntimeNode'],capture_output=True,text=True); assert result.returncode != 0 and 'proteo-runtime[langgraph]' in result.stderr"
           .ci-wheel-venv/bin/proteo-runtime --version
           .ci-wheel-venv/bin/python -m proteo_runtime --version
       - name: Install and validate sdist in an isolated environment
@@ -71,6 +72,7 @@ jobs:
           uv venv .ci-sdist-venv --python 3.11
           uv pip install --python .ci-sdist-venv/bin/python dist/*.tar.gz
           .ci-sdist-venv/bin/python -c "import proteo_runtime; assert proteo_runtime.__version__ == '0.4.0'; import importlib.util; assert importlib.util.find_spec('langgraph') is None"
+          .ci-sdist-venv/bin/python -c "import subprocess,sys; result=subprocess.run([sys.executable,'-c','from proteo_runtime.integrations.langgraph import RuntimeNode'],capture_output=True,text=True); assert result.returncode != 0 and 'proteo-runtime[langgraph]' in result.stderr"
           .ci-sdist-venv/bin/proteo-runtime --version
           .ci-sdist-venv/bin/python -m proteo_runtime --version
       - name: Install and validate wheel with LangGraph extra

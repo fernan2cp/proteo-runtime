@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Mapping
 from datetime import UTC, datetime
 from typing import Any, cast
 
@@ -33,6 +33,90 @@ class Decision(BaseModel):
     """Structured value used by adapter tests."""
 
     decision: str
+
+
+class _TrackingSession:
+    """Forward a fake session while recording lifecycle calls."""
+
+    def __init__(self, inner: Any) -> None:
+        """Initialize the tracking wrapper around a session handle."""
+
+        self._inner = inner
+        self.close_calls = 0
+        self.interrupt_calls = 0
+        self.archive_calls = 0
+        self.delete_calls = 0
+
+    @property
+    def descriptor(self) -> str:
+        """Return the wrapped opaque descriptor."""
+
+        return cast(str, self._inner.descriptor)
+
+    async def ainvoke(self, input: Any, **kwargs: Any) -> Any:
+        """Delegate direct invocation to the wrapped session."""
+
+        return await self._inner.ainvoke(input, **kwargs)
+
+    def astream(self, input: Any, **kwargs: Any) -> AsyncIterator[RuntimeEvent]:
+        """Delegate event streaming to the wrapped session."""
+
+        return cast(AsyncIterator[RuntimeEvent], self._inner.astream(input, **kwargs))
+
+    async def interrupt(self) -> None:
+        """Record and delegate an interruption request."""
+
+        self.interrupt_calls += 1
+        await self._inner.interrupt()
+
+    async def close(self) -> None:
+        """Record and delegate local handle cleanup."""
+
+        self.close_calls += 1
+        await self._inner.close()
+
+    async def archive(self) -> None:
+        """Record and delegate archive operations."""
+
+        self.archive_calls += 1
+        await self._inner.archive()
+
+    async def delete(self) -> None:
+        """Record and delegate delete operations."""
+
+        self.delete_calls += 1
+        await self._inner.delete()
+
+
+class _ClosableStream:
+    """Async iterator that records exactly how often it is closed."""
+
+    def __init__(self, events: tuple[RuntimeEvent, ...], *, block: bool = False) -> None:
+        """Initialize the scripted event sequence."""
+
+        self._events = iter(events)
+        self._gate = asyncio.Event() if block else None
+        self.close_calls = 0
+
+    def __aiter__(self) -> _ClosableStream:
+        """Return this iterator for asynchronous iteration."""
+
+        return self
+
+    async def __anext__(self) -> RuntimeEvent:
+        """Return the next event or finish the stream."""
+
+        if self._gate is not None:
+            await self._gate.wait()
+        try:
+            return next(self._events)
+        except StopIteration as exc:
+            raise StopAsyncIteration from exc
+
+    async def aclose(self) -> None:
+        """Record one adapter-requested iterator close."""
+
+        self.close_calls += 1
 
 
 def _writer(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
@@ -293,6 +377,55 @@ async def test_runtime_node_terminal_state_machine_errors(monkeypatch: pytest.Mo
         )({"input": "question"})
 
 
+@pytest.mark.asyncio
+async def test_runtime_node_closes_stream_exactly_once_on_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Successful consumption closes the runtime iterator exactly once."""
+
+    _writer(monkeypatch)
+    identity = RuntimeIdentity("fake", "fingerprint")
+    terminal = RuntimeEvent(
+        RuntimeEventKind.INVOCATION_COMPLETED,
+        "terminal",
+        1,
+        datetime.now(UTC),
+        identity,
+        result=RuntimeResult(output="done", runtime=identity),
+    )
+    stream = _ClosableStream((terminal,))
+    model = _StreamModel(lambda: stream)
+
+    result = await langgraph_integration.RuntimeNode[Any](cast(RuntimeModel[Any], model))(
+        {"input": "question"}
+    )
+
+    assert result == {"output": "done"}
+    assert stream.close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_runtime_node_closes_stream_exactly_once_on_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Caller cancellation closes a blocked runtime iterator exactly once."""
+
+    _writer(monkeypatch)
+    stream = _ClosableStream((), block=True)
+    model = _StreamModel(lambda: stream)
+    task = asyncio.create_task(
+        langgraph_integration.RuntimeNode[Any](cast(RuntimeModel[Any], model))(
+            {"input": "question"}
+        )
+    )
+    await asyncio.sleep(0.01)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert stream.close_calls == 1
+
+
 class _StreamModel:
     """Minimal model-shaped stream provider for terminal state tests."""
 
@@ -346,6 +479,70 @@ async def test_runtime_node_resumes_and_closes_session_without_leaking_descripto
     serialized_events = json.dumps(events)
     assert descriptor not in serialized_events
     assert any(event["event"]["session_correlation_id"] for event in events)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["success", "runtime_error", "mapper_error", "cancelled"])
+async def test_runtime_node_session_cleanup_is_single_and_non_destructive(
+    monkeypatch: pytest.MonkeyPatch, outcome: str
+) -> None:
+    """Session handles close once without interruption or destructive operations."""
+
+    _writer(monkeypatch)
+    turn = FakeTurn(value="answer", delay_seconds=0.2 if outcome == "cancelled" else 0)
+    if outcome == "runtime_error":
+        turn = FakeTurn(error=RuntimeUnavailableError("scripted failure"))
+    runtime = FakeRuntime(turns=[turn])
+    created = await runtime.session()
+    descriptor = created.descriptor
+    await created.close()
+    original_resume = runtime.resume_session
+    tracked: list[_TrackingSession] = []
+
+    def mapper_error(result: RuntimeResult[Any]) -> Mapping[str, Any]:
+        """Raise a host mapper error after the runtime terminal event."""
+
+        del result
+        raise ValueError("mapper failure")
+
+    async def resume(session_id: str) -> _TrackingSession:
+        """Resume and wrap one host-owned session handle."""
+
+        handle = _TrackingSession(await original_resume(session_id))
+        tracked.append(handle)
+        return handle
+
+    monkeypatch.setattr(runtime, "resume_session", resume)
+    node = langgraph_integration.RuntimeNode[Any](
+        cast(Runtime, runtime),
+        output_mapper=mapper_error if outcome == "mapper_error" else None,
+    )
+
+    call = node(
+        {"input": "continue"},
+        {"configurable": {"proteo_session_id": descriptor}},
+    )
+    if outcome == "cancelled":
+        task = asyncio.create_task(call)
+        await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    elif outcome == "runtime_error":
+        with pytest.raises(RuntimeUnavailableError, match="scripted failure"):
+            await call
+    elif outcome == "mapper_error":
+        with pytest.raises(ValueError, match="mapper failure"):
+            await call
+    else:
+        assert await call == {"output": "answer"}
+
+    assert len(tracked) == 1
+    assert tracked[0].close_calls == 1
+    assert tracked[0].interrupt_calls == 0
+    assert tracked[0].archive_calls == 0
+    assert tracked[0].delete_calls == 0
+    assert all(not state.active for state in runtime._sessions.values())
 
 
 @pytest.mark.asyncio
