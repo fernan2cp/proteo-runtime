@@ -73,9 +73,10 @@ Acciones:
 - cerrar el iterador como única interrupción neutral y restaurar la cancelación original cuando el
   proveedor la normalice como `CancellationError`.
 
-Evidencia: tests unitarios de terminales/EOF, StateGraph `custom` v2 y
+Evidencia: tests unitarios de terminales/EOF, `test_runtime_node_closes_stream_exactly_once_on_success`,
+`test_runtime_node_closes_stream_exactly_once_on_cancellation`, StateGraph `custom` v2 y
 `test_runtime_node_restores_task_cancellation_after_provider_normalization`; cobertura branch-aware
-local `90.23%`.
+local actualizada en `ERRATA.md`.
 
 ### P3-TASK-0005 — Implementar sesiones host-owned
 
@@ -92,7 +93,8 @@ Acciones:
 - rechazar descriptors en model mode;
 - demostrar que no hay create/archive/delete/migrate ni persistencia implícita.
 
-Evidencia: tests de descriptor ausente, reanudación y cierre; contrato StateGraph persistente.
+Evidencia: tests de descriptor ausente, `test_runtime_node_session_cleanup_is_single_and_non_destructive`
+parametrizado para éxito/error/mapper/cancelación y contrato StateGraph persistente.
 
 ### P3-TASK-0006 — Completar pruebas unitarias y contractuales
 
@@ -114,8 +116,9 @@ Acciones:
 - probar base install sin extra e integración install con extra;
 - mantener el guard de red, credenciales y cuota.
 
-Evidencia: `89 passed, 7 skipped`; tests contractuales con `FakeRuntime`, sin credenciales, red ni
-cuota; import-linter conserva el límite core/framework.
+Evidencia: suite actualizada, tests contractuales con `FakeRuntime`, sin credenciales, red ni cuota;
+import-linter conserva el límite core/framework. Los escenarios de lifecycle adicionales constan
+en `ERRATA.md`.
 
 ### P3-TASK-0007 — Añadir ejemplo y documentación pública
 
@@ -152,5 +155,6 @@ Acciones:
 - registrar evidencia, auditar trazabilidad y mover este mismo paquete a `complete/`.
 
 Evidencia: Ruff, mypy, import-linter, pre-commit, lock, suite con cobertura, artefactos locales y
-smokes Codex/LangGraph opt-in (`7 passed`, Luna/low) verdes. CI Linux/Windows Python 3.11–3.14
-verde: https://github.com/fernan2cp/proteo-runtime/actions/runs/34982580419.
+smokes Codex/LangGraph opt-in (`7 passed`, Luna/low) verdes. CI previo al cierre:
+https://github.com/fernan2cp/proteo-runtime/actions/runs/34982580419. CI del cierre:
+https://github.com/fernan2cp/proteo-runtime/actions/runs/34982994292.

@@ -47,6 +47,7 @@ estado global y la persistencia bajo control del host, y no adelanta observabili
 | `05_validation_plan.md` | Pruebas, comandos y evidencia requerida |
 | `06_rollout_and_rollback.md` | Entrega `0.4.0`, compatibilidad y reversión |
 | `07_traceability.md` | Matrices guía→requisito→tarea→criterio→validación |
+| `ERRATA.md` | Correcciones posteriores al cierre y evidencia aclaratoria |
 
 ## Regla de trazabilidad y cierre
 
@@ -54,4 +55,5 @@ Cada tarea referencia al menos un requisito y un criterio; cada requisito aparec
 un criterio; cada criterio tiene validación concreta. Ninguna tarea pasa a `done` sin evidencia
 registrada. El paquete se moverá, sin renombrarlo, a `docs/plans/complete/` sólo cuando la
 implementación, todos los criterios, la validación local y el CI final estén completos. Evidencia
-CI final: https://github.com/fernan2cp/proteo-runtime/actions/runs/34982580419.
+CI previa al cierre: https://github.com/fernan2cp/proteo-runtime/actions/runs/34982580419.
+CI del cierre: https://github.com/fernan2cp/proteo-runtime/actions/runs/34982994292.

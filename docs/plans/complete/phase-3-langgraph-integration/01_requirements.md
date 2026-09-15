@@ -75,5 +75,6 @@ Todos los requisitos están en estado `done` tras la validación local y CI.
 
 `P3-REQ-001`–`P3-REQ-021`: `done`, con evidencia en los tests unitarios y
 contractuales, el ejemplo, los smokes opt-in y los gates locales indicados en `05_validation_plan.md`.
-El CI remoto Linux/Windows Python 3.11–3.14 quedó verde en
-https://github.com/fernan2cp/proteo-runtime/actions/runs/34982580419.
+El CI previo al cierre Linux/Windows Python 3.11–3.14 quedó verde en
+https://github.com/fernan2cp/proteo-runtime/actions/runs/34982580419 y el CI del cierre en
+https://github.com/fernan2cp/proteo-runtime/actions/runs/34982994292.

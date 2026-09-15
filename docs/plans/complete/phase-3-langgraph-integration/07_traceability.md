@@ -51,7 +51,7 @@ Los números de tarea y criterio en la tabla abrevian `P3-TASK-` y `AC-P3-`.
 | `AC-P3-013`–`018` | JSON stream, terminal, cancellation and cleanup tests |
 | `AC-P3-019`–`021` | session resume-only lifecycle tests |
 | `AC-P3-022` | quota guard, full suite and coverage report |
-| `AC-P3-023`, `AC-P3-026` | executable fake example and authorized Luna/low Codex smoke |
+| `AC-P3-023`, `AC-P3-026` | FakeRuntime contract StateGraphs, public host example and authorized Luna/low Codex smoke |
 | `AC-P3-024` | README, version, lock, wheel/sdist and isolated installs |
 | `AC-P3-025` | local quality gates and final Linux/Windows CI URLs |
 
@@ -70,14 +70,15 @@ Extraer todos los IDs `P3-REQ-*`, `P3-TASK-*` y `AC-P3-*` y comprobar:
 ## Evidencia registrada en implementación
 
 - `P3-TASK-0001`–`P3-TASK-0007`: `done`; commits `035a988` y `474b03d`, suite focalizada y
-  StateGraph contract tests.
-- `P3-TASK-0008`: `done`; `uv lock --check`, Ruff, mypy, import-linter, pre-commit,
-  `89 passed, 7 skipped`, cobertura `90.23%`, build 0.4.0, checker de artefactos y smokes reales
-  opt-in (`7 passed`, Luna/low) verdes; CI Linux/Windows Python 3.11–3.14 verde en
-  https://github.com/fernan2cp/proteo-runtime/actions/runs/34982580419.
+  StateGraph contract tests. La ERRATA posterior añadió cobertura explícita para JSON Schema y
+  lifecycle cleanup sin cambiar requisitos ni contratos.
+- `P3-TASK-0008`: `done`; `uv lock --check`, Ruff, mypy, import-linter, pre-commit, suite,
+  cobertura, build 0.4.0, checker de artefactos y smokes reales opt-in (`7 passed`, Luna/low)
+  verdes. CI previo al cierre en
+  https://github.com/fernan2cp/proteo-runtime/actions/runs/34982580419 y CI del cierre en
+  https://github.com/fernan2cp/proteo-runtime/actions/runs/34982994292.
 - La auditoría de IDs de este documento conserva 21 requisitos, 8 tareas y 26 criterios; no hay
-  referencias huérfanas. La evidencia final incorporará las URLs de los runs CI y el commit de
-  cierre.
+  referencias huérfanas. Las correcciones posteriores al cierre se registran en `ERRATA.md`.
 
 ## Regla de control de cambios
 

@@ -81,5 +81,6 @@ Todos los criterios están en estado `done` tras la validación local y CI.
 ## Estado de aceptación
 
 `AC-P3-001`–`AC-P3-026`: `done`, respaldados por la suite local, el ejemplo, los artefactos 0.4.0,
-los smokes opt-in preparados con Luna/low y el CI Linux/Windows Python 3.11–3.14:
-https://github.com/fernan2cp/proteo-runtime/actions/runs/34982580419.
+los smokes opt-in preparados con Luna/low y el CI Linux/Windows Python 3.11–3.14. CI previo al
+cierre: https://github.com/fernan2cp/proteo-runtime/actions/runs/34982580419. CI del cierre:
+https://github.com/fernan2cp/proteo-runtime/actions/runs/34982994292.

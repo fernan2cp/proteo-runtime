@@ -73,14 +73,17 @@ Inspeccionar wheel y sdist y verificar:
 - ninguna dependencia LangGraph en `Requires-Dist` sin extra marker;
 - extras `langgraph` y `all` resolviendo el rango acordado;
 - instalación base aislada importa core y Codex sin instalar/cargar LangGraph;
-- instalación aislada con `[langgraph]` compila y ejecuta el ejemplo FakeRuntime;
+- instalación aislada con `[langgraph]` importa `RuntimeNode` y los contract tests ejecutan
+  `FakeRuntime`; el ejemplo público usa el runtime del host y requiere su configuración;
 - import de la integración sin extra ofrece el mensaje accionable.
 
 ## CI y evidencia de cierre
 
 El workflow pasó en Linux y Windows para Python 3.11, 3.12, 3.13 y 3.14, incluyendo la suite con
-extra, import-boundary y packaging. Run de implementación y cierre documental:
-https://github.com/fernan2cp/proteo-runtime/actions/runs/34982580419.
+extra, import-boundary y packaging. Run previo al cierre:
+https://github.com/fernan2cp/proteo-runtime/actions/runs/34982580419. Run del commit de cierre
+`5f89f74`:
+https://github.com/fernan2cp/proteo-runtime/actions/runs/34982994292.
 
 Antes de mover el SDD:
 
