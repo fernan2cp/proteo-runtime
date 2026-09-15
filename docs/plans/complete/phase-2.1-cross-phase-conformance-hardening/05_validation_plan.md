@@ -40,4 +40,6 @@ tres modelos y cuatro esfuerzos configurados sin ejecutar doce inferencias. La e
 remota `https://github.com/fernan2cp/proteo-runtime/actions/runs/34971422372` pasó en el commit
 `df3f0bc` con la matriz Linux/Windows Python 3.11–3.14 y el job de packaging. La corrección
 posterior de eventos terminales interrumpidos (`26b94c2`) repitió localmente la suite completa:
-`73 passed, 5 skipped`, cobertura branch-aware `90.07%`.
+`73 passed, 5 skipped`, cobertura branch-aware `90.07%`. El CI final del seguimiento publicado
+(`9a762fb`) pasó en `https://github.com/fernan2cp/proteo-runtime/actions/runs/34972793344`,
+incluyendo la matriz Linux/Windows Python 3.11–3.14 y packaging aislado.

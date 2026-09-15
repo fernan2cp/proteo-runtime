@@ -105,4 +105,5 @@ Acciones: update guide/README/errata, record all evidence, mark done, move packa
 commit closure and verify final CI.
 
 Evidencia: guía, README, erratas históricas y workflow actualizados; cierre registrado en el
-commit posterior al traslado del paquete a `docs/plans/complete/`.
+commit posterior al traslado del paquete a `docs/plans/complete/`. El seguimiento terminal
+`9a762fb` pasó el CI final `34972793344`.
