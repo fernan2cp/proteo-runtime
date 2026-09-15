@@ -91,7 +91,8 @@ Todos los criterios comienzan en estado `pending`.
 
 ## Estado de aceptación
 
-- `AC-P5-001`–`AC-P5-028`: `done`, con evidencia automatizada, de integración y de CI registrada
-  en `05_validation_plan.md` y `07_traceability.md`.
+- `AC-P5-001`, `AC-P5-002`, `AC-P5-004` y `AC-P5-007`: `done`, conservan evidencia válida.
+- `AC-P5-003`, `AC-P5-005`, `AC-P5-006` y `AC-P5-008`–`AC-P5-028`:
+  `in_progress — audit remediation pending`; deben verificarse nuevamente después del hardening.
 
 La revisión explícita del propietario sigue pendiente para cerrar el SDD y mover el paquete.

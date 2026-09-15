@@ -79,7 +79,9 @@ Todos los requisitos comienzan en estado `pending`.
 
 ## Estado de implementación
 
-- `P5-REQ-001`–`P5-REQ-024`: `done`, con evidencia en `03_task_plan.md`,
-  `05_validation_plan.md` y `07_traceability.md`.
+- `P5-REQ-001`, `P5-REQ-003` y `P5-REQ-006`: `done`, conservan evidencia válida.
+- `P5-REQ-002`, `P5-REQ-004`–`P5-REQ-005` y `P5-REQ-007`–`P5-REQ-024`:
+  `in_progress — audit remediation pending`; la auditoría detectó brechas en serialización
+  Pydantic, cleanup, retries, lifecycle Codex, observabilidad y evidencia posterior al hardening.
 
 La revisión explícita del propietario sigue pendiente para cerrar el SDD y mover el paquete.

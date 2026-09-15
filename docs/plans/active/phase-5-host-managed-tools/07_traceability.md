@@ -71,16 +71,22 @@ Extraer todos los IDs `P5-REQ-*`, `P5-TASK-*` y `AC-P5-*` y comprobar:
 
 ## Estado de implementación y revisión
 
-- Requisitos `P5-REQ-001`–`P5-REQ-024`: `done`.
-- Tareas `P5-TASK-0001`–`P5-TASK-0008`: `done`.
+- `P5-REQ-001`, `P5-REQ-003`, `P5-REQ-006`: `done`.
+- `P5-REQ-002`, `P5-REQ-004`–`P5-REQ-005`, `P5-REQ-007`–`P5-REQ-024`:
+  `in_progress — audit remediation pending`.
+- `P5-TASK-0001`–`P5-TASK-0007`: `in_progress — audit remediation pending`.
+- `P5-TASK-0008`: `done`.
 - `P5-TASK-0009`: `in_progress — owner review pending`.
-- Criterios `AC-P5-001`–`AC-P5-028`: `done`.
-- Estado global: `in_progress — owner review pending`.
+- `AC-P5-001`, `AC-P5-002`, `AC-P5-004`, `AC-P5-007`: `done`.
+- `AC-P5-003`, `AC-P5-005`, `AC-P5-006`, `AC-P5-008`–`AC-P5-028`:
+  `in_progress — audit remediation pending`.
+- Estado global: `in_progress — audit remediation pending`.
 
-La evidencia reproducible está en `05_validation_plan.md`, con commits funcionales desde
-`900bdd5` hasta `a7fb209` y CI remoto `35027524386`/`35027764791`. El estado pendiente es deliberado: sólo la
-confirmación explícita del propietario permite marcar `P5-TASK-0009` como `done`, actualizar el
-estado final y mover esta misma carpeta a `docs/plans/complete/`.
+La auditoría reprodujo gates verdes en el commit previo, pero detectó brechas semánticas no
+cubiertas por esa suite. La evidencia previa está en `05_validation_plan.md`, con commits
+funcionales desde `900bdd5` hasta `47606cd` y CI remoto `35027524386`/`35027764791`/`35027984595`.
+La confirmación del propietario sólo podrá aplicarse después de corregir y volver a validar los
+IDs reabiertos.
 
 ## Regla de control de cambios
 

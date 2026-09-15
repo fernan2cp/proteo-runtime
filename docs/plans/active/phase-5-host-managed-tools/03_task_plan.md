@@ -4,7 +4,7 @@ Todas las tareas comienzan en `pending`.
 
 ### P5-TASK-0001 — Crear contratos neutrales, schemas y registry
 
-Estado: `done`
+Estado: `in_progress — audit remediation pending`
 
 Requisitos: `P5-REQ-001`, `P5-REQ-002`, `P5-REQ-003`, `P5-REQ-004`
 
@@ -17,12 +17,12 @@ Acciones:
 - implementar registry determinista y snapshots inmutables;
 - añadir tests focalizados de contratos, firmas y JSON safety.
 
-Evidencia: `900bdd5`, `tests/unit/test_host_tools.py` (schemas, firmas, registry, snapshots y
-JSON safety).
+Evidencia previa: `900bdd5`, `tests/unit/test_host_tools.py`. Pendiente: Pydantic runtime values,
+strict JSON safety y nuevos casos de contrato.
 
 ### P5-TASK-0002 — Implementar permisos, aprobación y ToolExecutor
 
-Estado: `done`
+Estado: `in_progress — audit remediation pending`
 
 Requisitos: `P5-REQ-005`, `P5-REQ-006`, `P5-REQ-007`, `P5-REQ-008`, `P5-REQ-009`,
 `P5-REQ-010`, `P5-REQ-011`
@@ -36,12 +36,12 @@ Acciones:
 - añadir retries idempotentes, deduplicación y cleanup por invocación;
 - implementar return-error/raise con errores y resultados sanitizados.
 
-Evidencia: `900bdd5`, `tests/unit/test_host_tools.py` (permisos, aprobación fail-closed,
-timeouts, retries, deduplicación y políticas de fallo).
+Evidencia previa: `900bdd5`, `tests/unit/test_host_tools.py`. Pendiente: cancelación diferenciada,
+cleanup automático, no-retry de output inválido y rechazo de políticas incompatibles.
 
 ### P5-TASK-0003 — Integrar bindings, profiles, capabilities y fakes
 
-Estado: `done`
+Estado: `in_progress — audit remediation pending`
 
 Requisitos: `P5-REQ-012`, `P5-REQ-013`, `P5-REQ-014`, `P5-REQ-015`
 
@@ -54,11 +54,12 @@ Acciones:
 - calcular provider/effective capabilities sin expansión de permisos;
 - conservar rechazo pre-inference en perfiles incompatibles.
 
-Evidencia: `b4f0c14`, `f747468` (bindings inmutables, perfiles, capacidades, sesiones y fakes).
+Evidencia previa: `b4f0c14`, `f747468`. Pendiente: registry no vacío, capabilities efectivas,
+rebind de resume y flujo multi-tool determinista en fakes.
 
 ### P5-TASK-0004 — Completar eventos y observabilidad de tools
 
-Estado: `done`
+Estado: `in_progress — audit remediation pending`
 
 Requisitos: `P5-REQ-016`, `P5-REQ-017`, `P5-REQ-021`
 
@@ -71,11 +72,12 @@ Acciones:
 - actualizar redacción, LangSmith y OpenTelemetry;
 - cubrir terminales, retries, denegaciones y no-leak canaries.
 
-Evidencia: `5300776`, `f747468` (eventos, redacción y exporters LangSmith/OpenTelemetry).
+Evidencia previa: `5300776`, `f747468`. Pendiente: TOOL_REQUESTED, terminales exact-once,
+payload de argumentos/resultados y matrices de exporters.
 
 ### P5-TASK-0005 — Implementar adapter experimental Codex
 
-Estado: `done`
+Estado: `in_progress — audit remediation pending`
 
 Requisitos: `P5-REQ-018`, `P5-REQ-019`, `P5-REQ-020`, `P5-REQ-021`
 
@@ -88,11 +90,12 @@ Acciones:
 - reconciliar lifecycle provider con eventos/resultados neutrales;
 - fallar cerrado ante versiones, fields, methods o hooks incompatibles.
 
-Evidencia: `b99131c`, `f747468` y smoke opt-in (probe, feature flag, dynamicTools y bridge privado).
+Evidencia previa: `b99131c`, `f747468` y smoke opt-in. Pendiente: probe estricto del SDK 0.147.0,
+respuestas protocolarias válidas y mux seguro por thread/turn.
 
 ### P5-TASK-0006 — Integrar lifecycle, sesiones y cancelación Codex
 
-Estado: `done`
+Estado: `in_progress — audit remediation pending`
 
 Requisitos: `P5-REQ-008`, `P5-REQ-010`, `P5-REQ-013`, `P5-REQ-015`, `P5-REQ-019`,
 `P5-REQ-021`
@@ -107,11 +110,12 @@ Acciones:
 - enviar snapshots explícitos en create/resume y rechazar bindings ausentes;
 - demostrar que native authority permanece denegada.
 
-Evidencia: `b4f0c14`, `f747468` (create/resume, cancelación, cleanup y autoridad native denegada).
+Evidencia previa: `b4f0c14`, `f747468`. Pendiente: registro/desregistro determinista, cleanup de
+invocations y dynamicTools vacías al resume sin binding.
 
 ### P5-TASK-0007 — Completar pruebas unitarias y contractuales
 
-Estado: `done`
+Estado: `in_progress — audit remediation pending`
 
 Requisitos: `P5-REQ-001`–`P5-REQ-022`
 
@@ -124,8 +128,8 @@ Acciones:
 - reforzar public API, import boundaries, quota safety y cobertura ≥90 %;
 - probar LangSmith fake y OpenTelemetry in-memory.
 
-Evidencia: `f747468`: `138 passed, 8 skipped`, cobertura branch-aware `90.11%`, además de
-contract tests, quota safety y pruebas de protocolo simuladas.
+Evidencia previa: `f747468`: `138 passed, 8 skipped`, cobertura branch-aware `90.11%`. Pendiente:
+matriz ampliada de Pydantic, approvals, lifecycle Codex, fakes, exporters y fault injection.
 
 ### P5-TASK-0008 — Documentar, empaquetar y preparar release
 
@@ -157,10 +161,12 @@ Acciones:
 
 - ejecutar gates locales, artefactos e instalaciones aisladas;
 - ejecutar smoke externo sólo con opt-in autorizado;
+- completar la auditoría de brechas reabiertas y reconciliar todos los estados del SDD;
+- limpiar artefactos locales `.ci-*-venv/` y comprobar worktree limpio;
 - publicar commits en inglés y esperar CI Linux/Windows 3.11–3.14;
 - registrar evidencia, auditar IDs y solicitar revisión del propietario;
 - mover este mismo paquete a `complete/` sólo después de aprobación y cierre total.
 
-Evidencia: gates locales y CI remoto verde registrados en `05_validation_plan.md`; smoke real
-Luna/low pasado. Falta únicamente la revisión explícita del propietario para marcar este task
-`done` y mover el paquete a `complete/`.
+Evidencia: gates locales y CI remoto previo registrados en `05_validation_plan.md`; smoke real
+Luna/low previo pasado. La nueva evidencia debe cubrir las brechas reabiertas antes de marcar
+este task `done` y mover el paquete a `complete/`.
