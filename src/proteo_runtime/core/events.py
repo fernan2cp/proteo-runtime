@@ -6,7 +6,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Any, cast
 
 from .identity import RuntimeIdentity
 from .types import freeze_mapping
@@ -59,6 +60,7 @@ class RuntimeEvent:
     turn_id: str | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
     result: RuntimeResult[Any] | None = None
+    payload: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         """Validate sequencing and normalize timestamps and metadata."""
@@ -70,3 +72,28 @@ class RuntimeEvent:
             raise ValueError("Event timestamp must be timezone-aware")
         object.__setattr__(self, "occurred_at", timestamp.astimezone(UTC))
         object.__setattr__(self, "metadata", freeze_mapping(self.metadata))
+        object.__setattr__(self, "payload", _freeze_payload(self.payload))
+
+
+def _freeze_payload(value: Mapping[str, Any] | None) -> Mapping[str, Any]:
+    """Freeze neutral payload values while retaining credential keys for redaction."""
+
+    if value is None:
+        return MappingProxyType({})
+    if not isinstance(value, Mapping):
+        raise TypeError("Event payload must be a mapping")
+
+    def freeze(item: Any) -> Any:
+        """Recursively freeze JSON-like payload values."""
+
+        if item is None or isinstance(item, str | int | float | bool):
+            return item
+        if isinstance(item, Mapping):
+            return MappingProxyType({str(key): freeze(child) for key, child in item.items()})
+        if isinstance(item, list | tuple):
+            return tuple(freeze(child) for child in item)
+        if isinstance(item, set | frozenset):
+            return frozenset(freeze(child) for child in item)
+        return f"<{type(item).__name__}>"
+
+    return cast(Mapping[str, Any], freeze(value))

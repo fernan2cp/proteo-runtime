@@ -14,6 +14,7 @@ from .events import RuntimeEvent
 from .identity import RuntimeIdentity
 from .input import RuntimeInput
 from .model_info import ModelInfo
+from .observability import ObservabilityStatus
 from .types import freeze_mapping
 from .usage import RuntimeUsage
 
@@ -74,6 +75,7 @@ class RuntimeResult(Generic[T]):
     turn_id: str | None = None
     diagnostics: tuple[RuntimeDiagnostic, ...] = ()
     raw: object | None = None
+    observability_status: ObservabilityStatus = ObservabilityStatus.DISABLED
 
     def __init__(
         self,
@@ -88,6 +90,7 @@ class RuntimeResult(Generic[T]):
         diagnostics: tuple[RuntimeDiagnostic, ...] = (),
         raw: object | None = None,
         output: T | None = None,
+        observability_status: ObservabilityStatus = ObservabilityStatus.DISABLED,
     ) -> None:
         """Initialize a result using legacy `value` or convenience `output`."""
 
@@ -103,6 +106,7 @@ class RuntimeResult(Generic[T]):
         object.__setattr__(self, "turn_id", turn_id)
         object.__setattr__(self, "diagnostics", tuple(diagnostics))
         object.__setattr__(self, "raw", raw)
+        object.__setattr__(self, "observability_status", observability_status)
 
     @property
     def output(self) -> T:

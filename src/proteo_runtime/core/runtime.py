@@ -7,6 +7,7 @@ from typing import Any, Protocol, runtime_checkable
 from .capabilities import RuntimeCapabilities
 from .model import RuntimeModel
 from .model_info import ModelInfo
+from .observability import ObservabilityStatus
 from .session import RuntimeSession
 
 
@@ -45,3 +46,6 @@ class Runtime(Protocol):
         self, session_id: str, *, profile: str, level: str = "medium", security_policy: str
     ) -> RuntimeSession[Any]:
         """Migrate a session to an explicitly requested configuration."""
+
+    def observability_status(self) -> ObservabilityStatus:
+        """Return the aggregate health of configured observers."""
