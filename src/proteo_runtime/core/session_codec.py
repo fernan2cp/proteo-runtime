@@ -23,13 +23,14 @@ class SessionDescriptor:
     level: str
     context_policy: str
     security_policy: str
+    descriptor_nonce: str | None = None
 
 
 class SessionCodec:
     """Encode and decode non-secret resumable session descriptors."""
 
     prefix = "prt1."
-    _keys = frozenset(
+    _required_keys = frozenset(
         {
             "version",
             "provider",
@@ -42,6 +43,7 @@ class SessionCodec:
             "security_policy",
         }
     )
+    _optional_keys = frozenset({"descriptor_nonce"})
 
     @classmethod
     def encode(
@@ -55,6 +57,7 @@ class SessionCodec:
         level: str,
         context_policy: str,
         security_policy: str,
+        descriptor_nonce: str | None = None,
     ) -> str:
         """Return canonical JSON encoded with unpadded base64url."""
 
@@ -69,6 +72,8 @@ class SessionCodec:
             "security_policy": security_policy,
             "version": 1,
         }
+        if descriptor_nonce is not None:
+            values["descriptor_nonce"] = descriptor_nonce
         if any(
             not isinstance(value, str) or not value
             for key, value in values.items()
@@ -98,13 +103,15 @@ class SessionCodec:
             raise SessionMismatchError("Malformed session descriptor") from exc
         if (
             not isinstance(payload, dict)
-            or set(payload) != cls._keys
+            or set(payload) not in {cls._required_keys, cls._required_keys | cls._optional_keys}
             or payload.get("version") != 1
         ):
             raise SessionMismatchError("Unsupported session descriptor schema")
         if any(is_secret_key(str(key)) for key in payload):
             raise SessionMismatchError("Secret-shaped session fields are not permitted")
-        values = {key: payload[key] for key in cls._keys if key != "version"}
+        values = {key: payload[key] for key in cls._required_keys if key != "version"}
+        if "descriptor_nonce" in payload:
+            values["descriptor_nonce"] = payload["descriptor_nonce"]
         if any(not isinstance(value, str) or not value for value in values.values()):
             raise SessionMismatchError("Invalid session descriptor field types")
         return SessionDescriptor(**values)

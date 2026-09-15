@@ -448,6 +448,7 @@ class CodexRuntime:
         context_policy: str,
         security_policy: str,
         provider_id: str,
+        descriptor_nonce: str | None = None,
     ) -> str:
         """Encode the canonical Phase 1 session descriptor."""
 
@@ -462,6 +463,7 @@ class CodexRuntime:
             level=level,
             context_policy=context_policy,
             security_policy=security_policy,
+            descriptor_nonce=descriptor_nonce,
         )
 
     def _configuration_fingerprint(
@@ -606,6 +608,7 @@ class CodexRuntime:
             target.context.value,
             target.security_policy.value,
             thread_id,
+            descriptor_nonce=uuid4().hex,
         )
         if state is None:
             state = _SessionState(
@@ -641,8 +644,8 @@ class CodexRuntime:
             RuntimeEventKind.SESSION_MIGRATED,
             session_id=new_descriptor,
             metadata={
-                "old_session_id": old.provider_session_id,
-                "new_session_id": thread_id,
+                "old_session_id": session_id,
+                "new_session_id": new_descriptor,
                 "old_profile": old.profile,
                 "new_profile": profile,
                 "old_level": old.level,
@@ -740,7 +743,13 @@ class CodexRuntime:
 
         self._active_runs.pop(run.invocation_id, None)
 
-    def _emit(self, kind: RuntimeEventKind, *, session_id: str | None = None) -> None:
+    def _emit(
+        self,
+        kind: RuntimeEventKind,
+        *,
+        session_id: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> None:
         """Record a provider-neutral lifecycle event."""
 
         identity = self._identity or RuntimeIdentity("codex", "uninitialized")
@@ -751,6 +760,7 @@ class CodexRuntime:
             occurred_at=__import__("datetime").datetime.now(__import__("datetime").UTC),
             runtime=identity,
             session_id=session_id,
+            metadata=metadata or {},
         )
         self._sequence += 1
         self.events.append(event)
@@ -949,6 +959,8 @@ class _CodexModel:
                 raise
             raise _map_sdk_error(exc, "brain streaming") from exc
         finally:
+            if run.terminal_status is None:
+                await self._interrupt_or_invalidate(run)
             self.runtime._unregister_run(run)
             remove_workspace(workspace)
 
@@ -1179,7 +1191,8 @@ class _CodexSession:
     async def delete(self) -> None:
         """Delete the provider thread through the isolated compatibility shim."""
 
-        self._ensure_open()
+        if self._state.deleted or self._generation != self._state.generation:
+            raise SessionNotFoundError("Codex session handle is closed or deleted")
         if not self._state.deleted:
             try:
                 await delete_thread(
