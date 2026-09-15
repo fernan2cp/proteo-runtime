@@ -40,27 +40,49 @@ from proteo_runtime.core.observability import ObservabilityStatus
 from proteo_runtime.core.profiles import profile_spec
 from proteo_runtime.core.session_codec import SessionCodec
 from proteo_runtime.observability import ObservabilityConfig, RuntimeEventBus
+from proteo_runtime.tools import ToolExecutor, ToolRegistry, ToolSnapshot
 
 from ._compat import delete_thread
 from ._mapping import account_value, fingerprint, identity_metadata, serialize_input
 from ._runner import TurnRun
 from ._workspace import create_workspace, remove_workspace
+from .experimental import (
+    CodexToolBridge,
+    install_bridge,
+    probe_dynamic_tools,
+    resume_thread,
+    start_thread,
+)
 from .native_otel import CodexNativeOtelConfig, native_otel_capabilities
 
 
-def _create_sdk(native_otel: Any | None = None) -> Any:
+def _create_sdk(native_otel: Any | None = None, *, experimental_dynamic_tools: bool = False) -> Any:
     """Construct the pinned asynchronous Codex SDK client."""
 
     from openai_codex import AsyncCodex
 
-    if native_otel is None:
-        return AsyncCodex()
+    if native_otel is None and not experimental_dynamic_tools:
+        # Keep the SDK's experimental surface disabled unless the caller opts in.
+        # Older test doubles may only accept the no-argument constructor, so retain
+        # a narrow compatibility fallback for them.
+        from openai_codex import CodexConfig
+
+        try:
+            return AsyncCodex(config=CodexConfig(experimental_api=False))
+        except TypeError:
+            return AsyncCodex()
     from openai_codex import CodexConfig
 
-    capabilities = native_otel_capabilities(native_otel)
-    if not capabilities.supported:
+    capabilities = native_otel_capabilities(native_otel) if native_otel is not None else None
+    if capabilities is not None and not capabilities.supported:
         raise ConfigurationError("Codex-native OpenTelemetry is unsupported by this SDK")
-    return AsyncCodex(config=CodexConfig(config_overrides=native_otel.overrides()))
+    overrides = native_otel.overrides() if native_otel is not None else ()
+    return AsyncCodex(
+        config=CodexConfig(
+            config_overrides=overrides,
+            experimental_api=experimental_dynamic_tools,
+        )
+    )
 
 
 def _enum(name: str, member: str) -> Any:
@@ -156,6 +178,8 @@ class _SessionState:
     security_policy: str
     workspace: Path
     config: InvocationConfig = field(default_factory=InvocationConfig)
+    tool_snapshot: ToolSnapshot | None = None
+    tool_executor: ToolExecutor | None = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     active: TurnRun | None = None
     closed_handles: int = 0
@@ -186,6 +210,7 @@ class CodexRuntime:
         config: RuntimeConfigV1 | None = None,
         observability: ObservabilityConfig | None = None,
         codex_native_otel: CodexNativeOtelConfig | None = None,
+        experimental_dynamic_tools: bool = False,
     ) -> None:
         """Initialize a lazy runtime without reading authentication."""
 
@@ -193,6 +218,8 @@ class CodexRuntime:
         self._config = load_runtime_config(config_path=config_path, config=config)
         self._observability = RuntimeEventBus(observability)
         self._codex_native_otel = codex_native_otel
+        self.experimental_dynamic_tools = experimental_dynamic_tools
+        self._dynamic_tools_compatibility = probe_dynamic_tools()
         self._sdk: Any | None = None
         self._identity: RuntimeIdentity | None = None
         self._identity_fingerprint: str | None = None
@@ -230,9 +257,12 @@ class CodexRuntime:
         if self._started and not self._closed:
             return
         sdk = (
-            _create_sdk()
-            if self._codex_native_otel is None
-            else _create_sdk(self._codex_native_otel)
+            _create_sdk(
+                self._codex_native_otel,
+                experimental_dynamic_tools=self.experimental_dynamic_tools,
+            )
+            if self.experimental_dynamic_tools or self._codex_native_otel is not None
+            else _create_sdk()
         )
         try:
             if self._config.runtime != "codex":
@@ -376,7 +406,7 @@ class CodexRuntime:
             persistent_sessions=True,
             streaming=True,
             interruption=True,
-            host_tools=False,
+            host_tools=self._dynamic_tools_compatibility.supported,
             native_tools=False,
             sandbox=True,
             usage_reporting=True,
@@ -432,6 +462,8 @@ class CodexRuntime:
         *,
         level: str = "medium",
         config: InvocationConfig | None = None,
+        registry: ToolRegistry | None = None,
+        executor: ToolExecutor | None = None,
     ) -> _CodexSession:
         """Create a persistent Codex session with an opaque descriptor."""
 
@@ -439,18 +471,33 @@ class CodexRuntime:
         spec = self._profile_spec(profile)
         if not spec.persistent:
             raise CapabilityError("Codex persistent sessions require a persistent profile")
-        self._ensure_profile_executable(spec)
+        tool_snapshot, tool_executor = self._tool_binding(spec, registry, executor)
+        self._ensure_profile_executable(spec, tool_snapshot is not None)
         binding = self._resolve_binding(profile, level, config)
         model, effort = binding.model, binding.effort
         workspace = create_workspace()
         try:
-            thread = await self._require_started().thread_start(
-                ephemeral=False,
-                model=model,
-                cwd=str(workspace),
-                approval_mode=_enum("ApprovalMode", "deny_all"),
-                sandbox=_enum("Sandbox", "read_only"),
-            )
+            if tool_snapshot is None:
+                thread = await self._require_started().thread_start(
+                    ephemeral=False,
+                    model=model,
+                    cwd=str(workspace),
+                    approval_mode=_enum("ApprovalMode", "deny_all"),
+                    sandbox=_enum("Sandbox", "read_only"),
+                )
+            else:  # pragma: no cover - exercised by the opt-in Codex smoke
+                assert tool_executor is not None
+                bridge = CodexToolBridge(tool_executor)
+                install_bridge(self._require_started(), bridge)
+                thread = await start_thread(
+                    self._require_started(),
+                    dynamic_tools=tool_snapshot,
+                    ephemeral=False,
+                    model=model,
+                    cwd=str(workspace),
+                    approvalPolicy="never",
+                    sandboxPolicy="read-only",
+                )
             descriptor = self._make_descriptor(
                 model,
                 effort,
@@ -472,6 +519,8 @@ class CodexRuntime:
                 spec.security_policy.value,
                 workspace,
                 config or InvocationConfig(),
+                tool_snapshot,
+                tool_executor,
             )
             self._sessions[descriptor] = state
             await self._dispatch(
@@ -528,7 +577,13 @@ class CodexRuntime:
             }
         )
 
-    async def resume_session(self, descriptor: str) -> _CodexSession:
+    async def resume_session(
+        self,
+        descriptor: str,
+        *,
+        registry: ToolRegistry | None = None,
+        executor: ToolExecutor | None = None,
+    ) -> _CodexSession:
         """Validate and resume a persistent session descriptor."""
 
         sdk = self._require_started()
@@ -542,7 +597,8 @@ class CodexRuntime:
         ):
             raise SessionMismatchError("Session identity does not match the runtime")
         spec = self._profile_spec(decoded.profile)
-        self._ensure_profile_executable(spec)
+        tool_snapshot, tool_executor = self._tool_binding(spec, registry, executor)
+        self._ensure_profile_executable(spec, tool_snapshot is not None)
         if (
             decoded.context_policy != spec.context.value
             or decoded.security_policy != spec.security_policy.value
@@ -568,13 +624,27 @@ class CodexRuntime:
             raise SessionBusyError("Cannot resume an active Codex session")
         workspace = create_workspace()
         try:
-            thread = await sdk.thread_resume(
-                decoded.provider_session_id,
-                model=model,
-                cwd=str(workspace),
-                approval_mode=_enum("ApprovalMode", "deny_all"),
-                sandbox=_enum("Sandbox", "read_only"),
-            )
+            if tool_snapshot is None:
+                thread = await sdk.thread_resume(
+                    decoded.provider_session_id,
+                    model=model,
+                    cwd=str(workspace),
+                    approval_mode=_enum("ApprovalMode", "deny_all"),
+                    sandbox=_enum("Sandbox", "read_only"),
+                )
+            else:  # pragma: no cover - exercised by the opt-in Codex smoke
+                assert tool_executor is not None
+                bridge = CodexToolBridge(tool_executor)
+                install_bridge(sdk, bridge)
+                thread = await resume_thread(
+                    sdk,
+                    decoded.provider_session_id,
+                    dynamic_tools=tool_snapshot,
+                    model=model,
+                    cwd=str(workspace),
+                    approvalPolicy="never",
+                    sandboxPolicy="read-only",
+                )
         except Exception as exc:
             remove_workspace(workspace)
             raise SessionNotFoundError("Codex session was not found") from exc
@@ -587,6 +657,8 @@ class CodexRuntime:
             existing.effort = binding.effort
             existing.context_policy = spec.context.value
             existing.security_policy = spec.security_policy.value
+            existing.tool_snapshot = tool_snapshot
+            existing.tool_executor = tool_executor
             existing.generation += 1
             state = existing
             remove_workspace(previous_workspace)
@@ -603,6 +675,8 @@ class CodexRuntime:
                 spec.security_policy.value,
                 workspace,
                 InvocationConfig(),
+                tool_snapshot,
+                tool_executor,
             )
             self._sessions[raw] = state
         await self._dispatch(self._emit(RuntimeEventKind.SESSION_RESUMED, session_id=raw))
@@ -775,11 +849,48 @@ class CodexRuntime:
         if supported and effort not in supported:
             raise CapabilityError(f"Unsupported reasoning effort: {effort}")
 
-    def _ensure_profile_executable(self, spec: Any) -> None:
+    def _ensure_profile_executable(self, spec: Any, has_tools: bool = False) -> None:
         """Reject Phase 2 profiles whose permissions are not implemented."""
 
+        if (
+            has_tools
+            and spec.host_tools.value in {"controlled", "explicit"}
+            and self.experimental_dynamic_tools
+        ):
+            return
         if spec.security_policy != "isolated" or spec.host_tools.value != "disabled":
             raise CapabilityError("The requested profile requires a deferred Phase 2 capability")
+
+    def _tool_binding(
+        self,
+        spec: Any,
+        registry: ToolRegistry | None,
+        executor: ToolExecutor | None,
+    ) -> tuple[ToolSnapshot | None, ToolExecutor | None]:
+        """Validate and freeze an optional host-tool binding for one view/session."""
+
+        if registry is None and executor is None:
+            if spec.host_tools.value != "disabled":
+                raise CapabilityError("A host-tool registry is required for this profile")
+            return None, None
+        if spec.host_tools.value not in {"controlled", "explicit"}:
+            raise CapabilityError("The selected profile does not permit host-managed tools")
+        if not self.experimental_dynamic_tools:
+            raise CapabilityError("Codex dynamic tools require experimental_dynamic_tools=True")
+        if not self._dynamic_tools_compatibility.supported:
+            raise CapabilityError(
+                f"Codex dynamic tools are unavailable: {self._dynamic_tools_compatibility.reason}"
+            )
+        if registry is not None:
+            snapshot = registry.snapshot()
+        else:
+            assert executor is not None
+            snapshot = executor.snapshot
+        if executor is None:
+            executor = ToolExecutor(snapshot)
+        elif executor.snapshot.provider_definitions() != snapshot.provider_definitions():
+            raise CapabilityError("Tool executor does not match the registry snapshot")
+        return snapshot, executor
 
     def _register_run(self, run: TurnRun) -> None:
         """Register one active turn for coordinated cleanup."""
@@ -824,7 +935,13 @@ class _CodexModel:
     """Internal model implementation shared by brain and session factories."""
 
     def __init__(
-        self, runtime: CodexRuntime, profile: str, level: str, config: InvocationConfig
+        self,
+        runtime: CodexRuntime,
+        profile: str,
+        level: str,
+        config: InvocationConfig,
+        tool_snapshot: ToolSnapshot | None = None,
+        tool_executor: ToolExecutor | None = None,
     ) -> None:
         """Store model configuration without contacting Codex."""
 
@@ -833,15 +950,39 @@ class _CodexModel:
         self.level = level
         self.config = config
         self._bound_default_model = runtime.default_model
+        self._tool_snapshot = tool_snapshot
+        self._tool_executor = tool_executor
 
     def with_structured_output(
         self, schema: Any, *, policy: StructuredOutputPolicy | None = None
     ) -> RuntimeModel[Any]:
         """Return a structured facade after validating its schema locally."""
 
+        if self._tool_snapshot is not None:
+            raise CapabilityError("Structured output cannot be combined with host-managed tools")
         from ._structured import StructuredCodexModel
 
         return StructuredCodexModel(self, schema, policy)
+
+    def with_tools(
+        self,
+        registry: ToolRegistry,
+        *,
+        executor: ToolExecutor | None = None,
+    ) -> RuntimeModel[Any]:
+        """Return an immutable Codex model view bound to a registry snapshot."""
+
+        spec = self.runtime._profile_spec(self.profile)
+        snapshot, bound_executor = self.runtime._tool_binding(spec, registry, executor)
+        assert snapshot is not None and bound_executor is not None
+        return _CodexModel(
+            self.runtime,
+            self.profile,
+            self.level,
+            self.config,
+            snapshot,
+            bound_executor,
+        )
 
     async def effective_capabilities(self) -> RuntimeCapabilities:
         """Return effective capabilities for this model profile."""
@@ -855,8 +996,20 @@ class _CodexModel:
                 persistent_sessions=capabilities.persistent_sessions,
                 streaming=capabilities.streaming,
                 interruption=capabilities.interruption,
-                host_tools=capabilities.host_tools,
+                host_tools=False,
                 native_tools=capabilities.native_tools,
+                sandbox=capabilities.sandbox,
+                usage_reporting=capabilities.usage_reporting,
+            )
+        if self._tool_snapshot is not None:
+            return RuntimeCapabilities(
+                structured_output=False,
+                ephemeral_sessions=capabilities.ephemeral_sessions,
+                persistent_sessions=capabilities.persistent_sessions,
+                streaming=capabilities.streaming,
+                interruption=capabilities.interruption,
+                host_tools=True,
+                native_tools=False,
                 sandbox=capabilities.sandbox,
                 usage_reporting=capabilities.usage_reporting,
             )
@@ -890,7 +1043,9 @@ class _CodexModel:
             )
         prompt, instructions = serialize_input(value)
         effective = _merge_invocation_config(self.config, config)
-        self.runtime._ensure_profile_executable(self.runtime._profile_spec(self.profile))
+        self.runtime._ensure_profile_executable(
+            self.runtime._profile_spec(self.profile), self._tool_snapshot is not None
+        )
         binding = self.runtime._resolve_binding(
             self.profile,
             self.level,
@@ -900,14 +1055,29 @@ class _CodexModel:
         model, effort = binding.model, binding.effort
         workspace = create_workspace()
         try:
-            thread = await sdk.thread_start(
-                ephemeral=True,
-                model=model,
-                developer_instructions=instructions,
-                cwd=str(workspace),
-                approval_mode=_enum("ApprovalMode", "deny_all"),
-                sandbox=_enum("Sandbox", "read_only"),
-            )
+            if self._tool_snapshot is None:
+                thread = await sdk.thread_start(
+                    ephemeral=True,
+                    model=model,
+                    developer_instructions=instructions,
+                    cwd=str(workspace),
+                    approval_mode=_enum("ApprovalMode", "deny_all"),
+                    sandbox=_enum("Sandbox", "read_only"),
+                )
+            else:  # pragma: no cover - exercised by the opt-in Codex smoke
+                assert self._tool_executor is not None
+                bridge = CodexToolBridge(self._tool_executor)
+                install_bridge(sdk, bridge)
+                thread = await start_thread(
+                    sdk,
+                    dynamic_tools=self._tool_snapshot,
+                    ephemeral=True,
+                    model=model,
+                    developer_instructions=instructions,
+                    cwd=str(workspace),
+                    approvalPolicy="never",
+                    sandboxPolicy="read-only",
+                )
             handle = await thread.turn(
                 prompt,
                 model=model,

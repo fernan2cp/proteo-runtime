@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from .capabilities import RuntimeCapabilities
 from .model import RuntimeModel
 from .model_info import ModelInfo
 from .observability import ObservabilityStatus
 from .session import RuntimeSession
+
+if TYPE_CHECKING:
+    from proteo_runtime.tools import ToolExecutor, ToolRegistry
 
 
 @runtime_checkable
@@ -36,10 +39,18 @@ class Runtime(Protocol):
         *,
         level: str = "medium",
         config: Any | None = None,
+        registry: ToolRegistry | None = None,
+        executor: ToolExecutor | None = None,
     ) -> RuntimeSession[Any]:
         """Create a resumable session."""
 
-    async def resume_session(self, session_id: str) -> RuntimeSession[Any]:
+    async def resume_session(
+        self,
+        session_id: str,
+        *,
+        registry: ToolRegistry | None = None,
+        executor: ToolExecutor | None = None,
+    ) -> RuntimeSession[Any]:
         """Resume a previously created session."""
 
     async def migrate_session(

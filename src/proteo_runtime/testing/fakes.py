@@ -15,6 +15,7 @@ from typing import Any
 from jsonschema import Draft202012Validator, SchemaError
 from pydantic import BaseModel, ValidationError
 
+from proteo_runtime.config import RuntimeConfigV1
 from proteo_runtime.core.capabilities import RuntimeCapabilities
 from proteo_runtime.core.diagnostics import RuntimeDiagnostic
 from proteo_runtime.core.errors import (
@@ -41,6 +42,7 @@ from proteo_runtime.core.profiles import profile_spec
 from proteo_runtime.core.session_codec import SessionCodec
 from proteo_runtime.core.usage import RuntimeUsage
 from proteo_runtime.observability import ObservabilityConfig, RuntimeEventBus
+from proteo_runtime.tools import ToolExecutor, ToolRegistry, ToolSnapshot
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,6 +74,8 @@ class _SessionState:
     interrupted: bool = False
     guard: asyncio.Lock = field(default_factory=asyncio.Lock)
     generation: int = 0
+    tool_snapshot: ToolSnapshot | None = None
+    tool_executor: ToolExecutor | None = None
 
 
 class FakeRuntime:
@@ -86,6 +90,7 @@ class FakeRuntime:
         capabilities: RuntimeCapabilities | None = None,
         identity: RuntimeIdentity | None = None,
         observability: ObservabilityConfig | None = None,
+        config: RuntimeConfigV1 | None = None,
     ) -> None:
         """Initialize scripted turns and injectable deterministic dependencies."""
 
@@ -94,13 +99,14 @@ class FakeRuntime:
         self._counter = 0
         self._id_factory = id_factory or self._default_id
         self._identity = identity or RuntimeIdentity("fake", "fake-identity", "Fake Runtime")
+        self._config = config
         self._capabilities = capabilities or RuntimeCapabilities(
             structured_output=True,
             ephemeral_sessions=True,
             persistent_sessions=True,
             streaming=True,
             interruption=True,
-            host_tools=False,
+            host_tools=True,
             native_tools=False,
             sandbox=True,
             usage_reporting=True,
@@ -213,7 +219,7 @@ class FakeRuntime:
     def model(self, *, profile: str, level: str = "medium") -> FakeRuntimeModel:
         """Create a fake model view for a profile and level."""
 
-        spec = profile_spec(profile)
+        spec = self._profile_spec(profile)
         if spec.persistent or spec.lifecycle.value == "explicit":
             raise CapabilityError("Persistent and explicit profiles require a session factory")
         if level not in {"low", "medium", "high", "ultra"}:
@@ -226,14 +232,17 @@ class FakeRuntime:
         *,
         level: str = "medium",
         config: InvocationConfig | None = None,
+        registry: ToolRegistry | None = None,
+        executor: ToolExecutor | None = None,
     ) -> FakeRuntimeSession:
         """Create and retain a resumable fake session."""
 
-        spec = profile_spec(profile)
+        spec = self._profile_spec(profile)
         if not spec.persistent:
             raise CapabilityError("Fake persistent sessions require a persistent profile")
         if level not in {"low", "medium", "high", "ultra"}:
             raise CapabilityError(f"Unknown reasoning level: {level}")
+        tool_snapshot, tool_executor = self._tool_binding(spec, registry, executor)
         provider_id = self._id_factory()
         descriptor = SessionCodec.encode(
             provider="fake",
@@ -252,12 +261,20 @@ class FakeRuntime:
             level,
             spec.security_policy.value,
             spec.context.value,
+            tool_snapshot=tool_snapshot,
+            tool_executor=tool_executor,
         )
         self._sessions[descriptor] = state
         await self._dispatch(self._emit(RuntimeEventKind.SESSION_CREATED, session_id=descriptor))
         return FakeRuntimeSession(self, state)
 
-    async def resume_session(self, session_id: str) -> FakeRuntimeSession:
+    async def resume_session(
+        self,
+        session_id: str,
+        *,
+        registry: ToolRegistry | None = None,
+        executor: ToolExecutor | None = None,
+    ) -> FakeRuntimeSession:
         """Resume a retained fake session after validating its descriptor."""
 
         if not isinstance(session_id, str):
@@ -270,7 +287,8 @@ class FakeRuntime:
             or descriptor.identity_fingerprint != self._identity.fingerprint
         ):
             raise SessionMismatchError("Session identity does not match this fake runtime")
-        spec = profile_spec(descriptor.profile)
+        spec = self._profile_spec(descriptor.profile)
+        tool_snapshot, tool_executor = self._tool_binding(spec, registry, executor)
         if (
             descriptor.context_policy != spec.context.value
             or descriptor.security_policy != spec.security_policy.value
@@ -289,12 +307,48 @@ class FakeRuntime:
                 descriptor.level,
                 spec.security_policy.value,
                 spec.context.value,
+                tool_snapshot=tool_snapshot,
+                tool_executor=tool_executor,
             )
             self._sessions[session_id] = state
         else:
             state.generation += 1
         await self._dispatch(self._emit(RuntimeEventKind.SESSION_RESUMED, session_id=session_id))
         return FakeRuntimeSession(self, state)
+
+    def _tool_binding(
+        self,
+        spec: Any,
+        registry: ToolRegistry | None,
+        executor: ToolExecutor | None,
+    ) -> tuple[ToolSnapshot | None, ToolExecutor | None]:
+        """Validate a fake host-tool binding without executing provider code."""
+
+        if registry is None and executor is None:
+            if spec.host_tools.value != "disabled":
+                raise CapabilityError("A host-tool registry is required for this profile")
+            return None, None
+        if not self._capabilities.host_tools:
+            raise CapabilityError("Fake runtime host tools are disabled")
+        if spec.host_tools.value not in {"controlled", "explicit"}:
+            raise CapabilityError("The selected profile does not permit host-managed tools")
+        if registry is not None:
+            snapshot = registry.snapshot()
+        else:
+            assert executor is not None
+            snapshot = executor.snapshot
+        if executor is None:
+            executor = ToolExecutor(snapshot)
+        elif executor.snapshot.provider_definitions() != snapshot.provider_definitions():
+            raise CapabilityError("Tool executor does not match the registry snapshot")
+        return snapshot, executor
+
+    def _profile_spec(self, profile: str) -> Any:
+        """Resolve built-in or configured custom profile semantics."""
+
+        if self._config is not None:
+            return self._config.profile_spec(profile)
+        return profile_spec(profile)
 
     async def migrate_session(
         self,
@@ -316,7 +370,7 @@ class FakeRuntime:
             raise SessionBusyError("Cannot migrate an active fake session")
         if level not in {"low", "medium", "high", "ultra"}:
             raise CapabilityError(f"Unknown reasoning level: {level}")
-        spec = profile_spec(profile)
+        spec = self._profile_spec(profile)
         if not spec.persistent:
             raise CapabilityError("Fake session migration requires a persistent profile")
         if security_policy != old.security_policy or security_policy != spec.security_policy.value:
@@ -592,10 +646,19 @@ class FakeRuntime:
 class FakeRuntimeModel:
     """Model facade backed by a :class:`FakeRuntime`."""
 
-    def __init__(self, runtime: FakeRuntime, profile: str, level: str) -> None:
+    def __init__(
+        self,
+        runtime: FakeRuntime,
+        profile: str,
+        level: str,
+        tool_snapshot: ToolSnapshot | None = None,
+        tool_executor: ToolExecutor | None = None,
+    ) -> None:
         """Store the runtime and selected profile."""
 
         self.runtime, self.profile, self.level = runtime, profile, level
+        self._tool_snapshot = tool_snapshot
+        self._tool_executor = tool_executor
 
     async def ainvoke(
         self,
@@ -685,12 +748,56 @@ class FakeRuntimeModel:
     ) -> _FakeStructuredModel:
         """Return a deterministic host-validated structured facade."""
 
+        if self._tool_snapshot is not None:
+            raise CapabilityError("Structured output cannot be combined with host-managed tools")
         return _FakeStructuredModel(self, schema, policy or StructuredOutputPolicy())
+
+    def with_tools(
+        self,
+        registry: ToolRegistry,
+        *,
+        executor: ToolExecutor | None = None,
+    ) -> FakeRuntimeModel:
+        """Return an immutable fake model view with a registry snapshot."""
+
+        spec = self.runtime._profile_spec(self.profile)
+        snapshot, bound_executor = self.runtime._tool_binding(spec, registry, executor)
+        assert snapshot is not None and bound_executor is not None
+        return FakeRuntimeModel(
+            self.runtime,
+            self.profile,
+            self.level,
+            snapshot,
+            bound_executor,
+        )
 
     async def effective_capabilities(self) -> RuntimeCapabilities:
         """Return capabilities of the underlying fake runtime."""
 
-        return await self.runtime.capabilities()
+        capabilities = await self.runtime.capabilities()
+        if self._tool_snapshot is None:
+            return RuntimeCapabilities(
+                structured_output=capabilities.structured_output,
+                ephemeral_sessions=capabilities.ephemeral_sessions,
+                persistent_sessions=capabilities.persistent_sessions,
+                streaming=capabilities.streaming,
+                interruption=capabilities.interruption,
+                host_tools=False,
+                native_tools=capabilities.native_tools,
+                sandbox=capabilities.sandbox,
+                usage_reporting=capabilities.usage_reporting,
+            )
+        return RuntimeCapabilities(
+            structured_output=False,
+            ephemeral_sessions=capabilities.ephemeral_sessions,
+            persistent_sessions=capabilities.persistent_sessions,
+            streaming=capabilities.streaming,
+            interruption=capabilities.interruption,
+            host_tools=capabilities.host_tools,
+            native_tools=False,
+            sandbox=capabilities.sandbox,
+            usage_reporting=capabilities.usage_reporting,
+        )
 
 
 class _FakeStructuredModel:
@@ -723,6 +830,12 @@ class _FakeStructuredModel:
         """Return a structured facade with an independent schema and policy."""
 
         return _FakeStructuredModel(self._base, schema, policy or self._policy)
+
+    def with_tools(self, registry: ToolRegistry, *, executor: ToolExecutor | None = None) -> Any:
+        """Reject ambiguous structured-output and dynamic-tool composition."""
+
+        del registry, executor
+        raise CapabilityError("Structured output cannot be combined with host-managed tools")
 
     async def effective_capabilities(self) -> RuntimeCapabilities:
         """Return capabilities of the fake structured facade."""

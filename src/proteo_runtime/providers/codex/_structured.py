@@ -198,6 +198,12 @@ class StructuredCodexModel:
 
         return StructuredCodexModel(self._base, schema, policy or self._policy)
 
+    def with_tools(self, registry: Any, *, executor: Any | None = None) -> Any:
+        """Reject ambiguous structured-output and dynamic-tool composition."""
+
+        del registry, executor
+        raise CapabilityError("Structured output cannot be combined with host-managed tools")
+
     async def effective_capabilities(self) -> Any:
         """Return capabilities effective for structured execution."""
 

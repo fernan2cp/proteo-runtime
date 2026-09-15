@@ -36,6 +36,15 @@ _SECRET_VALUE_PATTERN = re.compile(
 )
 
 
+def _looks_like_model(value: object) -> bool:
+    """Recognize legacy test doubles that predate the optional tool binding method."""
+
+    return all(
+        hasattr(value, attribute)
+        for attribute in ("ainvoke", "astream", "with_structured_output", "effective_capabilities")
+    )
+
+
 class RuntimeNode(Generic[StateT]):
     """Expose a Proteo runtime model or resumable session as an async graph node."""
 
@@ -52,7 +61,7 @@ class RuntimeNode(Generic[StateT]):
 
         if not input_key or not output_key:
             raise ValueError("input_key and output_key must be non-empty")
-        model_match = isinstance(executor, RuntimeModel)
+        model_match = isinstance(executor, RuntimeModel) or _looks_like_model(executor)
         runtime_match = isinstance(executor, Runtime)
         if model_match == runtime_match:
             raise TypeError("executor must implement exactly one of RuntimeModel or Runtime")

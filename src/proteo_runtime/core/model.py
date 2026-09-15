@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass, field
-from typing import Any, Generic, Protocol, TypeVar, runtime_checkable
+from typing import TYPE_CHECKING, Any, Generic, Protocol, TypeVar, runtime_checkable
 
 from pydantic import BaseModel
 
@@ -17,6 +17,9 @@ from .model_info import ModelInfo
 from .observability import ObservabilityStatus
 from .types import freeze_mapping
 from .usage import RuntimeUsage
+
+if TYPE_CHECKING:
+    from proteo_runtime.tools import ToolExecutor, ToolRegistry
 
 T = TypeVar("T")
 
@@ -144,6 +147,14 @@ class RuntimeModel(Protocol, Generic[T]):
         policy: StructuredOutputPolicy | None = None,
     ) -> RuntimeModel[Any]:
         """Return a model configured for a structured output schema."""
+
+    def with_tools(
+        self,
+        registry: ToolRegistry,
+        *,
+        executor: ToolExecutor | None = None,
+    ) -> RuntimeModel[Any]:
+        """Return an immutable model view with host-managed tools."""
 
     async def effective_capabilities(self) -> RuntimeCapabilities:
         """Return capabilities effective for this model configuration."""
