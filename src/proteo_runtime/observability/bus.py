@@ -473,13 +473,13 @@ def _project_redacted_metadata_value(value: Any, key_hint: str | None) -> Any:
         return value if value.startswith("proteo.session:") else _session_correlation_id(value)
     if isinstance(value, Mapping):
         return _project_redacted_metadata(value)
-    if isinstance(value, (list, tuple)):
+    if isinstance(value, list | tuple):
         return tuple(_project_redacted_metadata_value(item, None) for item in value)
-    if isinstance(value, (set, frozenset)):
+    if isinstance(value, set | frozenset):
         return tuple(_project_redacted_metadata_value(item, None) for item in value)
     if isinstance(value, str):
         return _SECRET_ASSIGNMENT.sub(_redact_secret_match, value)
-    if value is None or isinstance(value, (bool, int, float)):
+    if value is None or isinstance(value, bool | int | float):
         return value
     return f"<{type(value).__name__}>"
 
@@ -512,15 +512,15 @@ def _project_value(value: Any, mode: PayloadMode, key_hint: str | None) -> Any:
                 )
             }
         )
-    if isinstance(value, (list, tuple)):
+    if isinstance(value, list | tuple):
         return tuple(_project_value(item, mode, key_hint=None) for item in value)
-    if isinstance(value, (set, frozenset)):
+    if isinstance(value, set | frozenset):
         return tuple(_project_value(item, mode, key_hint=None) for item in value)
     if isinstance(value, str):
         if mode is PayloadMode.REDACTED:
             return "[REDACTED]"
         return _SECRET_ASSIGNMENT.sub(_redact_secret_match, value)
-    if value is None or isinstance(value, (bool, int, float)):
+    if value is None or isinstance(value, bool | int | float):
         if mode is PayloadMode.REDACTED and value is not None:
             return f"<{type(value).__name__}>"
         return value

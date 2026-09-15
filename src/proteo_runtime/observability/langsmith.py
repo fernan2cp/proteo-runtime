@@ -268,9 +268,9 @@ def _materialize(value: Any) -> Any:
 
     if isinstance(value, Mapping):
         return {str(key): _materialize(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple, set, frozenset)):
+    if isinstance(value, list | tuple | set | frozenset):
         return [_materialize(item) for item in value]
-    if value is None or isinstance(value, (str, bool, int, float)):
+    if value is None or isinstance(value, str | bool | int | float):
         return value
     return f"<{type(value).__name__}>"
 

@@ -229,7 +229,7 @@ class OpenTelemetryObserver:
             "total_tokens",
         ):
             value = usage.get(token_type)
-            if isinstance(value, (int, float)):
+            if isinstance(value, int | float):
                 self._record_metric(
                     self._token_counter,
                     value,
@@ -323,7 +323,7 @@ def _set_attributes(span: Any, event: RuntimeEvent) -> None:
     for key, value in attrs.items():
         if (
             value is not None
-            and isinstance(value, (str, int, float, bool))
+            and isinstance(value, str | int | float | bool)
             and hasattr(span, "set_attribute")
         ):
             span.set_attribute(key, value)
