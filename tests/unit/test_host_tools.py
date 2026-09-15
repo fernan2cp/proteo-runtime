@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
+from pydantic import BaseModel
 
 from proteo_runtime.config import ModelMapping, ProfileConfig, RuntimeConfigV1
 from proteo_runtime.core.capabilities import RuntimeCapabilities
@@ -25,6 +26,7 @@ from proteo_runtime.core.profiles import HostToolsMode, LifecycleMode, LogicalLe
 from proteo_runtime.core.security import SecurityPolicy
 from proteo_runtime.providers.codex.experimental import (
     CodexToolBridge,
+    CodexToolMux,
     dynamic_tool_specs,
     install_bridge,
     probe_dynamic_tools,
@@ -33,7 +35,7 @@ from proteo_runtime.providers.codex.experimental import (
     start_thread,
 )
 from proteo_runtime.providers.codex.runtime import CodexRuntime, _create_sdk
-from proteo_runtime.testing.fakes import FakeRuntime
+from proteo_runtime.testing.fakes import FakeRuntime, FakeTurn
 from proteo_runtime.tools import (
     ApprovalDecision,
     ApprovalRequirement,
@@ -127,6 +129,30 @@ async def bad_output(value: int) -> dict[str, str]:
     return {"value": value}  # type: ignore[dict-item]
 
 
+class PydanticInput(BaseModel):
+    """Typed nested input used to verify callable argument preservation."""
+
+    value: int
+
+
+class PydanticOutput(BaseModel):
+    """Typed output used to verify JSON serialization through the adapter."""
+
+    doubled: int
+
+
+@runtime_tool(
+    name="pydantic_value",
+    description="Handle a Pydantic value.",
+    permission="data.read",
+)
+async def pydantic_value(payload: PydanticInput) -> PydanticOutput:
+    """Return a typed Pydantic output from a typed Pydantic input."""
+
+    assert isinstance(payload, PydanticInput)
+    return PydanticOutput(doubled=payload.value * 2)
+
+
 def test_registry_snapshots_are_immutable() -> None:
     """A snapshot remains stable when the source registry changes."""
 
@@ -162,6 +188,7 @@ async def test_executor_validates_permission_and_deduplicates() -> None:
     assert first.success is True
     assert first.as_provider_value() == 3
     assert RuntimeEventKind.TOOL_COMPLETED in seen
+    assert RuntimeEventKind.TOOL_REQUESTED in seen
 
 
 @pytest.mark.asyncio
@@ -214,14 +241,22 @@ async def test_executor_approval_and_retry_paths() -> None:
     registry.register(write_value)
     registry.register(flaky_value)
     registry.register(always_fail)
+    incompatible = ToolExecutor(
+        registry,
+        permission_policy=ToolPermissionPolicy(frozenset({"data.write", "data.read"})),
+        approval_handler=Approval(),
+        retry_policy=ToolRetryPolicy(max_attempts=2),
+    )
+    denied_retry_config = await incompatible.execute(
+        ToolRequest("i", "write", "write_value", {"value": "ok"})
+    )
+    assert denied_retry_config.success is False
     executor = ToolExecutor(
         registry,
         permission_policy=ToolPermissionPolicy(frozenset({"data.write", "data.read"})),
         approval_handler=Approval(),
         retry_policy=ToolRetryPolicy(max_attempts=2),
     )
-    approved = await executor.execute(ToolRequest("i", "write", "write_value", {"value": "ok"}))
-    assert approved.success is True
     global FLAKY_CALLS
     FLAKY_CALLS = 0
     retried = await executor.execute(ToolRequest("i", "flaky", "flaky_value", {"value": 4}))
@@ -284,10 +319,11 @@ async def test_experimental_bridge_rejects_unknown_requests() -> None:
         permission_policy=ToolPermissionPolicy(frozenset({"math.add"})),
     )
     bridge = CodexToolBridge(executor)
-    assert bridge("item/started", {})["error"]["code"] == "tool_denied"
-    assert (
-        bridge("item/tool/call", {"name": "add_value"})["error"]["code"] == "tool_execution_error"
-    )
+    unsupported = bridge("item/started", {})
+    assert unsupported["success"] is False
+    assert "contentItems" in unsupported
+    invalid = bridge("item/tool/call", {"name": "add_value"})
+    assert invalid["success"] is False
 
 
 @pytest.mark.asyncio
@@ -337,17 +373,32 @@ async def test_experimental_raw_thread_shim_and_bridge_response() -> None:
     started_payload = cast(dict[str, Any], sdk._client.started)
     assert cast(list[dict[str, Any]], started_payload["dynamicTools"])[0]["name"] == "add_value"
     bridge = CodexToolBridge(executor)
-    install_bridge(sdk, bridge)
+    mux = install_bridge(sdk, bridge)
+    mux.register(bridge, thread_id="thread-start", turn_id="i")
     response = await asyncio.to_thread(
         sdk._client._sync._approval_handler,
         "item/tool/call",
-        {"invocationId": "i", "callId": "c", "name": "add_value", "arguments": {"value": 2}},
+        {
+            "invocationId": "i",
+            "threadId": "thread-start",
+            "turnId": "i",
+            "callId": "c",
+            "name": "add_value",
+            "arguments": {"value": 2},
+        },
     )
     assert "contentItems" in response
     tool_response = await asyncio.to_thread(
         sdk._client._sync._approval_handler,
         "item/tool/call",
-        {"invocationId": "i", "callId": "c-tool", "tool": "add_value", "arguments": {"value": 3}},
+        {
+            "invocationId": "i",
+            "threadId": "thread-start",
+            "turnId": "i",
+            "callId": "c-tool",
+            "tool": "add_value",
+            "arguments": {"value": 3},
+        },
     )
     assert json.loads(tool_response["contentItems"][0]["text"])["success"] is True
     assert sdk._client._sync._approval_handler("command/exec", {})["decision"] == "decline"
@@ -362,20 +413,201 @@ async def test_experimental_raw_thread_shim_and_bridge_response() -> None:
             "arguments": "{",
         },
     )
-    assert invalid["error"]["code"] == "tool_execution_error"
+    assert invalid["success"] is False
     strict_bridge = CodexToolBridge(ToolExecutor(registry, failure_policy=ToolFailurePolicy.RAISE))
     strict_response = await asyncio.to_thread(
         strict_bridge,
         "item/tool/call",
         {"invocationId": "i", "callId": "strict", "name": "add_value", "arguments": {"value": 2}},
     )
-    assert strict_response["error"]["code"] == "tool_execution_error"
+    assert strict_response["success"] is False
     denied_response = await asyncio.to_thread(
         bridge,
         "item/tool/call",
         {"invocationId": "i", "callId": "unknown", "name": "missing", "arguments": {}},
     )
     assert "errorCode" in denied_response["contentItems"][0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_experimental_mux_routes_only_registered_thread_turn_pairs() -> None:
+    """The private mux prevents cross-thread dynamic tool execution."""
+
+    registry = ToolRegistry()
+    registry.register(add_value)
+    executor = ToolExecutor(
+        registry,
+        permission_policy=ToolPermissionPolicy(frozenset({"math.add"})),
+    )
+    mux = CodexToolMux()
+    first = CodexToolBridge(executor, invocation_id="inv-1")
+    second = CodexToolBridge(executor, invocation_id="inv-2")
+    mux.register(first, thread_id="thread-1", turn_id="turn-1")
+    mux.register(second, thread_id="thread-2", turn_id="turn-2")
+    response = await asyncio.to_thread(
+        mux,
+        "item/tool/call",
+        {
+            "invocationId": "inv-1",
+            "threadId": "thread-1",
+            "turnId": "turn-1",
+            "callId": "call-1",
+            "name": "add_value",
+            "arguments": {"value": 4},
+        },
+    )
+    assert response["success"] is True
+    cross_thread = await asyncio.to_thread(
+        mux,
+        "item/tool/call",
+        {
+            "invocationId": "inv-1",
+            "threadId": "thread-2",
+            "turnId": "turn-1",
+            "callId": "cross",
+            "name": "add_value",
+            "arguments": {"value": 4},
+        },
+    )
+    assert cross_thread["success"] is False
+    mux.close()
+    assert first.thread_id is None and second.thread_id is None
+
+
+@pytest.mark.asyncio
+async def test_executor_preserves_pydantic_values_and_serializes_output() -> None:
+    """Nested Pydantic inputs reach the callable and outputs become JSON values."""
+
+    registry = ToolRegistry()
+    registry.register(pydantic_value)
+    executor = ToolExecutor(
+        registry,
+        permission_policy=ToolPermissionPolicy(frozenset({"data.read"})),
+    )
+    result = await executor.execute(
+        ToolRequest("pydantic", "call", "pydantic_value", {"payload": {"value": 3}})
+    )
+    assert result.success is True
+    assert result.as_provider_value() == {"doubled": 6}
+
+
+@pytest.mark.asyncio
+async def test_approval_internal_cancellation_denies_and_external_cancellation_cleans() -> None:
+    """Internal approval cancellation denies while external cancellation propagates safely."""
+
+    class CancelApproval:
+        """Cancel its own task to exercise fail-closed approval handling."""
+
+        async def request_approval(self, request: object) -> ApprovalDecision:
+            """Raise cancellation from inside the handler."""
+
+            del request
+            raise asyncio.CancelledError
+
+    registry = ToolRegistry()
+    registry.register(write_value)
+    executor = ToolExecutor(
+        registry,
+        permission_policy=ToolPermissionPolicy(frozenset({"data.write"})),
+        approval_handler=CancelApproval(),
+    )
+    result = await executor.execute(
+        ToolRequest("approval", "cancel", "write_value", {"value": "x"})
+    )
+    assert result.denied is True
+    assert ("approval", "cancel") in executor._calls
+
+    gate = asyncio.Event()
+
+    class SlowApproval:
+        """Wait forever until the caller cancels the invocation."""
+
+        async def request_approval(self, request: object) -> ApprovalDecision:
+            """Block approval until cancellation."""
+
+            del request
+            await gate.wait()
+            return ApprovalDecision.APPROVE
+
+    cancelled_executor = ToolExecutor(
+        registry,
+        permission_policy=ToolPermissionPolicy(frozenset({"data.write"})),
+        approval_handler=SlowApproval(),
+    )
+    pending = asyncio.create_task(
+        cancelled_executor.execute(ToolRequest("external", "cancel", "write_value", {"value": "x"}))
+    )
+    await asyncio.sleep(0)
+    pending.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await pending
+    assert ("external", "cancel") not in cancelled_executor._calls
+
+
+def test_json_safety_rejects_non_finite_numbers_and_non_string_keys() -> None:
+    """Neutral request values reject unsafe JSON representations before execution."""
+
+    with pytest.raises(TypeError):
+        ToolRequest("i", "nan", "add_value", {"value": math.nan})
+    with pytest.raises(TypeError):
+        ToolRequest("i", "key", "add_value", {1: "unsafe"})  # type: ignore[dict-item]
+
+
+@pytest.mark.asyncio
+async def test_fake_runtime_executes_multiple_host_calls_and_rebinds_on_resume() -> None:
+    """Fake turns execute each scripted host call and replace session bindings on resume."""
+
+    registry = ToolRegistry()
+    registry.register(add_value)
+    executor = ToolExecutor(
+        registry,
+        permission_policy=ToolPermissionPolicy(frozenset({"math.add"})),
+    )
+    fake = FakeRuntime(
+        turns=[
+            FakeTurn(
+                tool_calls=(
+                    ("call-1", "add_value", {"value": 1}),
+                    ("call-2", "add_value", {"value": 2}),
+                )
+            )
+        ]
+    )
+    bound = fake.model(profile="controlled_agent").with_tools(registry, executor=executor)
+    await bound.ainvoke("run tools")
+    completed = [
+        event for event in executor.events if event.kind is RuntimeEventKind.TOOL_COMPLETED
+    ]
+    assert [event.metadata["tool_call_id"] for event in completed] == ["call-1", "call-2"]
+    assert executor._calls == {}
+
+    config = RuntimeConfigV1(
+        runtime="fake",
+        profiles={
+            "custom": {
+                LogicalLevel(level): ModelMapping(model="fake", reasoning_effort="medium")
+                for level in ("low", "medium", "high", "ultra")
+            }
+        },
+        profile_specs={
+            "custom": ProfileConfig(
+                lifecycle=LifecycleMode.PERSISTENT,
+                context_policy=ContextPolicy.HYBRID,
+                security_policy=SecurityPolicy.CONTROLLED_TOOLS,
+                host_tools=HostToolsMode.CONTROLLED,
+            )
+        },
+    )
+    configured = FakeRuntime(config=config)
+    first_registry = ToolRegistry()
+    first_registry.register(add_value)
+    session = await configured.session("custom", registry=first_registry)
+    replacement = ToolRegistry()
+    replacement.register(add_value)
+    await session.close()
+    resumed = await configured.resume_session(session.id, registry=replacement)
+    assert resumed._state.tool_snapshot is not None
+    await resumed.close()
 
 
 def test_runtime_tool_rejects_sync_or_untyped_functions() -> None:
