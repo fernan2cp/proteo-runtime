@@ -83,6 +83,8 @@ class LangSmithObserver:
             RuntimeEventKind.TOOL_REQUESTED,
             RuntimeEventKind.TOOL_STARTED,
             RuntimeEventKind.TOOL_APPROVAL_REQUESTED,
+            RuntimeEventKind.TOOL_APPROVAL_RESOLVED,
+            RuntimeEventKind.TOOL_RETRY_SCHEDULED,
         }:
             self._create_run(
                 (invocation, self._tool_key(event)),

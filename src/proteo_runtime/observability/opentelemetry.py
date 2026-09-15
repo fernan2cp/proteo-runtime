@@ -117,10 +117,11 @@ class OpenTelemetryObserver:
             and event.session_id
         ):
             self._end_span((event.session_id, "session"), event)
-        key = (invocation, _span_kind(event.kind))
+        key = (invocation, _span_key(event))
         if (
             event.kind
             in {
+                RuntimeEventKind.TOOL_REQUESTED,
                 RuntimeEventKind.INVOCATION_STARTED,
                 RuntimeEventKind.TURN_STARTED,
                 RuntimeEventKind.RETRY_SCHEDULED,
@@ -156,13 +157,17 @@ class OpenTelemetryObserver:
                         "attempt": str(event.metadata.get("attempt", "")),
                     },
                 )
-            self._end_span(key, event)
+            if event.kind not in {
+                RuntimeEventKind.TOOL_APPROVAL_RESOLVED,
+                RuntimeEventKind.TOOL_RETRY_SCHEDULED,
+            }:
+                self._end_span(key, event)
         if event.kind in {
             RuntimeEventKind.TOOL_COMPLETED,
             RuntimeEventKind.TOOL_DENIED,
             RuntimeEventKind.TOOL_FAILED,
         }:
-            self._end_span((invocation, "tool"), event)
+            self._end_span(_tool_span_key(event), event)
         if event.kind in {
             RuntimeEventKind.INVOCATION_COMPLETED,
             RuntimeEventKind.INVOCATION_FAILED,
@@ -318,6 +323,30 @@ def _span_kind(kind: RuntimeEventKind) -> str:
     }:
         return "tool"
     return "runtime"
+
+
+def _tool_span_key(event: RuntimeEvent) -> tuple[str, str]:
+    """Build a unique in-memory span key without exporting call IDs as labels."""
+
+    call_id = event.metadata.get("tool_call_id") or event.metadata.get("tool_name") or "default"
+    return (event.invocation_id or event.event_id, f"tool:{call_id}")
+
+
+def _span_key(event: RuntimeEvent) -> str:
+    """Map one event to its bounded span key."""
+
+    if event.kind in {
+        RuntimeEventKind.TOOL_REQUESTED,
+        RuntimeEventKind.TOOL_STARTED,
+        RuntimeEventKind.TOOL_APPROVAL_REQUESTED,
+        RuntimeEventKind.TOOL_APPROVAL_RESOLVED,
+        RuntimeEventKind.TOOL_RETRY_SCHEDULED,
+        RuntimeEventKind.TOOL_COMPLETED,
+        RuntimeEventKind.TOOL_DENIED,
+        RuntimeEventKind.TOOL_FAILED,
+    }:
+        return _tool_span_key(event)[1]
+    return _span_kind(event.kind)
 
 
 def _set_attributes(span: Any, event: RuntimeEvent) -> None:
