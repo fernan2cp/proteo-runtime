@@ -1,6 +1,6 @@
 # Acceptance Criteria — Phase 3
 
-Todos los criterios comienzan en `pending`.
+Todos los criterios están en estado `done` tras la validación local y CI.
 
 - `AC-P3-001`: `langgraph>=1.2,<2` está sólo en los extras `langgraph` y `all`, y el lock es
   reproducible. Requisitos: `P3-REQ-001`. Tarea: `P3-TASK-0001`.
@@ -80,6 +80,6 @@ Todos los criterios comienzan en `pending`.
 
 ## Estado de aceptación
 
-`AC-P3-001`–`AC-P3-024` y `AC-P3-026`: `done`, respaldados por la suite local, el ejemplo, los
-artefactos 0.4.0 y los smokes opt-in preparados con Luna/low. `AC-P3-025`: `in_progress` hasta
-registrar los runs CI Linux/Windows Python 3.11–3.14.
+`AC-P3-001`–`AC-P3-026`: `done`, respaldados por la suite local, el ejemplo, los artefactos 0.4.0,
+los smokes opt-in preparados con Luna/low y el CI Linux/Windows Python 3.11–3.14:
+https://github.com/fernan2cp/proteo-runtime/actions/runs/34982580419.

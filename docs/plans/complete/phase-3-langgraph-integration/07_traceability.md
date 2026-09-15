@@ -71,9 +71,10 @@ Extraer todos los IDs `P3-REQ-*`, `P3-TASK-*` y `AC-P3-*` y comprobar:
 
 - `P3-TASK-0001`–`P3-TASK-0007`: `done`; commits `035a988` y `474b03d`, suite focalizada y
   StateGraph contract tests.
-- `P3-TASK-0008`: `in_progress`; `uv lock --check`, Ruff, mypy, import-linter, pre-commit,
+- `P3-TASK-0008`: `done`; `uv lock --check`, Ruff, mypy, import-linter, pre-commit,
   `89 passed, 7 skipped`, cobertura `90.23%`, build 0.4.0, checker de artefactos y smokes reales
-  opt-in (`7 passed`, Luna/low) verdes; falta únicamente el CI remoto antes de mover el paquete.
+  opt-in (`7 passed`, Luna/low) verdes; CI Linux/Windows Python 3.11–3.14 verde en
+  https://github.com/fernan2cp/proteo-runtime/actions/runs/34982580419.
 - La auditoría de IDs de este documento conserva 21 requisitos, 8 tareas y 26 criterios; no hay
   referencias huérfanas. La evidencia final incorporará las URLs de los runs CI y el commit de
   cierre.

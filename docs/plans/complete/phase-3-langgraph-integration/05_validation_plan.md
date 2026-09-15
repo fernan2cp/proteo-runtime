@@ -78,13 +78,13 @@ Inspeccionar wheel y sdist y verificar:
 
 ## CI y evidencia de cierre
 
-El workflow debe pasar en Linux y Windows para Python 3.11, 3.12, 3.13 y 3.14, incluyendo la
-suite con extra, import-boundary y packaging. Registrar commit y URL de runs para implementación
-y cierre documental.
+El workflow pasó en Linux y Windows para Python 3.11, 3.12, 3.13 y 3.14, incluyendo la suite con
+extra, import-boundary y packaging. Run de implementación y cierre documental:
+https://github.com/fernan2cp/proteo-runtime/actions/runs/34982580419.
 
 Antes de mover el SDD:
 
-- no puede quedar ningún `P3-TASK-*`, `P3-REQ-*` o `AC-P3-*` pending/blocked;
+- no queda ningún `P3-TASK-*`, `P3-REQ-*` o `AC-P3-*` pending/blocked;
 - cada criterio debe nombrar evidencia local, integración autorizada o CI;
 - el ejemplo no puede persistir objetos Codex en graph state;
 - la matriz de `07_traceability.md` debe pasar la auditoría mecánica de IDs.

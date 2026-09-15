@@ -1,7 +1,7 @@
 # Task Plan — Phase 3
 
-Todas las tareas comienzan en `pending`. La sección Evidencia se completa únicamente después de
-ejecutar la validación correspondiente.
+Todas las tareas están cerradas en `done`; cada sección conserva la evidencia de validación
+correspondiente.
 
 ### P3-TASK-0001 — Crear el límite opcional y la superficie pública
 
@@ -138,7 +138,7 @@ inferencia Codex queda fijada a `gpt-5.6-luna`/`low` y el catálogo no invoca mo
 
 ### P3-TASK-0008 — Validar, entregar y cerrar el SDD
 
-Estado: `in_progress`
+Estado: `done`
 
 Requisitos: `P3-REQ-018`, `P3-REQ-019`, `P3-REQ-020`, `P3-REQ-021`
 
@@ -151,6 +151,6 @@ Acciones:
 - publicar commits en inglés y esperar CI Linux/Windows 3.11–3.14;
 - registrar evidencia, auditar trazabilidad y mover este mismo paquete a `complete/`.
 
-Evidencia parcial: Ruff, mypy, import-linter, pre-commit, lock, suite con cobertura, artefactos
-locales y smokes Codex/LangGraph opt-in (`7 passed`, Luna/low) verdes. Pendiente registrar push y
-CI Linux/Windows Python 3.11–3.14 antes del cierre.
+Evidencia: Ruff, mypy, import-linter, pre-commit, lock, suite con cobertura, artefactos locales y
+smokes Codex/LangGraph opt-in (`7 passed`, Luna/low) verdes. CI Linux/Windows Python 3.11–3.14
+verde: https://github.com/fernan2cp/proteo-runtime/actions/runs/34982580419.

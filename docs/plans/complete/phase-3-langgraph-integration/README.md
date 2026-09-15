@@ -1,6 +1,6 @@
 # Phase 3 — LangGraph Integration
 
-Estado: `active`
+Estado: `complete`
 
 Este SDD es el tracker autoritativo para implementar la integración inicial de Proteo Runtime
 con LangGraph. La fase introduce un único adaptador público y provider-neutral, conserva el
@@ -53,4 +53,5 @@ estado global y la persistencia bajo control del host, y no adelanta observabili
 Cada tarea referencia al menos un requisito y un criterio; cada requisito aparece en una tarea y
 un criterio; cada criterio tiene validación concreta. Ninguna tarea pasa a `done` sin evidencia
 registrada. El paquete se moverá, sin renombrarlo, a `docs/plans/complete/` sólo cuando la
-implementación, todos los criterios, la validación local y el CI final estén completos.
+implementación, todos los criterios, la validación local y el CI final estén completos. Evidencia
+CI final: https://github.com/fernan2cp/proteo-runtime/actions/runs/34982580419.

@@ -1,6 +1,6 @@
 # Requirements — Phase 3
 
-Todos los requisitos comienzan con estado `pending`.
+Todos los requisitos están en estado `done` tras la validación local y CI.
 
 ## Dependencia y API pública
 
@@ -73,7 +73,7 @@ Todos los requisitos comienzan con estado `pending`.
 
 ## Estado de implementación
 
-`P3-REQ-001`–`P3-REQ-019` y `P3-REQ-021`: `done`, con evidencia en los tests unitarios y
+`P3-REQ-001`–`P3-REQ-021`: `done`, con evidencia en los tests unitarios y
 contractuales, el ejemplo, los smokes opt-in y los gates locales indicados en `05_validation_plan.md`.
-`P3-REQ-020`: `in_progress`; la validación local de release está completa y queda pendiente el
-CI remoto Linux/Windows para cerrar el requisito.
+El CI remoto Linux/Windows Python 3.11–3.14 quedó verde en
+https://github.com/fernan2cp/proteo-runtime/actions/runs/34982580419.
