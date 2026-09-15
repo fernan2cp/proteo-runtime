@@ -93,12 +93,12 @@ The opt-in real run passed 3 integration tests covering catalog/brain, streaming
 
 ### P1-TASK-0010 — Document, version, validate, and hand off
 
-**State:** `in_progress`
+**State:** `done`
 **Depends on:** P1-TASK-0009
 **Requirements:** P1-REQ-016, P1-REQ-018
 **Acceptance:** AC-P1-022 through AC-P1-024
 
-README/version, Ruff, mypy, import-linter, tests, coverage, and build evidence are local. `gh auth status` reported no authenticated GitHub host, so remote CI matrix evidence and the final move to `docs/plans/complete/` remain pending.
+README/version, local quality gates, 46 default tests, 90.38% branch-aware coverage, build, artifacts, and the real opt-in Codex smoke are evidenced. Remote CI run [34931792468](https://github.com/fernan2cp/proteo-runtime/actions/runs/34931792468) passed pre-commit, all Ubuntu/Windows Python 3.11–3.14 jobs, and packaging. The SDD is ready to move to `docs/plans/complete/`.
 
 ## Dependency Summary
 

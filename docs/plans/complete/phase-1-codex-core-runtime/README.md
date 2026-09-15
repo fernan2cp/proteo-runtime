@@ -32,11 +32,10 @@ preserving the provider-neutral contracts completed in Phase 0.
 
 ## Status and Lifecycle
 
-Status: `active`.
+Status: `complete`.
 
-All implementation tasks start as `pending`. This directory remains under
-`docs/plans/active/` until every acceptance criterion has recorded evidence. It is then moved
-unchanged to `docs/plans/complete/`.
+All implementation tasks and acceptance criteria have recorded evidence. This package is moved to
+`docs/plans/complete/` as the completed Phase 1 record.
 
 ## Scope
 

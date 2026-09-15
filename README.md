@@ -6,7 +6,7 @@ Provider-neutral runtime contracts for asynchronous model execution. Version
 ## Status
 
 Phase 0 contracts remain provider-neutral. Phase 1 adds a Codex provider behind
-`proteo_runtime.providers.codex.CodexRuntime`; real subscription-backed tests pass opt-in; remote CI and strong OS isolation remain explicitly pending.
+`proteo_runtime.providers.codex.CodexRuntime`; real subscription-backed tests and the remote CI matrix pass; strong OS isolation remains deferred to Phase 6.
 
 ## Install
 
@@ -50,5 +50,5 @@ PROTEO_CODEX_INTEGRATION=1 uv run pytest -m integration tests/integration/codex 
 
 Structured output, session migration, host-managed tools, retries, and strong
 OS isolation are reserved for later phases. See
-`docs/plans/active/phase-1-codex-core-runtime/` for requirements, design,
+`docs/plans/complete/phase-1-codex-core-runtime/` for requirements, design,
 acceptance criteria, validation evidence, and traceability.

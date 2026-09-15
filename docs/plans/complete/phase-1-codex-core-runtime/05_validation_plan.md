@@ -75,12 +75,27 @@ credentials or session descriptor were written to artifacts or output.
 
 ## CI Evidence
 
-The workflow is prepared with push, pull_request, workflow_dispatch, fail-fast false, Ubuntu and
-Windows Python 3.11–3.14, static checks, quota-safe tests with coverage >=90%, build, packaging,
-and isolated 0.2.0 checks. Real integration remains excluded from default CI.
+The workflow is configured for `push`, `pull_request`, and `workflow_dispatch` with
+`fail-fast: false`, Ubuntu and Windows Python 3.11–3.14, static checks, quota-safe tests with
+coverage >=90%, build, packaging, and isolated 0.2.0 checks. Real integration remains excluded
+from default CI.
 
-Remote evidence is recorded only after the branch is published with authenticated `gh`, the
-workflow run completes, and the URL and each matrix result are inspected.
+Remote run: [GitHub Actions CI run 34931792468](https://github.com/fernan2cp/proteo-runtime/actions/runs/34931792468)
+for commit `770aca1b1b7899fbee10fe20d121b151b6346c9d`; conclusion `success`.
 
+| Job | Result |
+|---|---|
+| Pre-commit / static quality | PASS |
+| Ubuntu / Python 3.11 | PASS |
+| Ubuntu / Python 3.12 | PASS |
+| Ubuntu / Python 3.13 | PASS |
+| Ubuntu / Python 3.14 | PASS |
+| Windows / Python 3.11 | PASS |
+| Windows / Python 3.12 | PASS |
+| Windows / Python 3.13 | PASS |
+| Windows / Python 3.14 | PASS |
+| Packaging and isolated artifacts | PASS |
 
-At the final local validation, `gh auth status` reported that no GitHub host was authenticated. No remote run was started; AC-P1-024 remains pending.
+The run validated installation, Ruff format/lint, mypy, import-linter, quota-safe tests with the
+coverage gate, wheel/sdist builds, artifact inspection, and isolated wheel/sdist import and CLI
+checks. No integration credentials were configured in CI.
