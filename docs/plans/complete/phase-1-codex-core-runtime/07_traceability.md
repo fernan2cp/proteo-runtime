@@ -51,7 +51,7 @@ Task numbers in this table abbreviate the `P1-TASK-` prefix.
 | AC-P1-016–021 | runner, usage, terminal parity, error, cancellation and cleanup tests | Satisfied locally |
 | AC-P1-022 | quota-safety contract plus default suite | Satisfied: 46 passed, 3 skipped |
 | AC-P1-023 | explicit ChatGPT-backed smoke | Satisfied: 3 passed, 0 failed, 0 skipped |
-| AC-P1-024 | local quality, 90.38% coverage, build, artifacts and docs; remote matrix | Satisfied: local gates plus [CI run 34932195741](https://github.com/fernan2cp/proteo-runtime/actions/runs/34932195741) passed all quality, Ubuntu/Windows 3.11–3.14, and packaging jobs |
+| AC-P1-024 | local quality, 90.38% coverage, build, artifacts and docs; remote matrix | Satisfied: local gates plus [CI run 34932338768](https://github.com/fernan2cp/proteo-runtime/actions/runs/34932338768) passed all quality, Ubuntu/Windows 3.11–3.14, and packaging jobs |
 
 ## Change-Control Rule
 

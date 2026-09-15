@@ -80,8 +80,8 @@ The workflow is configured for `push`, `pull_request`, and `workflow_dispatch` w
 coverage >=90%, build, packaging, and isolated 0.2.0 checks. Real integration remains excluded
 from default CI.
 
-Remote run: [GitHub Actions CI run 34932195741](https://github.com/fernan2cp/proteo-runtime/actions/runs/34932195741)
-for commit `770aca1b1b7899fbee10fe20d121b151b6346c9d`; conclusion `success`.
+Remote run: [GitHub Actions CI run 34932338768](https://github.com/fernan2cp/proteo-runtime/actions/runs/34932338768)
+for commit `4790fa41126ae467d8ecc74fed0bf992c5cb8f6e`; conclusion `success`.
 
 | Job | Result |
 |---|---|

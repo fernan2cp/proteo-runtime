@@ -98,7 +98,7 @@ The opt-in real run passed 3 integration tests covering catalog/brain, streaming
 **Requirements:** P1-REQ-016, P1-REQ-018
 **Acceptance:** AC-P1-022 through AC-P1-024
 
-README/version, local quality gates, 46 default tests, 90.38% branch-aware coverage, build, artifacts, and the real opt-in Codex smoke are evidenced. Remote CI run [34932195741](https://github.com/fernan2cp/proteo-runtime/actions/runs/34932195741) passed pre-commit, all Ubuntu/Windows Python 3.11–3.14 jobs, and packaging. The SDD is ready to move to `docs/plans/complete/`.
+README/version, local quality gates, 46 default tests, 90.38% branch-aware coverage, build, artifacts, and the real opt-in Codex smoke are evidenced. Remote CI run [34932338768](https://github.com/fernan2cp/proteo-runtime/actions/runs/34932338768) passed pre-commit, all Ubuntu/Windows Python 3.11–3.14 jobs, and packaging. The SDD has been moved to `docs/plans/complete/`.
 
 ## Dependency Summary
 
