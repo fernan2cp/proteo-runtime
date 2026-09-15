@@ -21,4 +21,3 @@
 | `C21-REQ-011`–`013` | `0005` | `016`–`021` | session trust/migration tests |
 | `C21-REQ-014`–`015` | `0006` | `009`, `022`, `023` | fake parity and semantic suite |
 | `C21-REQ-016`–`017` | `0001`, `0007`, `0008` | `001`, `024`–`029` | integration, packaging, docs and CI |
-

@@ -40,4 +40,3 @@ Fakes use immutable schema snapshots, the same include-raw precedence and saniti
 hide intermediate structured output from public events, aggregate usage across attempts, and model
 the same lifecycle terminal guarantees. No credential, raw descriptor or provider-specific secret
 is placed in events or errors.
-

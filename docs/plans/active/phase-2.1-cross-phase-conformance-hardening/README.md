@@ -33,4 +33,3 @@ paquetes históricos permanecen en `docs/plans/complete/`.
 Cada tarea referencia al menos un requisito y un criterio; cada requisito aparece en una tarea
 y un criterio; cada criterio tiene una validación concreta. La evidencia sólo se marca después
 de ejecutar y registrar la validación correspondiente.
-

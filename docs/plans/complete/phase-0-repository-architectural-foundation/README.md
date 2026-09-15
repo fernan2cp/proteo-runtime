@@ -78,3 +78,5 @@ Deferred to later phases:
 ## Traceability Rule
 
 Every `P0-TASK-*` task must reference at least one `P0-REQ-*` requirement and one `AC-P0-*` criterion. Deferred project-guide requirements must be marked explicitly as deferred rather than represented as completed Phase 0 behavior.
+
+Post-closure findings are recorded append-only in [`ERRATA.md`](ERRATA.md).

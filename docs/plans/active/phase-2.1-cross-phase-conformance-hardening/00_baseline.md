@@ -26,4 +26,3 @@ reabren; sus erratas se añadirán como referencia append-only.
 - No habrá fallback de catálogo ni inferencias reales para cada mapping.
 - Un fallo de catálogo, terminal o cleanup será fail-closed.
 - La migración conservará proveedor, identidad, thread e historia.
-

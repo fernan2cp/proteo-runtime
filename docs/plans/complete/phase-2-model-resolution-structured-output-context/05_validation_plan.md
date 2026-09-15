@@ -112,4 +112,6 @@ Do not mark the SDD complete until all `AC-P2-*` entries are satisfied.
 - Wheel and sdist installed into separate clean Python 3.11 environments; version, CLI, base
   `jsonschema`, and packaged mappings all validated.
 
-Remote CI evidence is intentionally pending until the implementation commits are pushed.
+Remote CI evidence was intentionally pending at the historical capture point; subsequent
+conformance CI evidence is recorded in the Phase 2.1 remediation SDD and does not replace the
+historical local evidence above.

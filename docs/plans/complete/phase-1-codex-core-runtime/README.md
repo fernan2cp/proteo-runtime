@@ -61,3 +61,5 @@ Deferred:
 Every `P1-TASK-*` references at least one `P1-REQ-*` and one `AC-P1-*`. Every requirement is
 covered by at least one task and acceptance criterion. Evidence is recorded only after the
 corresponding validation succeeds.
+
+Post-closure findings are recorded append-only in [`ERRATA.md`](ERRATA.md).

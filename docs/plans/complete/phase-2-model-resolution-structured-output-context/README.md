@@ -68,3 +68,5 @@ Every `P2-TASK-*` references at least one `P2-REQ-*` and one `AC-P2-*`. Every re
 covered by at least one task and one acceptance criterion. Every acceptance criterion names its
 planned automated, inspection, integration, or operational evidence. Evidence may be marked
 satisfied only after the recorded validation succeeds.
+
+Post-closure findings are recorded append-only in [`ERRATA.md`](ERRATA.md).

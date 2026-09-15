@@ -58,4 +58,3 @@
   `C21-REQ-016`. Task: `C21-TASK-0007`.
 - `AC-C21-029`: Remote CI passes on Linux/Windows Python 3.11–3.14 for both implementation and
   closure commits. Requirements: `C21-REQ-017`. Tasks: `C21-TASK-0007`, `C21-TASK-0008`.
-

@@ -1,8 +1,8 @@
 # Proteo Runtime
 
 Provider-neutral runtime contracts for asynchronous model execution. Version
-`0.3.0` adds model resolution, structured output, context policies, and Codex
-session migration on top of the Phase 1 runtime.
+`0.3.1` hardens model resolution, structured output, context policies, Codex
+session migration, and deterministic lifecycle behavior on top of the Phase 2 runtime.
 
 ## Status
 
@@ -55,6 +55,12 @@ PROTEO_CODEX_INTEGRATION=1 uv run pytest -m integration tests/integration/codex 
 ```
 
 See `docs/plans/complete/phase-2-model-resolution-structured-output-context/`
-for the completed Phase 2 requirements, design, acceptance criteria,
-validation evidence, rollout, and traceability; the Phase 1 record remains in
-`docs/plans/complete/phase-1-codex-core-runtime/`.
+for the historical Phase 2 record and
+`docs/plans/active/phase-2.1-cross-phase-conformance-hardening/` for the current
+conformance hardening tracker; Phase 0 and Phase 1 records remain historical.
+
+Configuration bindings are validated against the complete Codex catalog at startup and frozen
+when models or sessions are created. Structured output always sends its schema to the SDK and
+validates locally; invalid output is retried at most twice by default and raw output is opt-in
+and sanitized. Persistent sessions accept only user context under `runtime`, reject assistant/tool
+replay under `hybrid`, and migrate on the same provider thread without replaying or deleting history.

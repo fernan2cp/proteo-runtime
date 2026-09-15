@@ -1121,7 +1121,7 @@ Every invocation returns the same generic envelope:
 class RuntimeResult(Generic[T]):
     value: T
     usage: RuntimeUsage
-    runtime: str
+    runtime: RuntimeIdentity
     model: str
     profile: str
     reasoning_effort: str | None
@@ -1130,6 +1130,10 @@ class RuntimeResult(Generic[T]):
     diagnostics: tuple[RuntimeDiagnostic, ...] = ()
     raw: object | None = None
 ```
+
+`RuntimeIdentity` is an immutable provider-neutral identity envelope. It may expose a provider
+name, a stable pseudonymous fingerprint, an optional label, and sanitized non-secret metadata.
+It is observational only: it is not a credential, authorization boundary, or permission selector.
 
 For text, `T` is `str`; for Pydantic, it is the validated model; for JSON Schema, it is a validated JSON-compatible value. `raw` is `None` unless `include_raw=True`, remains subject to redaction policy and is never exported by default. Provider failures are raised through the Proteo error hierarchy and may preserve the provider exception as their cause.
 

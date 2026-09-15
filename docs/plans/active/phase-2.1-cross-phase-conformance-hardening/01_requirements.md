@@ -46,4 +46,3 @@
   and use only representative real inference smokes.
 - `C21-REQ-017`: public documentation, version `0.3.1`, packaging metadata and historical errata
   MUST describe the corrected contracts without rewriting historical evidence.
-

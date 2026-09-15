@@ -18,4 +18,3 @@ Revert commits in reverse order if a gate fails. No migration deletes history or
 session migration retains the source descriptor/thread/workspace and removes only newly allocated
 resources. A cleanup timeout invalidates the provider transport rather than returning a reusable
 possibly active handle.
-
