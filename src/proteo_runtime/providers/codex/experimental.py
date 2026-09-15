@@ -55,13 +55,15 @@ def probe_dynamic_tools() -> DynamicToolsCompatibility:
         hasattr(CodexClient, "initialize"),
         "approval_handler" in inspect.signature(CodexClient).parameters,
         hasattr(CodexConfig, "experimental_api"),
-        set(getattr(FunctionDynamicToolSpec, "model_fields", {})) >= {
+        set(getattr(FunctionDynamicToolSpec, "model_fields", {}))
+        >= {
             "name",
             "description",
             "input_schema",
             "type",
         },
-        set(getattr(DynamicToolCallThreadItem, "model_fields", {})) >= {
+        set(getattr(DynamicToolCallThreadItem, "model_fields", {}))
+        >= {
             "id",
             "tool",
             "arguments",
@@ -196,14 +198,11 @@ class CodexToolBridge:
             return _dynamic_response(False, "tool_denied", "unsupported tool request")
         if not self.matches(params):
             return _dynamic_response(False, "tool_denied", "unknown tool request route")
+        incoming_invocation = params.get("invocationId", params.get("invocation_id"))
         invocation_id = str(
-            params.get(
-                "invocationId",
-                params.get(
-                    "invocation_id",
-                    self.invocation_id or params.get("turnId", params.get("threadId", "")),
-                ),
-            )
+            self.invocation_id
+            or incoming_invocation
+            or params.get("turnId", params.get("threadId", ""))
         )
         call_id = str(
             params.get("callId", params.get("call_id", params.get("itemId", params.get("id", ""))))
@@ -278,7 +277,7 @@ class CodexToolMux:
         thread_id = _optional_string(params.get("threadId", params.get("thread_id")))
         turn_id = _optional_string(params.get("turnId", params.get("turn_id")))
         bridge = self._routes.get((thread_id or "", turn_id or ""))
-        if bridge is None:
+        if bridge is None and thread_id is None and turn_id is None:
             invocation_id = _optional_string(
                 params.get("invocationId", params.get("invocation_id"))
             )

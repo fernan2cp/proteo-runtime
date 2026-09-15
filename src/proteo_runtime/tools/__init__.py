@@ -586,15 +586,23 @@ class ToolExecutor:
         except Exception as exc:
             await self._emit(RuntimeEventKind.VALIDATION_FAILED, request, definition, 0)
             await self._emit_terminal(
-                request, definition, RuntimeEventKind.TOOL_FAILED, 0, error_code="tool_execution_error"
+                request,
+                definition,
+                RuntimeEventKind.TOOL_FAILED,
+                0,
+                error_code="tool_execution_error",
             )
             raise ToolExecutionError(
                 "Tool arguments failed validation", details={"tool_name": definition.name}
             ) from exc
         if not self.permission_policy.allows(definition.permission):
             await self._emit_terminal(
-                request, definition, RuntimeEventKind.TOOL_DENIED, 0,
-                error_code="tool_denied", denied=True,
+                request,
+                definition,
+                RuntimeEventKind.TOOL_DENIED,
+                0,
+                error_code="tool_denied",
+                denied=True,
             )
             raise ToolDeniedError("Tool permission denied", details={"tool_name": definition.name})
         if self._requires_approval(definition):
@@ -609,15 +617,22 @@ class ToolExecutor:
             )
             if decision is not ApprovalDecision.APPROVE:
                 await self._emit_terminal(
-                    request, definition, RuntimeEventKind.TOOL_DENIED, 0,
-                    error_code="tool_denied", denied=True,
+                    request,
+                    definition,
+                    RuntimeEventKind.TOOL_DENIED,
+                    0,
+                    error_code="tool_denied",
+                    denied=True,
                 )
                 raise ToolDeniedError(
                     "Tool approval denied", details={"tool_name": definition.name}
                 )
         if self.retry_policy.max_attempts > 1 and not definition.idempotent:
             await self._emit_terminal(
-                request, definition, RuntimeEventKind.TOOL_FAILED, 0,
+                request,
+                definition,
+                RuntimeEventKind.TOOL_FAILED,
+                0,
                 error_code="tool_execution_error",
             )
             raise ToolExecutionError(
@@ -660,7 +675,10 @@ class ToolExecutor:
                     request,
                     definition,
                     attempt,
-                    payload={"arguments": validated.model_dump(mode="json"), "result": _thaw(frozen_output)},
+                    payload={
+                        "arguments": validated.model_dump(mode="json"),
+                        "result": _thaw(frozen_output),
+                    },
                     duration_ms=(asyncio.get_running_loop().time() - started) * 1000,
                     success=True,
                 )
@@ -675,7 +693,10 @@ class ToolExecutor:
             except _OutputValidationError as exc:
                 last_error = exc
                 await self._emit_terminal(
-                    request, definition, RuntimeEventKind.TOOL_FAILED, attempt,
+                    request,
+                    definition,
+                    RuntimeEventKind.TOOL_FAILED,
+                    attempt,
                     error_code="tool_execution_error",
                 )
                 raise
@@ -735,7 +756,9 @@ class ToolExecutor:
         )
         task = asyncio.create_task(self.approval_handler.request_approval(approval_request))
         try:
-            decision = await asyncio.wait_for(asyncio.shield(task), timeout=self.approval_timeout_seconds)
+            decision = await asyncio.wait_for(
+                asyncio.shield(task), timeout=self.approval_timeout_seconds
+            )
         except asyncio.CancelledError:
             current_task = asyncio.current_task()
             if current_task is not None and current_task.cancelling():
@@ -750,9 +773,7 @@ class ToolExecutor:
                 task.cancel()
         return decision if isinstance(decision, ApprovalDecision) else ApprovalDecision.DENY
 
-    async def _emit_request(
-        self, request: ToolRequest, definition: ToolDefinition | None
-    ) -> None:
+    async def _emit_request(self, request: ToolRequest, definition: ToolDefinition | None) -> None:
         """Emit the first causal event for every provider request."""
 
         await self._emit(
