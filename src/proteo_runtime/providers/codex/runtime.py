@@ -48,6 +48,7 @@ from ._runner import TurnRun
 from ._workspace import create_workspace, remove_workspace
 from .experimental import (
     CodexToolBridge,
+    CodexToolMux,
     install_bridge,
     probe_dynamic_tools,
     resume_thread,
@@ -358,6 +359,10 @@ class CodexRuntime:
                 # A transport that cannot confirm interruption is never reused.
                 self._active_runs.pop(run.invocation_id, None)
         if self._sdk is not None:
+            sync_client = getattr(getattr(self._sdk, "_client", None), "_sync", None)
+            mux = getattr(sync_client, "_approval_handler", None)
+            if isinstance(mux, CodexToolMux):
+                mux.close()
             await self._close_sdk(self._sdk)
         for state in self._sessions.values():
             remove_workspace(state.workspace)
@@ -486,9 +491,6 @@ class CodexRuntime:
                     sandbox=_enum("Sandbox", "read_only"),
                 )
             else:  # pragma: no cover - exercised by the opt-in Codex smoke
-                assert tool_executor is not None
-                bridge = CodexToolBridge(tool_executor)
-                install_bridge(self._require_started(), bridge)
                 thread = await start_thread(
                     self._require_started(),
                     dynamic_tools=tool_snapshot,
@@ -625,13 +627,24 @@ class CodexRuntime:
         workspace = create_workspace()
         try:
             if tool_snapshot is None:
-                thread = await sdk.thread_resume(
-                    decoded.provider_session_id,
-                    model=model,
-                    cwd=str(workspace),
-                    approval_mode=_enum("ApprovalMode", "deny_all"),
-                    sandbox=_enum("Sandbox", "read_only"),
-                )
+                if self.experimental_dynamic_tools:
+                    thread = await resume_thread(
+                        sdk,
+                        decoded.provider_session_id,
+                        dynamic_tools=None,
+                        model=model,
+                        cwd=str(workspace),
+                        approvalPolicy="never",
+                        sandboxPolicy="read-only",
+                    )
+                else:
+                    thread = await sdk.thread_resume(
+                        decoded.provider_session_id,
+                        model=model,
+                        cwd=str(workspace),
+                        approval_mode=_enum("ApprovalMode", "deny_all"),
+                        sandbox=_enum("Sandbox", "read_only"),
+                    )
             else:  # pragma: no cover - exercised by the opt-in Codex smoke
                 assert tool_executor is not None
                 bridge = CodexToolBridge(tool_executor)
@@ -886,6 +899,8 @@ class CodexRuntime:
         else:
             assert executor is not None
             snapshot = executor.snapshot
+        if not snapshot.definitions():
+            raise CapabilityError("A host-tool registry must contain at least one tool")
         if executor is None:
             executor = ToolExecutor(snapshot)
         elif executor.snapshot.provider_definitions() != snapshot.provider_definitions():
@@ -1001,7 +1016,13 @@ class _CodexModel:
                 sandbox=capabilities.sandbox,
                 usage_reporting=capabilities.usage_reporting,
             )
-        if self._tool_snapshot is not None:
+        if (
+            self._tool_snapshot is not None
+            and bool(self._tool_snapshot.definitions())
+            and capabilities.host_tools
+            and self.runtime.experimental_dynamic_tools
+            and spec.host_tools.value in {"controlled", "explicit"}
+        ):
             return RuntimeCapabilities(
                 structured_output=False,
                 ephemeral_sessions=capabilities.ephemeral_sessions,
@@ -1054,6 +1075,8 @@ class _CodexModel:
         )
         model, effort = binding.model, binding.effort
         workspace = create_workspace()
+        bridge: CodexToolBridge | None = None
+        mux: CodexToolMux | None = None
         try:
             if self._tool_snapshot is None:
                 thread = await sdk.thread_start(
@@ -1067,7 +1090,7 @@ class _CodexModel:
             else:  # pragma: no cover - exercised by the opt-in Codex smoke
                 assert self._tool_executor is not None
                 bridge = CodexToolBridge(self._tool_executor)
-                install_bridge(sdk, bridge)
+                mux = install_bridge(sdk, bridge)
                 thread = await start_thread(
                     sdk,
                     dynamic_tools=self._tool_snapshot,
@@ -1087,13 +1110,23 @@ class _CodexModel:
                 sandbox=_enum("Sandbox", "read_only"),
             )
         except Exception as exc:
+            if bridge is not None:
+                bridge.unbind()
             remove_workspace(workspace)
             raise _map_sdk_error(exc, "brain invocation") from exc
+        invocation_id = str(getattr(handle, "id", "")) or uuid4().hex
+        if bridge is not None and mux is not None:
+            bridge.invocation_id = invocation_id
+            mux.register(
+                bridge,
+                thread_id=str(getattr(thread, "id", "")),
+                turn_id=invocation_id,
+            )
         run = TurnRun(
             runtime_name="codex",
             identity=self.runtime.identity,
             handle=handle,
-            invocation_id=uuid4().hex,
+            invocation_id=invocation_id,
             model=model,
             profile=self.profile,
             effort=effort,
@@ -1105,6 +1138,8 @@ class _CodexModel:
             structured_output=output_schema is not None,
         )
         run.provider_thread = thread
+        if bridge is not None and mux is not None:
+            run.cleanup = lambda: mux.unregister(bridge)
         self.runtime._register_run(run)
         return run, workspace
 
@@ -1270,11 +1305,23 @@ class _CodexSession:
             approval_mode=_enum("ApprovalMode", "deny_all"),
             sandbox=_enum("Sandbox", "read_only"),
         )
+        bridge: CodexToolBridge | None = None
+        mux: CodexToolMux | None = None
+        invocation_id = str(getattr(handle, "id", "")) or uuid4().hex
+        if self._state.tool_executor is not None:
+            bridge = CodexToolBridge(self._state.tool_executor)
+            mux = install_bridge(self._state.runtime._require_started(), bridge)
+            bridge.invocation_id = invocation_id
+            mux.register(
+                bridge,
+                thread_id=str(getattr(self._state.thread, "id", "")),
+                turn_id=invocation_id,
+            )
         run = TurnRun(
             runtime_name="codex",
             identity=self._state.runtime.identity,
             handle=handle,
-            invocation_id=uuid4().hex,
+            invocation_id=invocation_id,
             model=self._state.model,
             profile=self._state.profile,
             effort=self._state.effort,
@@ -1286,6 +1333,8 @@ class _CodexSession:
             invocation_metadata=effective.metadata,
             ephemeral=False,
         )
+        if bridge is not None and mux is not None:
+            run.cleanup = lambda: mux.unregister(bridge)
         self._state.active = run
         self._state.runtime._register_run(run)
         return run

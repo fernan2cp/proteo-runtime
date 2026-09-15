@@ -42,7 +42,7 @@ from proteo_runtime.core.profiles import profile_spec
 from proteo_runtime.core.session_codec import SessionCodec
 from proteo_runtime.core.usage import RuntimeUsage
 from proteo_runtime.observability import ObservabilityConfig, RuntimeEventBus
-from proteo_runtime.tools import ToolExecutor, ToolRegistry, ToolSnapshot
+from proteo_runtime.tools import ToolExecutor, ToolRegistry, ToolRequest, ToolSnapshot
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +56,7 @@ class FakeTurn:
     error: Exception | None = None
     delay_seconds: float = 0.0
     missing_terminal: bool = False
+    tool_calls: tuple[tuple[str, str, Mapping[str, Any]], ...] = ()
 
 
 @dataclass(slots=True)
@@ -313,6 +314,8 @@ class FakeRuntime:
             self._sessions[session_id] = state
         else:
             state.generation += 1
+            state.tool_snapshot = tool_snapshot
+            state.tool_executor = tool_executor
         await self._dispatch(self._emit(RuntimeEventKind.SESSION_RESUMED, session_id=session_id))
         return FakeRuntimeSession(self, state)
 
@@ -341,6 +344,8 @@ class FakeRuntime:
             executor = ToolExecutor(snapshot)
         elif executor.snapshot.provider_definitions() != snapshot.provider_definitions():
             raise CapabilityError("Tool executor does not match the registry snapshot")
+        if not snapshot.definitions():
+            raise CapabilityError("A host-tool registry must contain at least one tool")
         return snapshot, executor
 
     def _profile_spec(self, profile: str) -> Any:
@@ -465,6 +470,7 @@ class FakeRuntime:
         keep_active: bool = False,
         stream: bool = False,
         invocation_metadata: Mapping[str, Any] | None = None,
+        tool_executor: ToolExecutor | None = None,
     ) -> tuple[RuntimeResult[Any], list[RuntimeEvent], FakeTurn]:
         """Execute one scripted turn and collect lifecycle events."""
 
@@ -504,6 +510,20 @@ class FakeRuntime:
                 ),
             ]
             turn = self._next_turn()
+            if tool_executor is not None and turn.tool_calls:
+                event_start = len(tool_executor.events)
+                for call_id, tool_name, arguments in turn.tool_calls:
+                    await tool_executor.execute(
+                        ToolRequest(
+                            invocation_id,
+                            call_id,
+                            tool_name,
+                            arguments,
+                            session_id=session_id,
+                            turn_id=turn_id,
+                        )
+                    )
+                generated.extend(tool_executor.events[event_start:])
             if turn.delay_seconds:
                 await asyncio.sleep(turn.delay_seconds)
             if state and state.interrupted:
@@ -608,6 +628,8 @@ class FakeRuntime:
         finally:
             if state is not None and claimed and (not keep_active or not completed):
                 await self._release(state)
+            if tool_executor is not None and not keep_active:
+                tool_executor.end_invocation(invocation_id)
 
     def _terminal_events(
         self,
@@ -682,6 +704,7 @@ class FakeRuntimeModel:
                 profile=self.profile,
                 level=self.level,
                 invocation_metadata=config.metadata if config is not None else None,
+                tool_executor=self._tool_executor,
             )
         )[0]
 
@@ -702,6 +725,7 @@ class FakeRuntimeModel:
             level=self.level,
             stream=True,
             invocation_metadata=config.metadata if config is not None else None,
+            tool_executor=self._tool_executor,
         )
         del result, include_raw
         invocation_id, turn_id = generated[0].invocation_id or "", generated[0].turn_id or ""
@@ -793,7 +817,7 @@ class FakeRuntimeModel:
             persistent_sessions=capabilities.persistent_sessions,
             streaming=capabilities.streaming,
             interruption=capabilities.interruption,
-            host_tools=capabilities.host_tools,
+            host_tools=bool(self._tool_snapshot.definitions()) and capabilities.host_tools,
             native_tools=False,
             sandbox=capabilities.sandbox,
             usage_reporting=capabilities.usage_reporting,
@@ -1022,6 +1046,7 @@ class FakeRuntimeSession:
                 level=self._state.level,
                 state=self._state,
                 invocation_metadata=config.metadata if config is not None else None,
+                tool_executor=self._state.tool_executor,
             )
         )[0]
 
@@ -1046,6 +1071,7 @@ class FakeRuntimeSession:
         ):
             raise ContextPolicyError("Hybrid fake sessions reject assistant/tool replay")
         active_owned = False
+        invocation_id = ""
         try:
             result, generated, turn = await self._runtime._execute(
                 normalized,
@@ -1056,6 +1082,7 @@ class FakeRuntimeSession:
                 keep_active=True,
                 stream=True,
                 invocation_metadata=config.metadata if config is not None else None,
+                tool_executor=self._state.tool_executor,
             )
             active_owned = True
             del result, include_raw
@@ -1096,6 +1123,8 @@ class FakeRuntimeSession:
             raise CancellationError("Fake turn was cancelled") from exc
         finally:
             if active_owned:
+                if self._state.tool_executor is not None and invocation_id:
+                    self._state.tool_executor.end_invocation(invocation_id)
                 await self._runtime._release(self._state)
 
     async def interrupt(self) -> None:
