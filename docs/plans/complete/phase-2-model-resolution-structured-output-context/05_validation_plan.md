@@ -88,7 +88,8 @@ Install the wheel and sdist separately into clean temporary environments and ver
 Required remote evidence is one successful workflow for pre-commit/static checks, package tests
 with branch-aware coverage >=90 percent, builds, artifact inspection, and isolated installs on
 Ubuntu and Windows with Python 3.11, 3.12, 3.13, and 3.14. Real Codex integration remains excluded
-from default CI.
+from default CI. Run `34941152369` on the pushed phase-2 branch passed all nine matrix/packaging
+jobs; URL: https://github.com/fernan2cp/proteo-runtime/actions/runs/34941152369.
 
 ## Evidence Recording
 

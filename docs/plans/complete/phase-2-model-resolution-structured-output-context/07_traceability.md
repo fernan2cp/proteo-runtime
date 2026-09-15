@@ -47,16 +47,16 @@ Task numbers in this table abbreviate the `P2-TASK-` prefix.
 
 | Criteria | Evidence owner | Status |
 |---|---|---|
-| AC-P2-001 | baseline inspection and preserved worktree | Pending |
-| AC-P2-002–004 | config loader/schema/immutability tests | Pending |
-| AC-P2-005–009 | resolver, profile, concurrency, and import contracts | Pending |
-| AC-P2-010–013 | policy/schema/provider/host validation tests | Pending |
-| AC-P2-014–018 | retry, usage, stream, cleanup, and raw-leak tests | Pending |
-| AC-P2-019–020 | external/runtime/hybrid context tests | Pending |
-| AC-P2-021–026 | session, descriptor, migration, and capability tests | Pending |
-| AC-P2-027 | quota contract plus explicitly authorized integration | Pending |
-| AC-P2-028 | local quality, coverage, build, artifacts, and remote matrix | Pending |
-| AC-P2-029 | public docs, version, traceability audit, and SDD move | Pending |
+| AC-P2-001 | baseline inspection and preserved worktree | Done |
+| AC-P2-002–004 | config loader/schema/immutability tests | Done |
+| AC-P2-005–009 | resolver, profile, concurrency, and import contracts | Done |
+| AC-P2-010–013 | policy/schema/provider/host validation tests | Done |
+| AC-P2-014–018 | retry, usage, stream, cleanup, and raw-leak tests | Done |
+| AC-P2-019–020 | external/runtime/hybrid context tests | Done |
+| AC-P2-021–026 | session, descriptor, migration, and capability tests | Done |
+| AC-P2-027 | quota contract plus explicitly authorized integration | Done |
+| AC-P2-028 | local quality, coverage, build, artifacts, and remote matrix | Done; CI run 34941152369 |
+| AC-P2-029 | public docs, version, traceability audit, and SDD move | Done at closure |
 
 ## Traceability Audit Procedure
 

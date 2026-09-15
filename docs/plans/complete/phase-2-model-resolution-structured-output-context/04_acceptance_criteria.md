@@ -103,8 +103,7 @@ integration evidence, or a recorded inspection.
 
 ## Status
 
-`AC-P2-001` through `AC-P2-027` are **done**, supported by the local unit/contract suite,
-90.12% branch-aware coverage, artifact checks, and the four-test opt-in Codex run recorded in
-`05_validation_plan.md`. `AC-P2-028` and `AC-P2-029` remain **in_progress** until the pushed
-branch has a successful Linux/Windows Python 3.11–3.14 CI workflow and the package is moved to
-`docs/plans/complete/`.
+`AC-P2-001` through `AC-P2-029` are **done**, supported by the local unit/contract suite,
+90.12% branch-aware coverage, artifact checks, the four-test opt-in Codex run, and successful
+workflow `34941152369` recorded in `05_validation_plan.md`. The package is now ready to move to
+`docs/plans/complete/` without changing its filename.

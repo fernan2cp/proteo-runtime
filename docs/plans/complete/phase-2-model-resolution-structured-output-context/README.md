@@ -32,11 +32,11 @@ compatible persistent-session migration.
 
 ## Status and Lifecycle
 
-Status: `active`.
+Status: `complete`.
 
-All implementation tasks begin as `pending`. This package remains under `docs/plans/active/`
-until implementation, acceptance criteria, validation evidence, and the `0.3.0` handoff are
-complete. It must then move unchanged by filename to `docs/plans/complete/`.
+All implementation tasks began as `pending`. Implementation, acceptance criteria, validation
+evidence, and the `0.3.0` handoff are complete; this package is moved unchanged by filename to
+`docs/plans/complete/`.
 
 ## Scope
 

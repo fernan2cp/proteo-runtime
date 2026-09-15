@@ -220,7 +220,7 @@ structured output, and same-thread migration with disposable cleanup.
 
 ### P2-TASK-0010 — Document, version, validate, and hand off
 
-**State:** `in_progress`
+**State:** `done`
 
 **Depends on:** `P2-TASK-0009`
 
@@ -237,8 +237,9 @@ structured output, and same-thread migration with disposable cleanup.
   `docs/plans/complete/` without renaming it.
 
 **Evidence:** Version `0.3.0`, README, CI artifact name, lockfile, isolated wheel/sdist installs,
-and artifact inspection are complete locally. Remote branch push and full Linux/Windows Python
-3.11–3.14 CI evidence remain before closure.
+and artifact inspection are complete locally. Workflow `34941152369` passed pre-commit, all
+Linux/Windows Python 3.11–3.14 jobs, coverage, build, artifact, and isolated-install gates:
+https://github.com/fernan2cp/proteo-runtime/actions/runs/34941152369.
 
 ## Dependency Summary
 
