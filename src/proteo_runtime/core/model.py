@@ -19,7 +19,14 @@ from .usage import RuntimeUsage
 
 T = TypeVar("T")
 
-__all__ = ["InvocationConfig", "RuntimeResult", "RuntimeModel", "ModelInfo", "RuntimeUsage"]
+__all__ = [
+    "InvocationConfig",
+    "RuntimeResult",
+    "RuntimeModel",
+    "StructuredOutputPolicy",
+    "ModelInfo",
+    "RuntimeUsage",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,7 +35,7 @@ class InvocationConfig:
 
     model: str | None = None
     reasoning_effort: str | None = None
-    include_raw: bool = False
+    include_raw: bool | None = None
     timeout_seconds: float | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
@@ -38,6 +45,19 @@ class InvocationConfig:
         if self.timeout_seconds is not None and self.timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
         object.__setattr__(self, "metadata", freeze_mapping(self.metadata))
+
+
+@dataclass(frozen=True, slots=True)
+class StructuredOutputPolicy:
+    """Bounded host validation policy for structured output attempts."""
+
+    max_attempts: int = 2
+
+    def __post_init__(self) -> None:
+        """Reject unsafe or meaningless validation attempt limits."""
+
+        if not 1 <= self.max_attempts <= 5:
+            raise ValueError("max_attempts must be between 1 and 5")
 
 
 @dataclass(frozen=True, slots=True, init=False)
@@ -113,7 +133,12 @@ class RuntimeModel(Protocol, Generic[T]):
     ) -> AsyncIterator[RuntimeEvent]:
         """Return an asynchronous event stream."""
 
-    def with_structured_output(self, schema: type[BaseModel] | dict[str, Any]) -> RuntimeModel[Any]:
+    def with_structured_output(
+        self,
+        schema: type[BaseModel] | dict[str, Any],
+        *,
+        policy: StructuredOutputPolicy | None = None,
+    ) -> RuntimeModel[Any]:
         """Return a model configured for a structured output schema."""
 
     async def effective_capabilities(self) -> RuntimeCapabilities:

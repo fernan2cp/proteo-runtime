@@ -109,6 +109,7 @@ class TurnRun:
     effort: str
     session_id: str | None = None
     include_raw: bool = False
+    provider_thread: Any | None = None
     deltas: list[str] = field(default_factory=list)
     items: list[object] = field(default_factory=list)
     usage: object | None = None
@@ -219,9 +220,9 @@ class TurnRun:
 
         items = list(self.items)
         texts = [
-            str(getattr(item, "text", ""))
+            _item_text(item)
             for item in items
-            if str(getattr(item, "type", "")) in {"agentMessage", "agent_message"}
+            if _item_type(item) in {"agentMessage", "agent_message"}
         ]
         output = "".join(texts) or "".join(self.deltas)
         duration = getattr(turn, "duration_ms", None) if turn is not None else None
@@ -251,3 +252,25 @@ class TurnRun:
         """Request interruption of the active SDK turn."""
 
         await self.handle.interrupt()
+
+
+def _item_text(item: object) -> str:
+    """Extract text from legacy and current Codex agent-message item shapes."""
+
+    item = getattr(item, "root", item)
+    direct = getattr(item, "text", None)
+    if direct:
+        return str(direct)
+    values: list[str] = []
+    for content in getattr(item, "content", ()) or ():
+        root = getattr(content, "root", content)
+        text = getattr(root, "text", None)
+        if text:
+            values.append(str(text))
+    return "".join(values)
+
+
+def _item_type(item: object) -> str:
+    """Return the type discriminator from a direct or root-wrapped item."""
+
+    return str(getattr(getattr(item, "root", item), "type", ""))

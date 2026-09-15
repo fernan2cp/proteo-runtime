@@ -72,6 +72,24 @@ class StructuredOutputError(AgentRuntimeError):
 
     default_code = "structured_output_error"
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        attempts: int = 0,
+        validation_paths: tuple[str, ...] = (),
+        raw: str | None = None,
+        **kwargs: Any,
+    ) -> None:
+        """Initialize safe validation metadata and optional explicitly requested raw output."""
+
+        self.attempts = attempts
+        self.validation_paths = tuple(validation_paths)
+        self.raw = raw
+        details = dict(kwargs.pop("details", {}) or {})
+        details.update({"attempts": attempts, "validation_paths": self.validation_paths})
+        super().__init__(message, details=details, **kwargs)
+
 
 class ToolDeniedError(AgentRuntimeError):
     """Indicate that a requested tool was denied by policy."""

@@ -28,6 +28,7 @@ class RuntimeEventKind(StrEnum):
     SESSION_CLOSED = "session_closed"
     SESSION_ARCHIVED = "session_archived"
     SESSION_DELETED = "session_deleted"
+    SESSION_MIGRATED = "session_migrated"
     TURN_STARTED = "turn_started"
     TURN_COMPLETED = "turn_completed"
     OUTPUT_TEXT_DELTA = "output_text_delta"

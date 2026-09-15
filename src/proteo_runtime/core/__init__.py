@@ -27,7 +27,7 @@ from .errors import (
 from .events import RuntimeEvent, RuntimeEventKind
 from .identity import RuntimeIdentity
 from .input import RuntimeInput, RuntimeMessage, TextContent
-from .model import InvocationConfig, RuntimeModel, RuntimeResult
+from .model import InvocationConfig, RuntimeModel, RuntimeResult, StructuredOutputPolicy
 from .model_info import ModelInfo
 from .profiles import ExecutionProfile, HostToolsMode, LifecycleMode, LogicalLevel, ProfileSpec
 from .runtime import Runtime
@@ -65,6 +65,7 @@ __all__ = [
     "RuntimeMessage",
     "RuntimeModel",
     "RuntimeResult",
+    "StructuredOutputPolicy",
     "RuntimeSession",
     "RuntimeTimeoutError",
     "RuntimeUnavailableError",
