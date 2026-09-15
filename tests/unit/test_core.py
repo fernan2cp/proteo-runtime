@@ -21,6 +21,8 @@ from proteo_runtime import (
     TextContent,
 )
 from proteo_runtime.core.diagnostics import DiagnosticSeverity
+from proteo_runtime.core.profiles import HostToolsMode, LifecycleMode, ProfileSpec, profile_spec
+from proteo_runtime.core.security import SecurityPolicy
 
 
 def test_runtime_input_normalizes_only_strings_and_inputs() -> None:
@@ -62,3 +64,29 @@ def test_profiles_capabilities_and_events_have_stable_vocabulary() -> None:
     )
     diagnostic = RuntimeDiagnostic("info", "ok", DiagnosticSeverity.INFO)
     assert capabilities.streaming and event.sequence == 0 and diagnostic.code == "info"
+
+
+def test_profile_and_message_boundaries_fail_closed() -> None:
+    """Validate runtime role and security-policy boundaries, including native opt-ins."""
+
+    native = profile_spec("native")
+    assert native.lifecycle is LifecycleMode.EXPLICIT
+    assert native.context.value == "explicit"
+    assert native.host_tools is HostToolsMode.PROVIDER_DEFINED
+    assert native.security_policy is SecurityPolicy.NATIVE
+    compatible = ProfileSpec(
+        LifecycleMode.EPHEMERAL,
+        ContextPolicy.EXTERNAL,
+        HostToolsMode.DISABLED,
+        "isolated",
+    )
+    assert compatible.security_policy is SecurityPolicy.ISOLATED
+    with pytest.raises(ValueError):
+        ProfileSpec(
+            LifecycleMode.EPHEMERAL,
+            ContextPolicy.EXTERNAL,
+            HostToolsMode.DISABLED,
+            cast(Any, "unknown"),
+        )
+    with pytest.raises(ValueError):
+        RuntimeMessage(cast(Any, "invalid"), (TextContent("x"),))

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import re
 from collections import deque
-from collections.abc import AsyncIterator, Callable, Iterable
+from collections.abc import AsyncIterator, Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -18,6 +20,7 @@ from proteo_runtime.core.errors import (
     AgentRuntimeError,
     CancellationError,
     CapabilityError,
+    ConfigurationError,
     ContextPolicyError,
     InterruptedError,
     RuntimeUnavailableError,
@@ -25,6 +28,7 @@ from proteo_runtime.core.errors import (
     SessionMismatchError,
     SessionNotFoundError,
     StructuredOutputError,
+    TransportError,
 )
 from proteo_runtime.core.events import RuntimeEvent, RuntimeEventKind
 from proteo_runtime.core.identity import RuntimeIdentity
@@ -46,6 +50,7 @@ class FakeTurn:
     events: tuple[RuntimeEvent, ...] = ()
     error: Exception | None = None
     delay_seconds: float = 0.0
+    missing_terminal: bool = False
 
 
 @dataclass(slots=True)
@@ -97,6 +102,7 @@ class FakeRuntime:
             usage_reporting=True,
         )
         self._sessions: dict[str, _SessionState] = {}
+        self._deleted_sessions: set[str] = set()
         self._sequence = 0
         self._started = False
         self._closed = False
@@ -180,7 +186,9 @@ class FakeRuntime:
     def model(self, *, profile: str, level: str = "medium") -> FakeRuntimeModel:
         """Create a fake model view for a profile and level."""
 
-        profile_spec(profile)
+        spec = profile_spec(profile)
+        if spec.persistent or spec.lifecycle.value == "explicit":
+            raise CapabilityError("Persistent and explicit profiles require a session factory")
         if level not in {"low", "medium", "high", "ultra"}:
             raise CapabilityError(f"Unknown reasoning level: {level}")
         return FakeRuntimeModel(self, profile, level)
@@ -215,7 +223,7 @@ class FakeRuntime:
             descriptor,
             profile,
             level,
-            spec.security_policy,
+            spec.security_policy.value,
             spec.context.value,
         )
         self._sessions[descriptor] = state
@@ -225,15 +233,39 @@ class FakeRuntime:
     async def resume_session(self, session_id: str) -> FakeRuntimeSession:
         """Resume a retained fake session after validating its descriptor."""
 
+        if not isinstance(session_id, str):
+            raise TypeError("Session descriptor must be a string")
+        if session_id in self._deleted_sessions:
+            raise SessionNotFoundError("Fake session was not found")
         descriptor = SessionCodec.decode(session_id)
         if (
             descriptor.provider != "fake"
             or descriptor.identity_fingerprint != self._identity.fingerprint
         ):
             raise SessionMismatchError("Session identity does not match this fake runtime")
+        spec = profile_spec(descriptor.profile)
+        if (
+            descriptor.context_policy != spec.context.value
+            or descriptor.security_policy != spec.security_policy.value
+        ):
+            raise SessionMismatchError("Session policy does not match this fake runtime")
         state = self._sessions.get(session_id)
-        if state is None or state.deleted:
-            raise SessionNotFoundError("Fake session was not found")
+        if state is not None and state.deleted:
+            state = None
+        if state is not None and state.active:
+            raise SessionBusyError("Fake session already has an active turn")
+        if state is None:
+            state = _SessionState(
+                descriptor.provider_session_id,
+                session_id,
+                descriptor.profile,
+                descriptor.level,
+                spec.security_policy.value,
+                spec.context.value,
+            )
+            self._sessions[session_id] = state
+        else:
+            state.generation += 1
         self._emit(RuntimeEventKind.SESSION_RESUMED, session_id=session_id)
         return FakeRuntimeSession(self, state)
 
@@ -251,14 +283,16 @@ class FakeRuntime:
         if old.provider != "fake" or old.identity_fingerprint != self._identity.fingerprint:
             raise SessionMismatchError("Only same-identity fake sessions can migrate")
         current = self._sessions.get(session_id)
-        if current is None or current.deleted:
-            raise SessionNotFoundError("Fake session was not found")
+        if current is not None and current.deleted:
+            current = None
+        if current is not None and current.active:
+            raise SessionBusyError("Cannot migrate an active fake session")
         if level not in {"low", "medium", "high", "ultra"}:
             raise CapabilityError(f"Unknown reasoning level: {level}")
         spec = profile_spec(profile)
         if not spec.persistent:
             raise CapabilityError("Fake session migration requires a persistent profile")
-        if security_policy != old.security_policy or security_policy != spec.security_policy:
+        if security_policy != old.security_policy or security_policy != spec.security_policy.value:
             raise CapabilityError("Session migration cannot expand or change permissions")
         descriptor = SessionCodec.encode(
             provider="fake",
@@ -269,16 +303,38 @@ class FakeRuntime:
             level=level,
             context_policy=spec.context.value,
             security_policy=security_policy,
+            descriptor_nonce=self._id_factory(),
         )
-        self._sessions.pop(session_id, None)
+        if current is None:
+            current = _SessionState(
+                old.provider_session_id,
+                descriptor,
+                profile,
+                level,
+                security_policy,
+                spec.context.value,
+            )
+        else:
+            self._sessions.pop(session_id, None)
+            current.descriptor = descriptor
+            current.profile = profile
+            current.level = level
+            current.security_policy = security_policy
+            current.context_policy = spec.context.value
+            current.generation += 1
         self._sessions[descriptor] = current
-        current.descriptor = descriptor
-        current.profile = profile
-        current.level = level
-        current.security_policy = security_policy
-        current.context_policy = spec.context.value
-        current.generation += 1
-        self._emit(RuntimeEventKind.SESSION_MIGRATED, session_id=descriptor)
+        self._emit(
+            RuntimeEventKind.SESSION_MIGRATED,
+            session_id=descriptor,
+            metadata={
+                "old_session_id": session_id,
+                "new_session_id": descriptor,
+                "old_profile": old.profile,
+                "new_profile": profile,
+                "old_level": old.level,
+                "new_level": level,
+            },
+        )
         return FakeRuntimeSession(self, current)
 
     async def _claim(self, state: _SessionState) -> None:
@@ -349,12 +405,32 @@ class FakeRuntime:
                 )
                 raise InterruptedError("Fake turn was interrupted")
             if turn.error:
-                self._emit(
-                    RuntimeEventKind.INVOCATION_FAILED,
-                    invocation_id=invocation_id,
-                    session_id=session_id,
-                    turn_id=turn_id,
-                )
+                if isinstance(turn.error, InterruptedError):
+                    self._emit(
+                        RuntimeEventKind.TURN_INTERRUPTED,
+                        invocation_id=invocation_id,
+                        session_id=session_id,
+                        turn_id=turn_id,
+                    )
+                    self._emit(
+                        RuntimeEventKind.INTERRUPTED,
+                        invocation_id=invocation_id,
+                        session_id=session_id,
+                        turn_id=turn_id,
+                    )
+                else:
+                    self._emit(
+                        RuntimeEventKind.TURN_FAILED,
+                        invocation_id=invocation_id,
+                        session_id=session_id,
+                        turn_id=turn_id,
+                    )
+                    self._emit(
+                        RuntimeEventKind.INVOCATION_FAILED,
+                        invocation_id=invocation_id,
+                        session_id=session_id,
+                        turn_id=turn_id,
+                    )
                 if isinstance(turn.error, AgentRuntimeError):
                     raise turn.error
                 raise RuntimeUnavailableError(
@@ -441,6 +517,8 @@ class FakeRuntimeModel:
         """Invoke one deterministic fake turn."""
 
         normalized = RuntimeInput.from_value(input)
+        if self.profile == "structured":
+            raise ConfigurationError("Structured profile requires an output schema", path="output_schema")
         selected = config.model if config and config.model else "fake-model"
         return (
             await self.runtime._execute(
@@ -464,6 +542,14 @@ class FakeRuntimeModel:
         del result, config, include_raw
         invocation_id, turn_id = generated[0].invocation_id or "", generated[0].turn_id or ""
         streamed = list(generated)
+        if turn.missing_terminal:
+            self.runtime._emit(
+                RuntimeEventKind.INVOCATION_FAILED,
+                invocation_id=invocation_id,
+                turn_id=turn_id,
+                metadata={"reason": "missing_terminal"},
+            )
+            raise TransportError("Fake turn returned no terminal event")
         streamed.extend(
             turn.events
             or (
@@ -518,6 +604,7 @@ class _FakeStructuredModel:
             self._model_type = schema
             self._schema = schema.model_json_schema()
         elif isinstance(schema, dict):
+            schema = json.loads(json.dumps(schema))
             try:
                 Draft202012Validator.check_schema(schema)
             except (SchemaError, TypeError, ValueError) as exc:
@@ -588,7 +675,7 @@ class _FakeStructuredModel:
     ) -> AsyncIterator[RuntimeEvent]:
         """Yield buffered validation and completion events without raw partial JSON."""
 
-        del config
+        raw_requested = bool(include_raw if include_raw is not None else config.include_raw if config else False)
         logical_id = self._base.runtime._id_factory()
         yield self._base.runtime._emit(
             RuntimeEventKind.INVOCATION_STARTED,
@@ -597,7 +684,11 @@ class _FakeStructuredModel:
         )
         usages: list[RuntimeUsage] = []
         for attempt in range(1, self._policy.max_attempts + 1):
-            result = await self._base.ainvoke(input)
+            result = await self._base.ainvoke(
+                input,
+                config=config,
+                include_raw=raw_requested,
+            )
             usages.append(result.usage)
             try:
                 value = self._validate(result.value)
@@ -612,7 +703,7 @@ class _FakeStructuredModel:
                         "Structured output validation attempts exhausted",
                         attempts=attempt,
                         validation_paths=("$",),
-                        raw=str(result.value) if include_raw else None,
+                        raw=_sanitize_raw(result.value) if raw_requested else None,
                     ) from exc
                 yield self._base.runtime._emit(
                     RuntimeEventKind.RETRY_SCHEDULED,
@@ -634,7 +725,7 @@ class _FakeStructuredModel:
                 profile=result.profile,
                 reasoning_effort=result.reasoning_effort,
                 turn_id=result.turn_id,
-                raw=result.raw if include_raw else None,
+                raw=result.raw if raw_requested else None,
             )
             yield self._base.runtime._emit(
                 RuntimeEventKind.INVOCATION_COMPLETED,
@@ -787,6 +878,7 @@ class FakeRuntimeSession:
         if not self._state.deleted:
             self._state.deleted = True
             self._runtime._sessions.pop(self.id, None)
+            self._runtime._deleted_sessions.add(self.id)
             self._closed = True
             self._runtime._emit(RuntimeEventKind.SESSION_DELETED, session_id=self.id)
 
@@ -795,3 +887,41 @@ def _chunks(value: str, size: int = 8) -> tuple[str, ...]:
     """Split text into deterministic output chunks."""
 
     return tuple(value[index : index + size] for index in range(0, len(value), size))
+
+
+def _sanitize_raw(value: Any) -> str:
+    """Redact credential-shaped values before exposing invalid raw output."""
+
+    text = str(value)
+    try:
+        parsed = json.loads(text)
+    except (TypeError, json.JSONDecodeError):
+        parsed = None
+    if isinstance(parsed, Mapping):
+        return json.dumps(_redact_json(parsed), ensure_ascii=False, sort_keys=True)
+    text = re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._-]+", r"\1[REDACTED]", text)
+    return re.sub(
+        r"(?i)(api[_-]?key|token|secret|password)\s*[:=]\s*[^,}\s]+",
+        r"\1=[REDACTED]",
+        text,
+    )
+
+
+def _redact_json(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Recursively redact credential-shaped JSON keys."""
+
+    secret_keys = {"api_key", "apikey", "token", "secret", "password", "authorization"}
+    result: dict[str, Any] = {}
+    for key, item in value.items():
+        normalized = str(key).casefold().replace("-", "_")
+        if normalized in secret_keys:
+            result[str(key)] = "[REDACTED]"
+        elif isinstance(item, Mapping):
+            result[str(key)] = _redact_json(item)
+        elif isinstance(item, list):
+            result[str(key)] = [
+                _redact_json(entry) if isinstance(entry, Mapping) else entry for entry in item
+            ]
+        else:
+            result[str(key)] = item
+    return result

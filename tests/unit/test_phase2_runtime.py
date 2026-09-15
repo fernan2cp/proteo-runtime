@@ -9,7 +9,7 @@ from typing import Any, cast
 
 import pytest
 from pydantic import BaseModel
-from test_codex_provider import FakeSDK, FakeTurn, install_sdk
+from test_codex_provider import FakeModel, FakeSDK, FakeTurn, install_sdk
 
 from proteo_runtime.config import RuntimeConfigV1, load_runtime_config, validate_config
 from proteo_runtime.config import loader as config_loader
@@ -20,9 +20,12 @@ from proteo_runtime.core.errors import (
     ConfigurationError,
     ContextPolicyError,
     RuntimeTimeoutError,
+    RuntimeUnavailableError,
     SessionBusyError,
+    SessionMismatchError,
     SessionNotFoundError,
     StructuredOutputError,
+    TransportError,
 )
 from proteo_runtime.core.events import RuntimeEventKind
 from proteo_runtime.core.input import RuntimeInput, RuntimeMessage, TextContent
@@ -376,6 +379,9 @@ async def test_hybrid_context_and_same_thread_migration(monkeypatch: Any) -> Non
         )
     hybrid = await runtime.migrate_session(session.id, profile="hybrid", security_policy="isolated")
     assert hybrid.id != session.id
+    migrated = runtime.events[-1]
+    assert migrated.kind is RuntimeEventKind.SESSION_MIGRATED
+    assert migrated.metadata["old_profile"] == "session"
     assert (
         SessionCodec.decode(hybrid.id).provider_session_id
         == SessionCodec.decode(session.id).provider_session_id
@@ -475,6 +481,217 @@ async def test_codex_profile_capabilities_and_session_overrides(monkeypatch: Any
     with pytest.raises(CapabilityError):
         await session.ainvoke("override", config=InvocationConfig(model="gpt-5.6-luna"))
     await session.close()
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_structured_profile_requires_schema_and_model_binding_is_frozen(
+    monkeypatch: Any,
+) -> None:
+    """Reject unbound structured calls and preserve a model's initial mapping."""
+
+    sdk = FakeSDK()
+    install_sdk(monkeypatch, sdk)
+    runtime = codex_runtime.CodexRuntime()
+    await runtime.start()
+    with pytest.raises(ConfigurationError, match="output_schema"):
+        await runtime.model(profile="structured").ainvoke("missing schema")
+    model = runtime.model(profile="brain")
+    runtime.default_model = "gpt-5.6-sol"
+    await model.ainvoke("frozen")
+    assert sdk.start_calls[-1]["model"] == "gpt-5.6-terra"
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_resume_rejects_non_string_and_descriptor_policy_tampering(monkeypatch: Any) -> None:
+    """Resume validates the trusted current profile rather than descriptor permissions."""
+
+    sdk = FakeSDK()
+    install_sdk(monkeypatch, sdk)
+    runtime = codex_runtime.CodexRuntime()
+    await runtime.start()
+    session = await runtime.session()
+    with pytest.raises(TypeError):
+        await runtime.resume_session(cast(Any, 123))
+    decoded = SessionCodec.decode(session.id)
+    tampered = SessionCodec.encode(
+        provider=decoded.provider,
+        provider_session_id=decoded.provider_session_id,
+        identity_fingerprint=decoded.identity_fingerprint,
+        configuration_fingerprint=decoded.configuration_fingerprint,
+        profile=decoded.profile,
+        level=decoded.level,
+        context_policy="hybrid",
+        security_policy=decoded.security_policy,
+    )
+    with pytest.raises(SessionMismatchError, match="policy"):
+        await runtime.resume_session(tampered)
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_resume_busy_fails_before_provider_mutation(monkeypatch: Any) -> None:
+    """A busy local session rejects resume before creating a replacement workspace."""
+
+    sdk = FakeSDK()
+    install_sdk(monkeypatch, sdk)
+    runtime = codex_runtime.CodexRuntime()
+    await runtime.start()
+    session = await runtime.session()
+    session._state.active = cast(Any, object())
+    with pytest.raises(SessionBusyError):
+        await runtime.resume_session(session.id)
+    assert not sdk.resume_calls
+    session._state.active = None
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_descriptor_only_migration_preserves_provider_thread(monkeypatch: Any) -> None:
+    """Migration can resume a validated descriptor without the local alias registry."""
+
+    sdk = FakeSDK()
+    install_sdk(monkeypatch, sdk)
+    runtime = codex_runtime.CodexRuntime()
+    await runtime.start()
+    session = await runtime.session()
+    descriptor = session.id
+    runtime._sessions.clear()
+    migrated = await runtime.migrate_session(
+        descriptor, profile="session", security_policy="isolated"
+    )
+    assert migrated.id != descriptor
+    assert sdk.resume_calls[-1][0] == SessionCodec.decode(descriptor).provider_session_id
+    event = runtime.events[-1]
+    assert event.kind is RuntimeEventKind.SESSION_MIGRATED
+    assert event.metadata["old_profile"] == "session"
+    await runtime.close()
+
+
+def test_custom_mapping_requires_profile_spec() -> None:
+    """Custom mappings cannot silently inherit an unspecified profile policy."""
+
+    with pytest.raises(ConfigurationError, match="profile_specs.orphan"):
+        validate_config(
+            {
+                **_config_payload(),
+                "profiles": {
+                    **_config_payload()["profiles"],
+                    "orphan": {
+                        "medium": {"model": "x", "reasoning_effort": "medium"}
+                    },
+                },
+            }
+        )
+
+
+@pytest.mark.asyncio
+async def test_startup_fails_closed_for_unsupported_configured_effort(monkeypatch: Any) -> None:
+    """Startup validates configured efforts even when the model exists."""
+
+    sdk = FakeSDK(
+        models=[
+            FakeModel(
+                model="gpt-5.6-terra",
+                supported_reasoning_efforts=("low", "medium"),
+            ),
+            FakeModel(
+                model="gpt-5.6-luna",
+                is_default=False,
+                supported_reasoning_efforts=("low", "medium", "high", "ultra"),
+            ),
+            FakeModel(
+                model="gpt-5.6-sol",
+                is_default=False,
+                supported_reasoning_efforts=("low", "medium", "high", "ultra"),
+            ),
+        ]
+    )
+    install_sdk(monkeypatch, sdk)
+    with pytest.raises(CapabilityError, match="profiles.brain.high"):
+        await codex_runtime.CodexRuntime(config=validate_config({
+            "schema_version": 1,
+            "runtime": "codex",
+            "profiles": {
+                "brain": {
+                    level: {"model": "gpt-5.6-terra", "reasoning_effort": level}
+                    for level in ("low", "medium", "high", "ultra")
+                }
+            },
+        })).start()
+
+
+def test_persistent_model_factory_is_rejected_before_start() -> None:
+    """Persistent model facades are available only through session factories."""
+
+    with pytest.raises(CapabilityError):
+        codex_runtime.CodexRuntime().model(profile="session")
+
+
+@pytest.mark.asyncio
+async def test_startup_and_default_guards_are_explicit(monkeypatch: Any) -> None:
+    """Startup rejects non-Codex configs and no longer requires catalog defaults."""
+
+    sdk = FakeSDK()
+    install_sdk(monkeypatch, sdk)
+    wrong = validate_config(
+        {
+            "schema_version": 1,
+            "runtime": "fake",
+            "profiles": {"brain": {"medium": {"model": "fake", "reasoning_effort": "medium"}}},
+        }
+    )
+    with pytest.raises(ConfigurationError, match="runtime"):
+        await codex_runtime.CodexRuntime(config=wrong).start()
+    with pytest.raises(CapabilityError, match="one default"):
+        codex_runtime.CodexRuntime()._select_default({})
+    with pytest.raises(RuntimeUnavailableError):
+        codex_runtime.CodexRuntime()._require_started()
+
+
+@pytest.mark.asyncio
+async def test_fake_structured_raw_is_sanitized_and_schema_is_copied() -> None:
+    """Fake structured output protects caller schemas and explicitly requested raw values."""
+
+    schema = {"type": "object", "required": ["answer"]}
+    runtime = FakeRuntime(
+        turns=[
+            FakeRuntimeTurn(value='{"token":"secret", "wrong": true}'),
+            FakeRuntimeTurn(value='{"token":"secret", "wrong": true}'),
+        ]
+    )
+    model = runtime.model(profile="brain").with_structured_output(schema)
+    schema["required"] = []
+    with pytest.raises(StructuredOutputError) as error:
+        await model.ainvoke("input", include_raw=True)
+    assert error.value.raw is not None
+    assert "REDACTED" in error.value.raw
+
+
+@pytest.mark.asyncio
+async def test_fake_missing_terminal_is_not_reported_as_success() -> None:
+    """Fake streams expose a protocol failure when no terminal event is scripted."""
+
+    runtime = FakeRuntime(turns=[FakeRuntimeTurn(missing_terminal=True)])
+    with pytest.raises(TransportError, match="terminal"):
+        _ = [event async for event in runtime.model(profile="brain").astream("input")]
+
+
+@pytest.mark.asyncio
+async def test_abandoned_codex_stream_interrupts_provider_turn(monkeypatch: Any) -> None:
+    """Closing a partially consumed provider stream requests interruption."""
+
+    turn = FakeTurn(delay_seconds=0.05)
+    sdk = FakeSDK(turns=[turn])
+    install_sdk(monkeypatch, sdk)
+    runtime = codex_runtime.CodexRuntime()
+    await runtime.start()
+    stream = (await runtime.brain()).astream("abandon")
+    await anext(stream)
+    await stream.aclose()
+    await asyncio.sleep(0)
+    assert turn.interrupted
     await runtime.close()
 
 

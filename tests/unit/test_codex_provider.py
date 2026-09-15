@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 
+from proteo_runtime.config import validate_config
 from proteo_runtime.core.errors import (
     AuthenticationError,
     CancellationError,
@@ -128,7 +129,19 @@ class FakeSDK:
         """Initialize account, catalog, turns, and call records."""
 
         self.account_value = account or FakeAccount()
-        self.model_values = models or [FakeModel()]
+        self.model_values = models or [
+            FakeModel(model="gpt-5.6-terra", is_default=True),
+            FakeModel(
+                model="gpt-5.6-luna",
+                is_default=False,
+                supported_reasoning_efforts=("low", "medium", "high", "ultra"),
+            ),
+            FakeModel(
+                model="gpt-5.6-sol",
+                is_default=False,
+                supported_reasoning_efforts=("low", "medium", "high", "ultra"),
+            ),
+        ]
         self.turn_values = list(turns or [])
         self.missing_resume = missing_resume
         self.turn_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
@@ -220,6 +233,26 @@ def _notifications(status: str = "completed") -> tuple[FakeNotification, ...]:
     )
 
 
+def _config_for_model(model: str) -> Any:
+    """Build a complete v1 config pointing every built-in profile at one model."""
+
+    levels = {
+        level: {"model": model, "reasoning_effort": level}
+        for level in ("low", "medium", "high", "ultra")
+    }
+    return validate_config(
+        {
+            "schema_version": 1,
+            "runtime": "codex",
+            "profiles": {
+                "brain": levels,
+                "structured": levels,
+                "session": levels,
+            },
+        }
+    )
+
+
 def install_sdk(monkeypatch: pytest.MonkeyPatch, sdk: FakeSDK) -> None:
     """Install one SDK double through the provider factory."""
 
@@ -276,7 +309,7 @@ async def test_context_manager_restart_and_capabilities(monkeypatch: pytest.Monk
 
 @pytest.mark.asyncio
 async def test_authentication_and_catalog_failures(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Reject non-ChatGPT identity and ambiguous catalog defaults."""
+    """Reject non-ChatGPT identity and unknown explicit catalog models."""
 
     bad = FakeSDK(account=FakeAccount(type="apiKey"))
     install_sdk(monkeypatch, bad)
@@ -285,9 +318,12 @@ async def test_authentication_and_catalog_failures(monkeypatch: pytest.MonkeyPat
     install_sdk(monkeypatch, FakeSDK())
     with pytest.raises(CapabilityError):
         await codex_runtime.CodexRuntime(default_model="missing").start()
-    models = [FakeModel(model="one"), FakeModel(model="two")]
+    models = [
+        FakeModel(model="one", is_default=False),
+        FakeModel(model="two", is_default=False),
+    ]
     install_sdk(monkeypatch, FakeSDK(models=models))
-    with pytest.raises(CapabilityError, match="one default"):
+    with pytest.raises(CapabilityError, match="profiles.brain.low"):
         await codex_runtime.CodexRuntime().start()
 
 
@@ -295,12 +331,29 @@ async def test_authentication_and_catalog_failures(monkeypatch: pytest.MonkeyPat
 async def test_hidden_models_and_effort_validation(monkeypatch: pytest.MonkeyPatch) -> None:
     """Exclude hidden catalog entries and reject unsupported efforts."""
 
-    models = [FakeModel(), FakeModel(model="hidden", hidden=True, is_default=False)]
+    models = [
+        FakeModel(supported_reasoning_efforts=("low", "medium")),
+        FakeModel(
+            model="gpt-5.6-luna",
+            is_default=False,
+            supported_reasoning_efforts=("low", "medium", "high", "ultra"),
+        ),
+        FakeModel(
+            model="gpt-5.6-sol",
+            is_default=False,
+            supported_reasoning_efforts=("low", "medium", "high", "ultra"),
+        ),
+        FakeModel(model="hidden", hidden=True, is_default=False),
+    ]
     sdk = FakeSDK(models=models)
     install_sdk(monkeypatch, sdk)
     runtime = codex_runtime.CodexRuntime()
     await runtime.start()
-    assert [model.id for model in await runtime.models()] == ["gpt-5.6-terra"]
+    assert [model.id for model in await runtime.models()] == [
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "gpt-5.6-sol",
+    ]
     model = await runtime.brain(InvocationConfig(reasoning_effort="high"))
     with pytest.raises(CapabilityError):
         await model.ainvoke("bad effort")
@@ -392,8 +445,9 @@ async def test_session_resume_concurrency_context_and_cleanup(
     resumed = await runtime.resume_session(session.descriptor)
     assert resumed.id == session.id
     await session.close()
-    assert any(event.kind is RuntimeEventKind.SESSION_CLOSED for event in runtime.events)
     await resumed.archive()
+    await resumed.close()
+    assert any(event.kind is RuntimeEventKind.SESSION_CLOSED for event in runtime.events)
     await resumed.delete()
     assert sdk.archive_calls
     assert sdk.delete_calls
@@ -550,15 +604,38 @@ async def test_lazy_helpers_and_startup_transport_failure(
 
 @pytest.mark.asyncio
 async def test_default_resolution_empty_and_explicit_model(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Cover zero-default rejection and explicit model selection."""
+    """Cover catalog operation without a default and explicit model selection."""
 
-    no_default = FakeSDK(models=[FakeModel(is_default=False)])
+    no_default = FakeSDK(
+        models=[
+            FakeModel(model="gpt-5.6-terra", is_default=False),
+            FakeModel(
+                model="gpt-5.6-luna",
+                is_default=False,
+                supported_reasoning_efforts=("low", "medium", "high", "ultra"),
+            ),
+            FakeModel(
+                model="gpt-5.6-sol",
+                is_default=False,
+                supported_reasoning_efforts=("low", "medium", "high", "ultra"),
+            ),
+        ]
+    )
     install_sdk(monkeypatch, no_default)
-    with pytest.raises(CapabilityError):
-        await codex_runtime.CodexRuntime().start()
-    selected = FakeSDK(models=[FakeModel(model="chosen", is_default=False)])
+    runtime = codex_runtime.CodexRuntime()
+    await runtime.start()
+    assert runtime._selected_model is None
+    selected = FakeSDK(
+        models=[
+            FakeModel(
+                model="chosen",
+                is_default=False,
+                supported_reasoning_efforts=("low", "medium", "high", "ultra"),
+            )
+        ]
+    )
     install_sdk(monkeypatch, selected)
-    runtime = codex_runtime.CodexRuntime(default_model="chosen")
+    runtime = codex_runtime.CodexRuntime(default_model="chosen", config=_config_for_model("chosen"))
     await runtime.start()
     assert (await runtime.models())[0].id == "chosen"
 
@@ -583,13 +660,21 @@ async def test_runner_failed_interrupted_and_fallback_terminal(
     runtime = codex_runtime.CodexRuntime()
     await runtime.start()
     model = await runtime.brain()
-    failed = [event async for event in model.astream("failed")]
+    failed: list[Any] = []
+    with pytest.raises(RuntimeUnavailableError):
+        async for event in model.astream("failed"):
+            failed.append(event)
     assert any(event.kind is RuntimeEventKind.TURN_FAILED for event in failed)
-    interrupted = [event async for event in model.astream("interrupted")]
+    interrupted: list[Any] = []
+    with pytest.raises(InterruptedError):
+        async for event in model.astream("interrupted"):
+            interrupted.append(event)
     assert any(event.kind is RuntimeEventKind.TURN_INTERRUPTED for event in interrupted)
-    fallback = [event async for event in model.astream("fallback")]
-    assert fallback[-1].result is not None
-    assert fallback[-1].result.output == "fallback"
+    fallback: list[Any] = []
+    with pytest.raises(TransportError):
+        async for event in model.astream("fallback"):
+            fallback.append(event)
+    assert fallback[-1].kind is RuntimeEventKind.INVOCATION_FAILED
 
 
 @pytest.mark.asyncio

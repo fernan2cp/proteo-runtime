@@ -290,6 +290,8 @@ class StructuredCodexModel:
                     async for event in run.events():
                         provider_events.append(event)
                 finally:
+                    if run.terminal_status is None:
+                        await self._base._interrupt_or_invalidate(run)
                     self._base.runtime._unregister_run(run)
                     active[0] = None
                 if run.result is None:

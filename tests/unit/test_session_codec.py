@@ -42,3 +42,32 @@ def test_codec_rejects_malformed_versions_extra_and_secret_fields() -> None:
     raw = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
     with pytest.raises(SessionMismatchError):
         SessionCodec.decode("prt1." + raw)
+
+
+def test_codec_supports_optional_migration_nonce_and_rejects_invalid_values() -> None:
+    """Migration descriptors may carry a nonce while old v1 descriptors remain valid."""
+
+    descriptor = SessionCodec.encode(
+        provider="fake",
+        provider_session_id="s-1",
+        identity_fingerprint="id-1",
+        configuration_fingerprint="cfg-1",
+        profile="session",
+        level="medium",
+        context_policy="runtime",
+        security_policy="isolated",
+        descriptor_nonce="migration-1",
+    )
+    assert SessionCodec.decode(descriptor).descriptor_nonce == "migration-1"
+    with pytest.raises(SessionMismatchError):
+        SessionCodec.encode(
+            provider="fake",
+            provider_session_id="s-1",
+            identity_fingerprint="id-1",
+            configuration_fingerprint="cfg-1",
+            profile="session",
+            level="medium",
+            context_policy="runtime",
+            security_policy="isolated",
+            descriptor_nonce="",
+        )
