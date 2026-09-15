@@ -35,7 +35,7 @@ class RuntimeNode(Generic[StateT]):
     async def __call__(
         self,
         state: StateT,
-        config: RunnableConfig | None = None,
+        config: RunnableConfig = None,
     ) -> Mapping[str, Any]: ...
 ```
 

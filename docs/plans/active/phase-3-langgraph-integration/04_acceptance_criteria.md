@@ -77,3 +77,9 @@ Todos los criterios comienzan en `pending`.
 - `AC-P3-026`: Los smokes de inferencia Codex real ejecutan sólo `gpt-5.6-luna` con esfuerzo
   `low`, y cualquier otro modelo observado pertenece a una comprobación sin inferencia. Requisitos:
   `P3-REQ-021`. Tareas: `P3-TASK-0007`, `P3-TASK-0008`.
+
+## Estado de aceptación
+
+`AC-P3-001`–`AC-P3-024` y `AC-P3-026`: `done`, respaldados por la suite local, el ejemplo, los
+artefactos 0.4.0 y los smokes opt-in preparados con Luna/low. `AC-P3-025`: `in_progress` hasta
+registrar los runs CI Linux/Windows Python 3.11–3.14.

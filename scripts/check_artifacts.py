@@ -13,6 +13,7 @@ _FORBIDDEN_MARKERS = (
     ".pytest_cache",
     ".ruff_cache",
     ".venv",
+    ".uv-cache",
     "__pycache__",
     ".coverage",
     "auth.json",
@@ -44,6 +45,7 @@ def _check_wheel(path: Path) -> None:
         required = (
             "proteo_runtime/__init__.py",
             "proteo_runtime/py.typed",
+            "proteo_runtime/integrations/langgraph/__init__.py",
         )
         for item in required:
             if not any(name.endswith(item) for name in names):
@@ -51,6 +53,11 @@ def _check_wheel(path: Path) -> None:
         metadata = next((name for name in names if name.endswith(".dist-info/METADATA")), None)
         if metadata is None:
             raise SystemExit(f"Missing wheel metadata in {path.name}")
+        metadata_text = archive.read(metadata).decode()
+        if "Provides-Extra: langgraph" not in metadata_text:
+            raise SystemExit(f"Missing langgraph extra metadata in {path.name}")
+        if "Requires-Dist: langgraph" not in metadata_text:
+            raise SystemExit(f"Missing langgraph dependency metadata in {path.name}")
         entry_points = next(
             (name for name in names if name.endswith(".dist-info/entry_points.txt")), None
         )
@@ -69,6 +76,7 @@ def _check_sdist(path: Path) -> None:
         required = (
             "/src/proteo_runtime/__init__.py",
             "/src/proteo_runtime/py.typed",
+            "/src/proteo_runtime/integrations/langgraph/__init__.py",
             "/pyproject.toml",
             "/LICENSE",
         )

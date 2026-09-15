@@ -3,7 +3,7 @@
 ## Estado auditado
 
 - Commit: `4c05919`.
-- Rama: `main`.
+- Rama: `integ/phase-3-langgraph-integration`.
 - Versión: `0.3.1`.
 - Worktree antes de crear este SDD: limpio.
 - Suite: `73 passed, 5 skipped`.

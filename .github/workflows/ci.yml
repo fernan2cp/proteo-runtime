@@ -17,7 +17,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: uv sync --locked --extra dev
+      - run: uv sync --locked --extra dev --extra langgraph
       - run: uv run pre-commit run --all-files
 
   test:
@@ -36,7 +36,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - run: uv sync --locked --python ${{ matrix.python-version }} --extra dev
+      - run: uv sync --locked --python ${{ matrix.python-version }} --extra dev --extra langgraph
       - run: uv run --python ${{ matrix.python-version }} ruff format --check .
       - run: uv run --python ${{ matrix.python-version }} ruff check .
       - run: uv run --python ${{ matrix.python-version }} mypy src tests
@@ -56,25 +56,31 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: uv sync --locked --extra dev
+      - run: uv sync --locked --extra dev --extra langgraph
       - run: uv build
       - run: uv run python scripts/check_artifacts.py dist
       - name: Install and validate wheel in an isolated environment
         run: |
           uv venv .ci-wheel-venv --python 3.11
           uv pip install --python .ci-wheel-venv/bin/python dist/*.whl
-          .ci-wheel-venv/bin/python -c "import proteo_runtime; assert proteo_runtime.__version__ == '0.3.1'"
+          .ci-wheel-venv/bin/python -c "import proteo_runtime; assert proteo_runtime.__version__ == '0.4.0'; import importlib.util; assert importlib.util.find_spec('langgraph') is None"
           .ci-wheel-venv/bin/proteo-runtime --version
           .ci-wheel-venv/bin/python -m proteo_runtime --version
       - name: Install and validate sdist in an isolated environment
         run: |
           uv venv .ci-sdist-venv --python 3.11
           uv pip install --python .ci-sdist-venv/bin/python dist/*.tar.gz
-          .ci-sdist-venv/bin/python -c "import proteo_runtime; assert proteo_runtime.__version__ == '0.3.1'"
+          .ci-sdist-venv/bin/python -c "import proteo_runtime; assert proteo_runtime.__version__ == '0.4.0'; import importlib.util; assert importlib.util.find_spec('langgraph') is None"
           .ci-sdist-venv/bin/proteo-runtime --version
           .ci-sdist-venv/bin/python -m proteo_runtime --version
+      - name: Install and validate wheel with LangGraph extra
+        run: |
+          uv venv .ci-langgraph-venv --python 3.11
+          wheel=$(ls dist/*.whl)
+          uv pip install --python .ci-langgraph-venv/bin/python "${wheel}[langgraph]"
+          .ci-langgraph-venv/bin/python -c "from importlib.metadata import version; from proteo_runtime.integrations.langgraph import RuntimeNode; assert RuntimeNode and version('langgraph').startswith('1.2.')"
       - uses: actions/upload-artifact@v4
         with:
-          name: phase-2-1-conformance-distributions
+          name: phase-3-langgraph-distributions
           path: dist/
           if-no-files-found: error

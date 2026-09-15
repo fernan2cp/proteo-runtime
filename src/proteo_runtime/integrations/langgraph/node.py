@@ -314,7 +314,7 @@ def _project_json(value: object) -> object:
         }
     if isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
         return [_project_json(item) for item in value]
-    if isinstance(value, (set, frozenset)):
+    if isinstance(value, set | frozenset):
         return [_project_json(item) for item in sorted(value, key=repr)]
     return None
 

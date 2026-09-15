@@ -72,6 +72,9 @@ async def test_langgraph_session_smoke() -> None:
 
     async with CodexRuntime() as runtime:
         session = await runtime.session(level=LUNA_LEVEL)
+        seed = await session.ainvoke("Create a one-word continuation context.")
+        assert seed.model == LUNA_MODEL
+        assert seed.reasoning_effort == LUNA_LEVEL
         descriptor = session.descriptor
         await session.close()
         result = await _graph(

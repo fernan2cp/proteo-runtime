@@ -70,3 +70,10 @@ Todos los requisitos comienzan con estado `pending`.
   consistentes, y pasar validación local más CI Linux/Windows Python 3.11–3.14.
 - `P3-REQ-021`: Toda inferencia Codex real de Phase 3 MUST usar `gpt-5.6-luna` con esfuerzo
   `low`; los tests de catálogo que no invocan inferencia MAY inspeccionar otros mappings.
+
+## Estado de implementación
+
+`P3-REQ-001`–`P3-REQ-019` y `P3-REQ-021`: `done`, con evidencia en los tests unitarios y
+contractuales, el ejemplo, los smokes opt-in y los gates locales indicados en `05_validation_plan.md`.
+`P3-REQ-020`: `in_progress`; la validación local de release está completa y queda pendiente el
+CI remoto Linux/Windows para cerrar el requisito.

@@ -16,7 +16,7 @@ Crear tests unitarios para:
 Ejecutar durante cada workstream:
 
 ```text
-uv run --extra langgraph pytest tests/unit/test_langgraph_integration.py -q
+uv run --extra langgraph pytest tests/unit/test_langgraph_node.py -q
 uv run --extra langgraph pytest tests/contract/test_langgraph_adapter.py -q
 ```
 
