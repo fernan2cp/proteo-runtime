@@ -192,7 +192,8 @@ Esta evidencia corresponde al baseline pre-Phase 5 y no cambia criterios a `done
   pytest -q tests/integration/codex/test_dynamic_tools_smoke.py -s` → `1 passed in 15.44s`; se
   verificaron dos ejecuciones host-managed reales con outputs opacos, `gpt-5.6-luna`/`low` y
   registry descartable.
-- CI remoto: [run 35027524386](https://github.com/fernan2cp/proteo-runtime/actions/runs/35027524386)
+- CI remoto: [run 35027524386](https://github.com/fernan2cp/proteo-runtime/actions/runs/35027524386) y
+  [run 35027764791](https://github.com/fernan2cp/proteo-runtime/actions/runs/35027764791), ambos
   `success`; jobs Ubuntu/Windows Python 3.11, 3.12, 3.13 y 3.14, calidad y packaging todos
   `success`.
 

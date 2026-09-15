@@ -80,8 +80,10 @@ crea un plan paralelo de cierre.
 - Smoke Codex opt-in: `tests/integration/codex/test_dynamic_tools_smoke.py` pasó con
   `PROTEO_CODEX_DYNAMIC_TOOLS_INTEGRATION=1`, `gpt-5.6-luna`/`low` y dos ejecuciones host-side
   reales, verificadas por eventos `tool_completed`.
-- CI remoto verde: [run 35027524386](https://github.com/fernan2cp/proteo-runtime/actions/runs/35027524386),
-  Ubuntu/Windows y Python 3.11–3.14, incluyendo packaging.
+- CI remoto verde: [run 35027524386](https://github.com/fernan2cp/proteo-runtime/actions/runs/35027524386)
+  sobre el bridge corregido y [run 35027764791](https://github.com/fernan2cp/proteo-runtime/actions/runs/35027764791)
+  sobre el commit de evidencia; ambos cubren Ubuntu/Windows y Python 3.11–3.14, incluyendo
+  packaging.
 
 El estado global y `P5-TASK-0009` permanecen `in_progress — owner review pending` por decisión
 del propietario. Esta carpeta no se mueve hasta recibir confirmación explícita.
