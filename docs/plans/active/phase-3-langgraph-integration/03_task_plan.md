@@ -1,0 +1,147 @@
+# Task Plan — Phase 3
+
+Todas las tareas comienzan en `pending`. La sección Evidencia se completa únicamente después de
+ejecutar la validación correspondiente.
+
+### P3-TASK-0001 — Crear el límite opcional y la superficie pública
+
+Estado: `pending`
+
+Requisitos: `P3-REQ-001`, `P3-REQ-002`, `P3-REQ-003`
+
+Criterios: `AC-P3-001`, `AC-P3-002`, `AC-P3-003`, `AC-P3-004`
+
+Acciones:
+
+- añadir extras `langgraph` y `all`, regenerar el lock y conservar la instalación base;
+- crear el paquete de integración y exportar únicamente `RuntimeNode`;
+- implementar import error accionable y validación de modo del ejecutor;
+- reforzar tests de imports y superficie pública.
+
+Evidencia: pendiente.
+
+### P3-TASK-0002 — Implementar mapeo de estado y structured nodes
+
+Estado: `pending`
+
+Requisitos: `P3-REQ-004`, `P3-REQ-005`, `P3-REQ-006`, `P3-REQ-007`
+
+Criterios: `AC-P3-005`, `AC-P3-006`, `AC-P3-007`, `AC-P3-008`, `AC-P3-009`
+
+Acciones:
+
+- implementar claves default y mappers tipados;
+- normalizar entradas exclusivamente por contratos core;
+- construir updates copiados y libres de objetos runtime por defecto;
+- cubrir texto, RuntimeInput, Pydantic/JSON y fallos de mapper.
+
+Evidencia: pendiente.
+
+### P3-TASK-0003 — Propagar configuración y metadata segura
+
+Estado: `pending`
+
+Requisitos: `P3-REQ-008`, `P3-REQ-009`, `P3-REQ-010`
+
+Criterios: `AC-P3-010`, `AC-P3-011`, `AC-P3-012`
+
+Acciones:
+
+- mapear namespaces permitidos a un `InvocationConfig` nuevo;
+- implementar copia JSON, validación recursiva y rechazo de secretos;
+- probar inmutabilidad, allowlist y ausencia del descriptor.
+
+Evidencia: pendiente.
+
+### P3-TASK-0004 — Implementar streaming y cancelación
+
+Estado: `pending`
+
+Requisitos: `P3-REQ-011`, `P3-REQ-012`, `P3-REQ-013`, `P3-REQ-014`, `P3-REQ-017`
+
+Criterios: `AC-P3-013`, `AC-P3-014`, `AC-P3-015`, `AC-P3-016`, `AC-P3-017`,
+`AC-P3-018`
+
+Acciones:
+
+- drenar `astream()` y emitir envelopes JSON v1 al writer custom;
+- capturar exactamente un resultado terminal sin serializar su value/raw;
+- fallar ante secuencias terminales inválidas;
+- cerrar el iterador como única interrupción neutral y restaurar la cancelación original cuando el
+  proveedor la normalice como `CancellationError`.
+
+Evidencia: pendiente.
+
+### P3-TASK-0005 — Implementar sesiones host-owned
+
+Estado: `pending`
+
+Requisitos: `P3-REQ-015`, `P3-REQ-016`, `P3-REQ-017`
+
+Criterios: `AC-P3-019`, `AC-P3-020`, `AC-P3-021`
+
+Acciones:
+
+- validar `configurable.proteo_session_id` antes del runtime;
+- reanudar, ejecutar un turno y cerrar el handle en todos los terminales;
+- rechazar descriptors en model mode;
+- demostrar que no hay create/archive/delete/migrate ni persistencia implícita.
+
+Evidencia: pendiente.
+
+### P3-TASK-0006 — Completar pruebas unitarias y contractuales
+
+Estado: `pending`
+
+Requisitos: `P3-REQ-001`, `P3-REQ-004`, `P3-REQ-006`, `P3-REQ-007`, `P3-REQ-008`,
+`P3-REQ-010`, `P3-REQ-011`, `P3-REQ-012`, `P3-REQ-013`, `P3-REQ-014`, `P3-REQ-015`,
+`P3-REQ-016`, `P3-REQ-017`, `P3-REQ-018`
+
+Criterios: `AC-P3-002`, `AC-P3-004`, `AC-P3-005`, `AC-P3-006`, `AC-P3-007`,
+`AC-P3-008`, `AC-P3-009`, `AC-P3-010`, `AC-P3-011`, `AC-P3-012`, `AC-P3-013`,
+`AC-P3-014`, `AC-P3-015`, `AC-P3-016`, `AC-P3-017`, `AC-P3-018`, `AC-P3-019`,
+`AC-P3-020`, `AC-P3-021`, `AC-P3-022`
+
+Acciones:
+
+- añadir tests focalizados con `FakeRuntime` para cada invariante;
+- compilar StateGraphs de texto, structured, stream y sesión;
+- probar base install sin extra e integración install con extra;
+- mantener el guard de red, credenciales y cuota.
+
+Evidencia: pendiente.
+
+### P3-TASK-0007 — Añadir ejemplo y documentación pública
+
+Estado: `pending`
+
+Requisitos: `P3-REQ-019`, `P3-REQ-020`, `P3-REQ-021`
+
+Criterios: `AC-P3-023`, `AC-P3-024`, `AC-P3-026`
+
+Acciones:
+
+- añadir un ejemplo StateGraph ejecutable con brain, structured y sesión precreada;
+- añadir smoke Codex marcado `integration` y opt-in, forzando `gpt-5.6-luna`/`low` en cada
+  inferencia y dejando otros modelos sólo para el test de catálogo;
+- documentar instalación, API, streaming custom, ownership y límites de fase;
+- actualizar versión pública a `0.4.0` sólo en el workstream de release.
+
+Evidencia: pendiente.
+
+### P3-TASK-0008 — Validar, entregar y cerrar el SDD
+
+Estado: `pending`
+
+Requisitos: `P3-REQ-018`, `P3-REQ-019`, `P3-REQ-020`, `P3-REQ-021`
+
+Criterios: `AC-P3-022`, `AC-P3-023`, `AC-P3-024`, `AC-P3-025`, `AC-P3-026`
+
+Acciones:
+
+- ejecutar gates locales, artefactos e instalaciones aisladas;
+- ejecutar la integración Codex sólo con opt-in autorizado;
+- publicar commits en inglés y esperar CI Linux/Windows 3.11–3.14;
+- registrar evidencia, auditar trazabilidad y mover este mismo paquete a `complete/`.
+
+Evidencia: pendiente.
