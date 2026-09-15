@@ -34,6 +34,7 @@ from proteo_runtime.providers.codex.experimental import (
     resume_thread,
     start_thread,
 )
+from proteo_runtime.providers.codex import experimental as codex_experimental
 from proteo_runtime.providers.codex.runtime import CodexRuntime, _create_sdk
 from proteo_runtime.testing.fakes import FakeRuntime, FakeTurn
 from proteo_runtime.tools import (
@@ -414,6 +415,16 @@ async def test_experimental_raw_thread_shim_and_bridge_response() -> None:
         },
     )
     assert invalid["success"] is False
+    unsafe = bridge(
+        "item/tool/call",
+        {
+            "invocationId": "i",
+            "callId": "unsafe",
+            "name": "add_value",
+            "arguments": {"value": object()},
+        },
+    )
+    assert unsafe["success"] is False
     strict_bridge = CodexToolBridge(ToolExecutor(registry, failure_policy=ToolFailurePolicy.RAISE))
     strict_response = await asyncio.to_thread(
         strict_bridge,
@@ -457,6 +468,18 @@ async def test_experimental_mux_routes_only_registered_thread_turn_pairs() -> No
         },
     )
     assert response["success"] is True
+    fallback = await asyncio.to_thread(
+        mux,
+        "item/tool/call",
+        {
+            "invocationId": "inv-1",
+            "callId": "fallback",
+            "name": "add_value",
+            "arguments": {"value": 5},
+        },
+    )
+    assert fallback["success"] is True
+    assert mux("item/tool/call", None)["success"] is False
     cross_thread = await asyncio.to_thread(
         mux,
         "item/tool/call",
@@ -470,8 +493,26 @@ async def test_experimental_mux_routes_only_registered_thread_turn_pairs() -> No
         },
     )
     assert cross_thread["success"] is False
+    assert first.matches({"threadId": "other", "turnId": "turn-1"}) is False
+    assert first.matches({"threadId": "thread-1", "turnId": "other"}) is False
+
+    class Pending:
+        """Minimal pending future double for bridge cleanup."""
+
+        def __init__(self) -> None:
+            self.cancelled = False
+
+        def cancel(self) -> None:
+            """Record cancellation by the mux teardown."""
+
+            self.cancelled = True
+
+    pending = Pending()
+    first._pending.add(pending)
     mux.close()
     assert first.thread_id is None and second.thread_id is None
+    assert executor._calls == {}
+    assert pending.cancelled is True
 
 
 @pytest.mark.asyncio
@@ -772,6 +813,23 @@ def test_probe_reports_missing_sdk_symbols(monkeypatch: pytest.MonkeyPatch) -> N
         require_dynamic_tools()
 
 
+def test_probe_rejects_unvalidated_sdk_versions(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The compatibility gate rejects missing and unsupported package versions."""
+
+    def missing(_: str) -> str:
+        """Raise the same error as an absent installed distribution."""
+
+        raise codex_experimental.importlib.metadata.PackageNotFoundError
+
+    monkeypatch.setattr(codex_experimental.importlib.metadata, "version", missing)
+    assert probe_dynamic_tools().reason == "openai-codex is not installed"
+
+    monkeypatch.setattr(codex_experimental.importlib.metadata, "version", lambda _: "0.0.0")
+    result = probe_dynamic_tools()
+    assert result.supported is False
+    assert "unsupported openai-codex version" in result.reason
+
+
 @pytest.mark.asyncio
 async def test_fake_and_codex_tool_bindings_gate_profiles_and_sessions() -> None:
     """Fake and Codex bindings enforce capabilities, snapshots, and custom sessions."""
@@ -824,6 +882,13 @@ async def test_fake_and_codex_tool_bindings_gate_profiles_and_sessions() -> None
     )
     snapshot, executor = codex._tool_binding(spec, registry, None)
     assert snapshot is not None and executor is not None
+    model = codex.model(profile="controlled_agent").with_tools(registry)
+    assert (await model.effective_capabilities()).host_tools is True
+    with pytest.raises(CapabilityError):
+        codex._tool_binding(spec, ToolRegistry(), None)
+    mismatched = ToolExecutor(ToolRegistry())
+    with pytest.raises(CapabilityError):
+        codex._tool_binding(spec, registry, mismatched)
     with pytest.raises(CapabilityError):
         CodexRuntime()._tool_binding(spec, registry, None)
     sdk = _create_sdk(experimental_dynamic_tools=True)
