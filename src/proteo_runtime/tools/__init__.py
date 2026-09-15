@@ -95,13 +95,18 @@ def _freeze(value: Any) -> Any:
     """Recursively freeze JSON-compatible values without retaining arbitrary objects."""
 
     if value is None or isinstance(value, str | int | float | bool):
+        if isinstance(value, float) and not math.isfinite(value):
+            raise TypeError("non-finite numbers are not JSON-safe")
         return value
     if isinstance(value, Mapping):
-        return MappingProxyType({str(key): _freeze(item) for key, item in value.items()})
+        if any(not isinstance(key, str) for key in value):
+            raise TypeError("JSON object keys must be strings")
+        return MappingProxyType({key: _freeze(item) for key, item in value.items()})
     if isinstance(value, list | tuple):
         return tuple(_freeze(item) for item in value)
     if isinstance(value, set | frozenset):
-        return tuple(sorted((_freeze(item) for item in value), key=repr))
+        frozen = tuple(_freeze(item) for item in value)
+        return tuple(sorted(frozen, key=lambda item: json.dumps(_thaw(item), sort_keys=True)))
     raise TypeError(f"value of type {type(value).__name__} is not JSON-safe")
 
 
@@ -245,7 +250,7 @@ class ToolRequest:
 
         if not self.invocation_id or not self.call_id or not self.name:
             raise ValueError("invocation_id, call_id and name are required")
-        object.__setattr__(self, "arguments", _freeze(self.arguments))
+        object.__setattr__(self, "arguments", _json_safe(self.arguments))
 
 
 @dataclass(frozen=True, slots=True)
@@ -263,7 +268,7 @@ class ApprovalRequest:
         """Freeze validated arguments and normalize the side-effect enum."""
 
         object.__setattr__(self, "side_effect", SideEffect(self.side_effect))
-        object.__setattr__(self, "arguments", _freeze(self.arguments))
+        object.__setattr__(self, "arguments", _json_safe(self.arguments))
 
 
 @dataclass(frozen=True, slots=True)
@@ -336,6 +341,10 @@ class _Binding:
     function: Callable[..., Awaitable[Any]]
     input_model: type[BaseModel]
     output_adapter: TypeAdapter[Any]
+
+
+class _OutputValidationError(ToolExecutionError):
+    """Mark output validation failures as terminal, non-retryable errors."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -517,7 +526,9 @@ class ToolExecutor:
 
         for key in tuple(self._calls):
             if key[0] == invocation_id:
-                self._calls.pop(key, None)
+                future = self._calls.pop(key, None)
+                if future is not None and not future.done():
+                    future.cancel()
         self._locks.pop(invocation_id, None)
 
     async def execute(self, request: ToolRequest) -> ToolResult:
@@ -540,6 +551,7 @@ class ToolExecutor:
         except asyncio.CancelledError:
             if not future.done():
                 future.cancel()
+            self._calls.pop(key, None)
             raise
         except Exception as exc:
             if self.failure_policy is ToolFailurePolicy.RAISE:
@@ -562,17 +574,28 @@ class ToolExecutor:
         started = asyncio.get_running_loop().time()
         binding = self.snapshot._bindings.get(request.name)
         if binding is None:
+            await self._emit_request(request, None)
+            await self._emit_terminal(
+                request, None, RuntimeEventKind.TOOL_FAILED, 0, error_code="tool_execution_error"
+            )
             raise ToolExecutionError("Unknown tool", details={"tool_name": request.name})
         definition = binding.definition
+        await self._emit_request(request, definition)
         try:
             validated = binding.input_model.model_validate(_thaw(request.arguments))
         except Exception as exc:
             await self._emit(RuntimeEventKind.VALIDATION_FAILED, request, definition, 0)
+            await self._emit_terminal(
+                request, definition, RuntimeEventKind.TOOL_FAILED, 0, error_code="tool_execution_error"
+            )
             raise ToolExecutionError(
                 "Tool arguments failed validation", details={"tool_name": definition.name}
             ) from exc
         if not self.permission_policy.allows(definition.permission):
-            await self._emit(RuntimeEventKind.TOOL_DENIED, request, definition, 0)
+            await self._emit_terminal(
+                request, definition, RuntimeEventKind.TOOL_DENIED, 0,
+                error_code="tool_denied", denied=True,
+            )
             raise ToolDeniedError("Tool permission denied", details={"tool_name": definition.name})
         if self._requires_approval(definition):
             await self._emit(RuntimeEventKind.TOOL_APPROVAL_REQUESTED, request, definition, 0)
@@ -585,24 +608,42 @@ class ToolExecutor:
                 payload={"decision": decision.value},
             )
             if decision is not ApprovalDecision.APPROVE:
-                await self._emit(RuntimeEventKind.TOOL_DENIED, request, definition, 0)
+                await self._emit_terminal(
+                    request, definition, RuntimeEventKind.TOOL_DENIED, 0,
+                    error_code="tool_denied", denied=True,
+                )
                 raise ToolDeniedError(
                     "Tool approval denied", details={"tool_name": definition.name}
                 )
-        max_attempts = self.retry_policy.max_attempts if definition.idempotent else 1
+        if self.retry_policy.max_attempts > 1 and not definition.idempotent:
+            await self._emit_terminal(
+                request, definition, RuntimeEventKind.TOOL_FAILED, 0,
+                error_code="tool_execution_error",
+            )
+            raise ToolExecutionError(
+                "Retry policy is incompatible with a non-idempotent tool",
+                details={"tool_name": definition.name, "attempts": 0},
+            )
+        max_attempts = self.retry_policy.max_attempts
         last_error: Exception | None = None
         for attempt in range(1, max_attempts + 1):
             await self._emit(RuntimeEventKind.TOOL_STARTED, request, definition, attempt)
             try:
                 output = await asyncio.wait_for(
-                    binding.function(**validated.model_dump()),
+                    binding.function(
+                        **{
+                            field_name: getattr(validated, field_name)
+                            for field_name in type(validated).model_fields
+                        }
+                    ),
                     timeout=definition.timeout_seconds or self.timeout_seconds,
                 )
                 try:
                     output = binding.output_adapter.validate_python(output)
-                    frozen_output = _json_safe(output)
+                    serialized_output = binding.output_adapter.dump_python(output, mode="json")
+                    frozen_output = _json_safe(serialized_output)
                 except Exception as exc:
-                    raise ToolExecutionError(
+                    raise _OutputValidationError(
                         "Tool output failed validation", details={"tool_name": definition.name}
                     ) from exc
                 result = ToolResult(
@@ -614,7 +655,15 @@ class ToolExecutor:
                     attempts=attempt,
                     duration_ms=(asyncio.get_running_loop().time() - started) * 1000,
                 )
-                await self._emit(RuntimeEventKind.TOOL_COMPLETED, request, definition, attempt)
+                await self._emit(
+                    RuntimeEventKind.TOOL_COMPLETED,
+                    request,
+                    definition,
+                    attempt,
+                    payload={"arguments": validated.model_dump(mode="json"), "result": _thaw(frozen_output)},
+                    duration_ms=(asyncio.get_running_loop().time() - started) * 1000,
+                    success=True,
+                )
                 return result
             except TimeoutError:
                 last_error = ToolExecutionError(
@@ -622,6 +671,13 @@ class ToolExecutor:
                     details={"tool_name": definition.name, "timed_out": True},
                 )
             except asyncio.CancelledError:
+                raise
+            except _OutputValidationError as exc:
+                last_error = exc
+                await self._emit_terminal(
+                    request, definition, RuntimeEventKind.TOOL_FAILED, attempt,
+                    error_code="tool_execution_error",
+                )
                 raise
             except ToolExecutionError as exc:
                 last_error = exc
@@ -638,7 +694,15 @@ class ToolExecutor:
                     payload={"next_attempt": attempt + 1},
                 )
         assert last_error is not None
-        await self._emit(RuntimeEventKind.TOOL_FAILED, request, definition, max_attempts)
+        await self._emit_terminal(
+            request,
+            definition,
+            RuntimeEventKind.TOOL_FAILED,
+            max_attempts,
+            error_code="retry_exhausted" if max_attempts > 1 else "tool_execution_error",
+            timed_out=isinstance(last_error, ToolExecutionError)
+            and bool(getattr(last_error, "details", {}).get("timed_out", False)),
+        )
         if max_attempts > 1:
             raise RetryExhaustedError(
                 "Tool retries exhausted",
@@ -667,27 +731,75 @@ class ToolExecutor:
             definition.name,
             definition.permission,
             definition.side_effect,
-            validated.model_dump(),
+            validated.model_dump(mode="json"),
         )
+        task = asyncio.create_task(self.approval_handler.request_approval(approval_request))
         try:
-            decision = await asyncio.wait_for(
-                self.approval_handler.request_approval(approval_request),
-                timeout=self.approval_timeout_seconds,
-            )
+            decision = await asyncio.wait_for(asyncio.shield(task), timeout=self.approval_timeout_seconds)
         except asyncio.CancelledError:
-            raise
-        except (TimeoutError, Exception):
+            current_task = asyncio.current_task()
+            if current_task is not None and current_task.cancelling():
+                task.cancel()
+                raise
             return ApprovalDecision.DENY
+        except (TimeoutError, Exception):
+            task.cancel()
+            return ApprovalDecision.DENY
+        finally:
+            if not task.done():
+                task.cancel()
         return decision if isinstance(decision, ApprovalDecision) else ApprovalDecision.DENY
+
+    async def _emit_request(
+        self, request: ToolRequest, definition: ToolDefinition | None
+    ) -> None:
+        """Emit the first causal event for every provider request."""
+
+        await self._emit(
+            RuntimeEventKind.TOOL_REQUESTED,
+            request,
+            definition,
+            0,
+            payload={"arguments": _thaw(request.arguments)},
+        )
+
+    async def _emit_terminal(
+        self,
+        request: ToolRequest,
+        definition: ToolDefinition | None,
+        kind: RuntimeEventKind,
+        attempt: int,
+        *,
+        error_code: str | None = None,
+        denied: bool = False,
+        timed_out: bool = False,
+    ) -> None:
+        """Emit one sanitized terminal event for a request."""
+
+        await self._emit(
+            kind,
+            request,
+            definition,
+            attempt,
+            success=kind is RuntimeEventKind.TOOL_COMPLETED,
+            error_code=error_code,
+            denied=denied,
+            timed_out=timed_out,
+        )
 
     async def _emit(
         self,
         kind: RuntimeEventKind,
         request: ToolRequest,
-        definition: ToolDefinition,
+        definition: ToolDefinition | None,
         attempt: int,
         *,
         payload: Mapping[str, Any] | None = None,
+        duration_ms: float | None = None,
+        success: bool | None = None,
+        error_code: str | None = None,
+        denied: bool = False,
+        timed_out: bool = False,
     ) -> None:
         """Emit a redacted neutral tool event."""
 
@@ -702,11 +814,16 @@ class ToolExecutor:
             session_id=request.session_id,
             turn_id=request.turn_id,
             metadata={
-                "tool_name": definition.name,
+                "tool_name": definition.name if definition is not None else request.name,
                 "tool_call_id": request.call_id,
-                "permission": definition.permission,
-                "side_effect": definition.side_effect.value,
+                "permission": definition.permission if definition is not None else "",
+                "side_effect": definition.side_effect.value if definition is not None else "none",
                 "attempt": attempt,
+                "duration_ms": duration_ms or 0.0,
+                **({"success": success} if success is not None else {}),
+                **({"error_code": error_code} if error_code else {}),
+                **({"denied": True} if denied else {}),
+                **({"timed_out": True} if timed_out else {}),
             },
             payload=payload or {},
         )
