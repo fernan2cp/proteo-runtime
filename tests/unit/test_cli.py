@@ -21,7 +21,7 @@ def test_cli_version_uses_package_version(capsys: pytest.CaptureFixture[str]) ->
     with pytest.raises(SystemExit) as exc:
         main(["--version"])
     assert exc.value.code == 0
-    assert capsys.readouterr().out.strip() == "0.3.0"
+    assert capsys.readouterr().out.strip() == "0.3.1"
 
 
 def test_module_entrypoint_runs_without_provider_initialization(
