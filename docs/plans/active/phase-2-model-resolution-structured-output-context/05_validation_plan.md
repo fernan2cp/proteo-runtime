@@ -95,3 +95,20 @@ from default CI.
 Replace pending task evidence only with command, test, CI-run, or reviewed-artifact evidence.
 Record known pre-existing failures separately and prove that no Phase 2 failure is hidden by them.
 Do not mark the SDD complete until all `AC-P2-*` entries are satisfied.
+
+## Local Evidence — 2026-09-15
+
+- `pytest -q`: **60 passed, 4 skipped** (integration remains opt-in).
+- `pytest -q --cov=proteo_runtime --cov-report=term-missing --cov-fail-under=90`:
+  **90.12% branch-aware coverage**, passed.
+- `ruff format --check src tests`, `ruff check src tests`, `mypy src tests`, and
+  `lint-imports`: passed.
+- `pre-commit run --all-files`: passed (ruff format/check, whitespace, YAML, and TOML hooks).
+- `PROTEO_CODEX_INTEGRATION=1 pytest -m integration tests/integration/codex -q`: **4 passed**;
+  disposable session cleanup completed.
+- `uv build` produced `proteo_runtime-0.3.0-py3-none-any.whl` and
+  `proteo_runtime-0.3.0.tar.gz`; `scripts/check_artifacts.py dist` passed.
+- Wheel and sdist installed into separate clean Python 3.11 environments; version, CLI, base
+  `jsonschema`, and packaged mappings all validated.
+
+Remote CI evidence is intentionally pending until the implementation commits are pushed.

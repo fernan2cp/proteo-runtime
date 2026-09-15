@@ -21,6 +21,7 @@ from proteo_runtime.core.errors import (
     SessionBusyError,
     SessionMismatchError,
     SessionNotFoundError,
+    StructuredOutputError,
     TransportError,
 )
 from proteo_runtime.core.events import RuntimeEventKind
@@ -50,7 +51,7 @@ class FakeAccount:
 class FakeModel:
     """Visible SDK model double."""
 
-    model: str = "gpt-test"
+    model: str = "gpt-5.6-terra"
     display_name: str = "Test"
     is_default: bool = True
     hidden: bool = False
@@ -234,7 +235,7 @@ async def test_lifecycle_catalog_brain_and_context(monkeypatch: pytest.MonkeyPat
     runtime = codex_runtime.CodexRuntime()
     await runtime.start()
     await runtime.start()
-    assert (await runtime.models())[0].id == "gpt-test"
+    assert (await runtime.models())[0].id == "gpt-5.6-terra"
     model = await runtime.brain(InvocationConfig(reasoning_effort="low"))
     result = await model.ainvoke(
         RuntimeInput(
@@ -299,29 +300,30 @@ async def test_hidden_models_and_effort_validation(monkeypatch: pytest.MonkeyPat
     install_sdk(monkeypatch, sdk)
     runtime = codex_runtime.CodexRuntime()
     await runtime.start()
-    assert [model.id for model in await runtime.models()] == ["gpt-test"]
+    assert [model.id for model in await runtime.models()] == ["gpt-5.6-terra"]
     model = await runtime.brain(InvocationConfig(reasoning_effort="high"))
     with pytest.raises(CapabilityError):
         await model.ainvoke("bad effort")
 
 
 @pytest.mark.asyncio
-async def test_structured_migration_and_profiles_are_rejected(
+async def test_structured_migration_and_profiles_are_validated(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Reject reserved capabilities before provider requests."""
+    """Validate structured schemas and reject invalid migration/profile requests."""
 
     sdk = FakeSDK()
     install_sdk(monkeypatch, sdk)
     runtime = codex_runtime.CodexRuntime()
     await runtime.start()
-    with pytest.raises(CapabilityError):
-        (await runtime.brain()).with_structured_output({"type": "object"})
-    with pytest.raises(CapabilityError):
+    structured = (await runtime.brain()).with_structured_output({"type": "object"})
+    with pytest.raises(StructuredOutputError):
+        await structured.ainvoke("invalid")
+    with pytest.raises(SessionMismatchError):
         await runtime.migrate_session("unused", profile="session", security_policy="isolated")
     with pytest.raises(CapabilityError):
         await runtime.session(profile="brain")
-    assert not sdk.start_calls
+    assert len(sdk.start_calls) == 1
 
 
 @pytest.mark.asyncio

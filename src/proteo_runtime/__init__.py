@@ -1,7 +1,8 @@
 """Proteo Runtime public package."""
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
+from .config import ProfileConfig
 from .core import (
     AgentRuntimeError,
     AuthenticationError,
@@ -42,6 +43,7 @@ from .core import (
     SessionMismatchError,
     SessionNotFoundError,
     StructuredOutputError,
+    StructuredOutputPolicy,
     TextContent,
     ToolDeniedError,
     ToolExecutionError,
@@ -82,6 +84,8 @@ __all__ = [
     "RuntimeTimeoutError",
     "RuntimeUnavailableError",
     "RuntimeUsage",
+    "StructuredOutputPolicy",
+    "ProfileConfig",
     "SecurityPolicyError",
     "SecurityPolicy",
     "SessionBusyError",

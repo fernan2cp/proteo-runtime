@@ -100,3 +100,11 @@ integration evidence, or a recorded inspection.
   profiles, structured output/raw risk, context ownership, migration, capability limits, and
   `0.3.0`; traceability is complete and the SDD is moved to `complete`. Requirements:
   `P2-REQ-020`. Tasks: `P2-TASK-0010`.
+
+## Status
+
+`AC-P2-001` through `AC-P2-027` are **done**, supported by the local unit/contract suite,
+90.12% branch-aware coverage, artifact checks, and the four-test opt-in Codex run recorded in
+`05_validation_plan.md`. `AC-P2-028` and `AC-P2-029` remain **in_progress** until the pushed
+branch has a successful Linux/Windows Python 3.11–3.14 CI workflow and the package is moved to
+`docs/plans/complete/`.

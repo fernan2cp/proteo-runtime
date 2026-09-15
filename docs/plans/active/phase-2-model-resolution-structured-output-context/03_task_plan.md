@@ -27,7 +27,7 @@ new Phase 2 SDD, package version was `0.2.0`, and `.venv\\Scripts\\pytest.exe -q
 
 ### P2-TASK-0002 — Implement strict configuration loading and packaged defaults
 
-**State:** `in_progress`
+**State:** `done`
 
 **Depends on:** `P2-TASK-0001`
 
@@ -44,11 +44,15 @@ new Phase 2 SDD, package version was `0.2.0`, and `.venv\\Scripts\\pytest.exe -q
 - extend `CodexRuntime` construction while preserving `default_model` compatibility;
 - add focused loader, schema, immutability, package-data, and precedence tests.
 
-**Evidence:** pending.
+**Evidence:** Implemented in `config/loader.py`, `config/models.py`, packaged
+`config/defaults/codex_v1.json`, and `providers/codex/runtime.py`. The focused source and
+precedence suite in `tests/unit/test_phase2_runtime.py` passes; `uv.lock` contains
+`jsonschema==4.26.0` and its transitive validators; wheel and sdist checks confirm the defaults
+are packaged.
 
 ### P2-TASK-0003 — Integrate immutable resolution and profile capability checks
 
-**State:** `in_progress`
+**State:** `done`
 
 **Depends on:** `P2-TASK-0002`
 
@@ -65,13 +69,15 @@ new Phase 2 SDD, package version was `0.2.0`, and `.venv\\Scripts\\pytest.exe -q
 - correct `controlled_agent` context and enforce model/session lifecycle boundaries;
 - reject deferred security/tool/native combinations before thread creation.
 
-**Evidence:** pending.
+**Evidence:** Immutable binding, catalog validation, custom profile capability rejection, and
+concurrency/override behavior pass in `tests/unit/test_codex_provider.py` and
+`tests/unit/test_phase2_runtime.py`; `controlled_agent` is rejected before `thread_start`.
 
 ## Phase B — Structured Output
 
 ### P2-TASK-0004 — Implement schema normalization and typed validation
 
-**State:** `pending`
+**State:** `done`
 
 **Depends on:** `P2-TASK-0003`
 
@@ -87,11 +93,13 @@ new Phase 2 SDD, package version was `0.2.0`, and `.venv\\Scripts\\pytest.exe -q
 - pass the normalized schema to the stable SDK API and validate exactly one JSON value locally;
 - return Pydantic instances or JSON-compatible values in `RuntimeResult[T]`.
 
-**Evidence:** pending.
+**Evidence:** `StructuredOutputPolicy`, schema normalization, Pydantic/Draft 2020-12 validation,
+SDK `output_schema` capture, and typed results are covered by the phase-2 unit suite; the
+real Codex structured smoke also passed after enforcing `additionalProperties: false`.
 
 ### P2-TASK-0005 — Implement validation retries and buffered structured streaming
 
-**State:** `pending`
+**State:** `done`
 
 **Depends on:** `P2-TASK-0004`
 
@@ -107,13 +115,15 @@ new Phase 2 SDD, package version was `0.2.0`, and `.venv\\Scripts\\pytest.exe -q
 - add retry success/exhaustion, non-retry failure, timeout/cancellation, and cleanup tests;
 - implement opt-in invalid-raw exposure with conservative redaction and leak tests.
 
-**Evidence:** pending.
+**Evidence:** Unit tests cover retry success/exhaustion, bounded validation feedback, aggregated
+usage, raw opt-in redaction, and buffered streaming with one logical invocation. Real Codex
+structured Pydantic and JSON Schema streams passed under `PROTEO_CODEX_INTEGRATION=1`.
 
 ## Phase C — Context and Sessions
 
 ### P2-TASK-0006 — Enforce context ownership
 
-**State:** `pending`
+**State:** `done`
 
 **Depends on:** `P2-TASK-0003`
 
@@ -128,11 +138,12 @@ new Phase 2 SDD, package version was `0.2.0`, and `.venv\\Scripts\\pytest.exe -q
 - enforce user-only runtime sessions and current system/user hybrid sessions;
 - reject assistant/tool replay before SDK access and cover each policy with captured calls.
 
-**Evidence:** pending.
+**Evidence:** Runtime and hybrid role matrices, replay rejection, and controlled-agent context
+correction pass in the provider and phase-2 unit suites.
 
 ### P2-TASK-0007 — Resolve, resume, and migrate persistent sessions
 
-**State:** `pending`
+**State:** `done`
 
 **Depends on:** `P2-TASK-0003`, `P2-TASK-0006`
 
@@ -150,13 +161,15 @@ new Phase 2 SDD, package version was `0.2.0`, and `.venv\\Scripts\\pytest.exe -q
 - enforce active-turn, identity, provider, existence, target, and permission checks;
 - preserve close/archive/delete, concurrency, interruption, and cleanup behavior.
 
-**Evidence:** pending.
+**Evidence:** Session creation/resume, opaque `str` descriptors, same-thread migration, old-handle
+generation invalidation, permission checks, and `SESSION_MIGRATED` are covered locally and by
+the four-test real Codex integration run; only disposable test sessions were deleted.
 
 ## Phase D — Verification and Handoff
 
 ### P2-TASK-0008 — Complete fakes, unit tests, and contract tests
 
-**State:** `pending`
+**State:** `done`
 
 **Depends on:** `P2-TASK-0004` through `P2-TASK-0007`
 
@@ -179,11 +192,12 @@ new Phase 2 SDD, package version was `0.2.0`, and `.venv\\Scripts\\pytest.exe -q
 - extend quota-safety guards to all configuration and structured paths;
 - retain branch-aware coverage at or above 90 percent without blanket exclusions.
 
-**Evidence:** pending.
+**Evidence:** Default `pytest -q` passes `60 passed, 4 skipped`; branch-aware coverage passes at
+least 90% (`90.12%` in the final local run). Ruff, mypy, import-linter, and pre-commit all pass.
 
 ### P2-TASK-0009 — Run opt-in Codex integration validation
 
-**State:** `pending`
+**State:** `done`
 
 **Depends on:** `P2-TASK-0008`
 
@@ -200,11 +214,13 @@ new Phase 2 SDD, package version was `0.2.0`, and `.venv\\Scripts\\pytest.exe -q
 - migrate one disposable persistent thread and delete it only as planned test cleanup;
 - record sanitized counts/IDs and failures without publishing identity, descriptors, or raw output.
 
-**Evidence:** pending.
+**Evidence:** `PROTEO_CODEX_INTEGRATION=1 pytest -m integration tests/integration/codex -q` passes
+`4 passed` on 2026-09-15. The run validated catalog, text/streaming, Pydantic/JSON Schema
+structured output, and same-thread migration with disposable cleanup.
 
 ### P2-TASK-0010 — Document, version, validate, and hand off
 
-**State:** `pending`
+**State:** `in_progress`
 
 **Depends on:** `P2-TASK-0009`
 
@@ -220,7 +236,9 @@ new Phase 2 SDD, package version was `0.2.0`, and `.venv\\Scripts\\pytest.exe -q
 - record evidence, audit traceability, mark completed tasks/criteria, and move this package to
   `docs/plans/complete/` without renaming it.
 
-**Evidence:** pending.
+**Evidence:** Version `0.3.0`, README, CI artifact name, lockfile, isolated wheel/sdist installs,
+and artifact inspection are complete locally. Remote branch push and full Linux/Windows Python
+3.11–3.14 CI evidence remain before closure.
 
 ## Dependency Summary
 

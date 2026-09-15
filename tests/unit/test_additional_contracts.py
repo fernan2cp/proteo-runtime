@@ -44,13 +44,13 @@ def test_events_require_aware_timestamps_and_usage_is_validated() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fake_migration_and_structured_output_rejection() -> None:
-    """Fake migration preserves identity and rejects unsupported structured output."""
+async def test_fake_migration_and_structured_output_validation() -> None:
+    """Fake migration preserves identity and validates structured schema inputs."""
 
     runtime = FakeRuntime()
     session = await runtime.session()
     migrated = await runtime.migrate_session(
-        session.id, profile="brain", level="high", security_policy="isolated"
+        session.id, profile="session", level="high", security_policy="isolated"
     )
     assert migrated.id != session.id
     with pytest.raises(CapabilityError):
