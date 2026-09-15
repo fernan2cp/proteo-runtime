@@ -69,14 +69,18 @@ Extraer todos los IDs `P5-REQ-*`, `P5-TASK-*` y `AC-P5-*` y comprobar:
 - no hay cambios de código fuera del alcance registrado por las tareas;
 - el movimiento a `complete/` conserva el nombre del paquete.
 
-## Estado inicial
+## Estado de implementación y revisión
 
-- Requisitos `P5-REQ-001`–`P5-REQ-024`: `pending`.
-- Tareas `P5-TASK-0001`–`P5-TASK-0009`: `pending`.
-- Criterios `AC-P5-001`–`AC-P5-028`: `pending`.
+- Requisitos `P5-REQ-001`–`P5-REQ-024`: `done`.
+- Tareas `P5-TASK-0001`–`P5-TASK-0008`: `done`.
+- `P5-TASK-0009`: `in_progress — owner review pending`.
+- Criterios `AC-P5-001`–`AC-P5-028`: `done`.
+- Estado global: `in_progress — owner review pending`.
 
-Baseline disponible: 121 tests passed, 7 skipped, Ruff/mypy/import-linter verdes. Esa evidencia no
-implementa Phase 5 y sólo se usa para detectar regresiones.
+La evidencia reproducible está en `05_validation_plan.md`, con commits funcionales desde
+`900bdd5` hasta `b2379f9` y CI remoto `35025491793`. El estado pendiente es deliberado: sólo la
+confirmación explícita del propietario permite marcar `P5-TASK-0009` como `done`, actualizar el
+estado final y mover esta misma carpeta a `docs/plans/complete/`.
 
 ## Regla de control de cambios
 

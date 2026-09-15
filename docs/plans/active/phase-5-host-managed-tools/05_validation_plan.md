@@ -174,3 +174,26 @@ Antes de mover el SDD:
 - `.venv\Scripts\lint-imports.exe`: 76 archivos, 292 dependencias, contrato conservado.
 
 Esta evidencia corresponde al baseline pre-Phase 5 y no cambia criterios a `done`.
+
+## Evidencia ejecutada — 2026-09-15
+
+- `uv lock --check`: verde (`Resolved 82 packages`).
+- Ruff format/check, mypy strict e import-linter: verdes; import-linter analizó 79 archivos y 325
+  dependencias.
+- Pre-commit (`ruff-format`, `ruff`, trailing whitespace, EOF, YAML y TOML): todos `Passed`.
+- Suite default: `138 passed, 8 skipped`; cobertura branch-aware `90.11%`.
+- `tests/contract/test_quota_safety.py`: `1 passed`; integración default: `7 skipped`, sin red,
+  credenciales, subprocess Codex ni consumo de cuota.
+- `python -m build --no-isolation` y `scripts/check_artifacts.py dist`: wheel y sdist `0.6.0`
+  válidos. Se verificaron instalaciones aisladas base, sdist y extra LangGraph.
+- Encoding guard sobre `src`, `tests`, `docs`, `examples`, `README.md`, `pyproject.toml` y
+  `.github`: `CLEAN`.
+- Smoke real separado: `PROTEO_CODEX_DYNAMIC_TOOLS_INTEGRATION=1 pytest
+  tests/integration/codex/test_dynamic_tools_smoke.py -q` → `1 passed in 10.06s`, con
+  `gpt-5.6-luna`/`low` y dos calls host-managed.
+- CI remoto: [run 35025491793](https://github.com/fernan2cp/proteo-runtime/actions/runs/35025491793)
+  `success`; jobs Ubuntu/Windows Python 3.11, 3.12, 3.13 y 3.14, calidad y packaging todos
+  `success`.
+
+La evidencia de este bloque habilita revisión, pero no autoriza por sí sola mover el paquete a
+`complete/`.

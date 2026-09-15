@@ -79,7 +79,7 @@ Todos los requisitos comienzan en estado `pending`.
 
 ## Estado de implementación
 
-- `P5-REQ-001`–`P5-REQ-024`: `pending`.
+- `P5-REQ-001`–`P5-REQ-024`: `done`, con evidencia en `03_task_plan.md`,
+  `05_validation_plan.md` y `07_traceability.md`.
 
-El baseline existente no satisface estos requisitos: sólo aporta contratos preparatorios,
-observabilidad y safe defaults sobre los que se implementará la fase.
+La revisión explícita del propietario sigue pendiente para cerrar el SDD y mover el paquete.

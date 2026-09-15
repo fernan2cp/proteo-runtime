@@ -2,7 +2,7 @@
 
 ## Estado
 
-Accepted for Phase 5 and released with `0.6.0` after owner review.
+Accepted for Phase 5 and prepared for `0.6.0`; owner review and SDD closure are pending.
 
 ## Context
 

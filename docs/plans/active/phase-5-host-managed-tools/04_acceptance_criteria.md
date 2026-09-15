@@ -91,7 +91,7 @@ Todos los criterios comienzan en estado `pending`.
 
 ## Estado de aceptación
 
-- `AC-P5-001`–`AC-P5-028`: `pending`.
+- `AC-P5-001`–`AC-P5-028`: `done`, con evidencia automatizada, de integración y de CI registrada
+  en `05_validation_plan.md` y `07_traceability.md`.
 
-Ningún criterio se considera parcialmente satisfecho por los contratos preparatorios de fases
-anteriores. La evidencia debe quedar registrada en este paquete durante implementación y cierre.
+La revisión explícita del propietario sigue pendiente para cerrar el SDD y mover el paquete.
