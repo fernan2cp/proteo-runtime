@@ -67,14 +67,20 @@ def _config_payload() -> dict[str, Any]:
 
     mappings = {
         "low": {"model": "gpt-5.6-luna", "reasoning_effort": "low"},
-        "medium": {"model": "gpt-5.6-terra", "reasoning_effort": "medium"},
-        "high": {"model": "gpt-5.6-sol", "reasoning_effort": "high"},
-        "ultra": {"model": "gpt-5.6-sol", "reasoning_effort": "ultra"},
+        "medium": {"model": "gpt-5.6-luna", "reasoning_effort": "high"},
+        "high": {"model": "gpt-5.6-sol", "reasoning_effort": "low"},
+        "ultra": {"model": "gpt-5.6-sol", "reasoning_effort": "medium"},
     }
     return {
         "schema_version": 1,
         "runtime": "codex",
-        "profiles": {"brain": mappings, "session": mappings, "hybrid": mappings},
+        "profiles": {
+            "brain": mappings,
+            "session": mappings,
+            "structured": mappings,
+            "controlled_agent": mappings,
+            "hybrid": mappings,
+        },
         "profile_specs": {
             "hybrid": {
                 "lifecycle": "persistent",
@@ -131,7 +137,15 @@ def test_config_sources_precedence_and_no_implicit_cwd(tmp_path: Any, monkeypatc
     )
     monkeypatch.delenv("PROTEO_RUNTIME_CONFIG")
     monkeypatch.chdir(tmp_path)
-    assert load_runtime_config().lookup("brain", "medium").model == "gpt-5.6-terra"
+    default_config = load_runtime_config()
+    assert default_config.lookup("brain", "low").model == "gpt-5.6-luna"
+    assert default_config.lookup("brain", "low").reasoning_effort == "low"
+    assert default_config.lookup("brain", "medium").model == "gpt-5.6-luna"
+    assert default_config.lookup("brain", "medium").reasoning_effort == "high"
+    assert default_config.lookup("brain", "high").model == "gpt-5.6-sol"
+    assert default_config.lookup("brain", "high").reasoning_effort == "low"
+    assert default_config.lookup("brain", "ultra").model == "gpt-5.6-sol"
+    assert default_config.lookup("brain", "ultra").reasoning_effort == "medium"
     with pytest.raises(ConfigurationError):
         load_runtime_config(config_path=tmp_path / "broken.json")
     malformed = tmp_path / "malformed.json"
@@ -479,7 +493,7 @@ async def test_codex_profile_capabilities_and_session_overrides(monkeypatch: Any
     assert not sdk.start_calls
     session = await runtime.session(config=InvocationConfig(include_raw=True))
     with pytest.raises(CapabilityError):
-        await session.ainvoke("override", config=InvocationConfig(model="gpt-5.6-luna"))
+        await session.ainvoke("override", config=InvocationConfig(model="gpt-5.6-sol"))
     await session.close()
     await runtime.close()
 
@@ -499,7 +513,8 @@ async def test_structured_profile_requires_schema_and_model_binding_is_frozen(
     model = runtime.model(profile="brain")
     runtime.default_model = "gpt-5.6-sol"
     await model.ainvoke("frozen")
-    assert sdk.start_calls[-1]["model"] == "gpt-5.6-terra"
+    assert sdk.start_calls[-1]["model"] == "gpt-5.6-luna"
+    assert sdk.turn_calls[-1][1]["effort"] == "high"
     await runtime.close()
 
 
@@ -720,4 +735,148 @@ async def test_codex_resolution_error_paths_and_stream_timeout(monkeypatch: Any)
                 "slow", config=InvocationConfig(timeout_seconds=0.001)
             )
         ]
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_canonical_structured_profile_effective_capabilities(monkeypatch: Any) -> None:
+    """Validate canonical structured profile capabilities and provider masking.
+
+    Args:
+        monkeypatch: Pytest monkeypatch fixture.
+    """
+    sdk = FakeSDK()
+    install_sdk(monkeypatch, sdk)
+    runtime = codex_runtime.CodexRuntime()
+    await runtime.start()
+
+    model = runtime.model(profile="structured", level="low")
+    caps = await model.effective_capabilities()
+    assert caps.structured_output is True
+    assert caps.host_tools is False
+    assert caps.native_tools is False
+
+    # Negative provider-mask case: when provider structured output is unavailable
+    monkeypatch.setattr(
+        runtime,
+        "capabilities",
+        lambda: asyncio.sleep(
+            0,
+            result=RuntimeCapabilities(
+                structured_output=False,
+                host_tools=True,
+                ephemeral_sessions=True,
+                streaming=True,
+            ),
+        ),
+    )
+    unsupported_caps = await model.effective_capabilities()
+    assert unsupported_caps.structured_output is False
+    assert unsupported_caps.host_tools is False
+
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_canonical_structured_invocation_with_structured_profile(
+    monkeypatch: Any,
+) -> None:
+    """Exercise documented structured model path using profile='structured' and level='low'.
+
+    Args:
+        monkeypatch: Pytest monkeypatch fixture.
+    """
+    sdk = FakeSDK(
+        turns=[
+            FakeTurn(notifications=_notifications('{"answer": "canonical_success"}')),
+        ]
+    )
+    install_sdk(monkeypatch, sdk)
+    runtime = codex_runtime.CodexRuntime()
+    await runtime.start()
+
+    model = runtime.model(profile="structured", level="low").with_structured_output(Answer)
+
+    # Effective capabilities on facade must succeed without CapabilityError
+    caps = await model.effective_capabilities()
+    assert caps.structured_output is True
+    assert caps.host_tools is False
+
+    # Host-side validation occurs and typed Pydantic value is returned
+    result = await model.ainvoke("return structured answer")
+    assert isinstance(result.value, Answer)
+    assert result.value.answer == "canonical_success"
+
+    # Verify output schema reached provider turn
+    assert len(sdk.turn_calls) == 1
+    call_kwargs = sdk.turn_calls[0][1]
+    assert "output_schema" in call_kwargs
+    assert call_kwargs["output_schema"]["title"] == "Answer"
+
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_brain_capability_masking_prevents_host_tools_leakage(monkeypatch: Any) -> None:
+    """Ensure brain profile masks provider-level host tool support to False.
+
+    Args:
+        monkeypatch: Pytest monkeypatch fixture.
+    """
+    sdk = FakeSDK()
+    install_sdk(monkeypatch, sdk)
+    runtime = codex_runtime.CodexRuntime(experimental_dynamic_tools=True)
+    await runtime.start()
+
+    # Provider capabilities report host_tools=True and structured_output=True
+    monkeypatch.setattr(
+        runtime,
+        "capabilities",
+        lambda: asyncio.sleep(
+            0,
+            result=RuntimeCapabilities(
+                structured_output=True,
+                host_tools=True,
+                ephemeral_sessions=True,
+                streaming=True,
+            ),
+        ),
+    )
+    prov_caps = await runtime.capabilities()
+    assert prov_caps.host_tools is True
+    assert prov_caps.structured_output is True
+
+    brain_model = runtime.model(profile="brain", level="low")
+    effective = await brain_model.effective_capabilities()
+    assert effective.structured_output is True
+    assert effective.host_tools is False
+    assert effective.native_tools is False
+
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_codex_runtime_default_mappings_resolution(monkeypatch: Any) -> None:
+    """Verify runtime binding resolution across all canonical profiles and logical levels.
+
+    Args:
+        monkeypatch: Pytest monkeypatch fixture.
+    """
+    sdk = FakeSDK()
+    install_sdk(monkeypatch, sdk)
+    runtime = codex_runtime.CodexRuntime()
+    await runtime.start()
+
+    expected_mappings = {
+        "low": ("gpt-5.6-luna", "low"),
+        "medium": ("gpt-5.6-luna", "high"),
+        "high": ("gpt-5.6-sol", "low"),
+        "ultra": ("gpt-5.6-sol", "medium"),
+    }
+    for profile in ("brain", "structured", "session", "controlled_agent"):
+        for level, (expected_model, expected_effort) in expected_mappings.items():
+            binding = runtime._resolve_binding(profile, level)
+            assert binding.model == expected_model
+            assert binding.effort == expected_effort
+
     await runtime.close()

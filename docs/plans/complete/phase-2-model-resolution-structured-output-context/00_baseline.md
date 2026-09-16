@@ -69,9 +69,9 @@ The version-one packaged mappings for `brain`, `structured`, and `session` are c
 | Logical level | Model | Provider effort |
 |---|---|---|
 | `low` | `gpt-5.6-luna` | `low` |
-| `medium` | `gpt-5.6-terra` | `medium` |
-| `high` | `gpt-5.6-sol` | `high` |
-| `ultra` | `gpt-5.6-sol` | `ultra` |
+| `medium` | `gpt-5.6-luna` | `high` |
+| `high` | `gpt-5.6-sol` | `low` |
+| `ultra` | `gpt-5.6-sol` | `medium` |
 
 Unavailable configured mappings fail explicitly. The resolver never substitutes the catalog
 default or infers a logical level from a model name.

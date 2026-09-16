@@ -893,3 +893,97 @@ async def test_fake_and_codex_tool_bindings_gate_profiles_and_sessions() -> None
         CodexRuntime()._tool_binding(spec, registry, None)
     sdk = _create_sdk(experimental_dynamic_tools=True)
     await sdk.close()
+
+
+@pytest.mark.asyncio
+async def test_controlled_agent_effective_capabilities_and_profile_isolation() -> None:
+    """Validate controlled_agent capabilities when bound vs unbound and tool isolation."""
+    registry = ToolRegistry()
+    registry.register(add_value)
+    executor = ToolExecutor(
+        registry, permission_policy=ToolPermissionPolicy(frozenset({"math.add"}))
+    )
+
+    codex = CodexRuntime(experimental_dynamic_tools=True)
+
+    # 1. Bound controlled_agent with valid tools exposes host_tools=True, structured_output=False
+    model = codex.model(profile="controlled_agent", level="low").with_tools(
+        registry, executor=executor
+    )
+    caps = await model.effective_capabilities()
+    assert caps.host_tools is True
+    assert caps.structured_output is False
+    assert caps.native_tools is False
+
+    # 2. Unbound controlled_agent does not falsely advertise executable host tools
+    unbound = codex.model(profile="controlled_agent", level="low")
+    unbound_caps = await unbound.effective_capabilities()
+    assert unbound_caps.host_tools is False
+    assert unbound_caps.structured_output is False
+    assert unbound_caps.native_tools is False
+
+    # 3. Brain profile cannot bind host tools
+    with pytest.raises(CapabilityError, match="does not permit host-managed tools"):
+        codex.model(profile="brain", level="low").with_tools(registry)
+
+    # 4. Structured profile cannot bind host tools
+    with pytest.raises(CapabilityError, match="does not permit host-managed tools"):
+        codex.model(profile="structured", level="low").with_tools(registry)
+
+    # 5. Bound model cannot combine structured output
+    with pytest.raises(CapabilityError, match="cannot be combined with host-managed tools"):
+        model.with_structured_output({"type": "string"})
+
+    # 6. Controlled agent fails closed without experimental_dynamic_tools=True
+    codex_no_flag = CodexRuntime(experimental_dynamic_tools=False)
+    with pytest.raises(CapabilityError, match="experimental_dynamic_tools=True"):
+        codex_no_flag.model(profile="controlled_agent", level="low").with_tools(registry)
+
+
+@pytest.mark.asyncio
+async def test_default_config_controlled_agent_binding_without_custom_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Prove normal applications can bind controlled_agent with tools using packaged defaults.
+
+    Args:
+        monkeypatch: Pytest monkeypatch fixture.
+    """
+    from test_codex_provider import FakeModel, FakeSDK, install_sdk
+
+    models = [
+        FakeModel(model="gpt-5.6-terra", is_default=True),
+        FakeModel(
+            model="gpt-5.6-luna",
+            is_default=False,
+            supported_reasoning_efforts=("low", "medium", "high", "ultra"),
+        ),
+        FakeModel(
+            model="gpt-5.6-sol",
+            is_default=False,
+            supported_reasoning_efforts=("low", "medium", "high", "ultra"),
+        ),
+    ]
+    sdk = FakeSDK(models=models)
+    install_sdk(monkeypatch, sdk)
+
+    registry = ToolRegistry()
+    registry.register(add_value)
+    executor = ToolExecutor(
+        registry, permission_policy=ToolPermissionPolicy(frozenset({"math.add"}))
+    )
+
+    # Instantiate runtime with default packaged config (no custom config injected)
+    runtime = CodexRuntime(experimental_dynamic_tools=True)
+    await runtime.start()
+
+    # Normal application usage resolving from packaged codex_v1.json
+    model = runtime.model(profile="controlled_agent", level="low").with_tools(
+        registry, executor=executor
+    )
+    caps = await model.effective_capabilities()
+    assert caps.host_tools is True
+    assert caps.structured_output is False
+    assert caps.native_tools is False
+
+    await runtime.close()

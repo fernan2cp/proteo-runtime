@@ -75,9 +75,9 @@ working-directory path. `brain`, `structured`, and `session` each contain the sa
 
 ```text
 low     -> gpt-5.6-luna / low
-medium  -> gpt-5.6-terra / medium
-high    -> gpt-5.6-sol   / high
-ultra   -> gpt-5.6-sol   / ultra
+medium  -> gpt-5.6-luna / high
+high    -> gpt-5.6-sol   / low
+ultra   -> gpt-5.6-sol   / medium
 ```
 
 At startup validate every configured mapping against the visible catalog and its supported

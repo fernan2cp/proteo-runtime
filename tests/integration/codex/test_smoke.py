@@ -48,13 +48,21 @@ async def test_codex_catalog_and_brain_smoke() -> None:
 async def test_codex_configured_mapping_catalog() -> None:
     """Verify every configured model/effort mapping against one live catalog."""
 
+    from proteo_runtime.config import load_runtime_config
     from proteo_runtime.providers.codex import CodexRuntime
 
+    config = load_runtime_config()
+    configured: dict[str, set[str]] = {}
+    for profile_mapping in config.profiles.values():
+        for mapping in profile_mapping.values():
+            configured.setdefault(mapping.model, set()).add(mapping.reasoning_effort)
+
     expected = {
-        "gpt-5.6-luna": {"low"},
-        "gpt-5.6-terra": {"medium"},
-        "gpt-5.6-sol": {"high", "ultra"},
+        "gpt-5.6-luna": {"low", "high"},
+        "gpt-5.6-sol": {"low", "medium"},
     }
+    assert configured == expected
+
     async with CodexRuntime() as runtime:
         models = {model.id: model for model in await runtime.models()}
     for model_id, efforts in expected.items():

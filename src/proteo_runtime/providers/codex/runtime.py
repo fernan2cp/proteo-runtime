@@ -1000,53 +1000,39 @@ class _CodexModel:
         )
 
     async def effective_capabilities(self) -> RuntimeCapabilities:
-        """Return effective capabilities for this model profile."""
+        """Return effective capabilities for this model profile.
 
+        Applies profile restrictions, feature flags, and tool bindings to the
+        provider-level capabilities.
+
+        Returns:
+            RuntimeCapabilities effective for this model instance.
+        """
         capabilities = await self.runtime.capabilities()
         spec = self.runtime._profile_spec(self.profile)
-        if self.profile == "structured":
-            return RuntimeCapabilities(
-                structured_output=False,
-                ephemeral_sessions=capabilities.ephemeral_sessions,
-                persistent_sessions=capabilities.persistent_sessions,
-                streaming=capabilities.streaming,
-                interruption=capabilities.interruption,
-                host_tools=False,
-                native_tools=capabilities.native_tools,
-                sandbox=capabilities.sandbox,
-                usage_reporting=capabilities.usage_reporting,
-            )
-        if (
+        has_tools = (
             self._tool_snapshot is not None
             and bool(self._tool_snapshot.definitions())
             and capabilities.host_tools
             and self.runtime.experimental_dynamic_tools
             and spec.host_tools.value in {"controlled", "explicit"}
-        ):
-            return RuntimeCapabilities(
-                structured_output=False,
-                ephemeral_sessions=capabilities.ephemeral_sessions,
-                persistent_sessions=capabilities.persistent_sessions,
-                streaming=capabilities.streaming,
-                interruption=capabilities.interruption,
-                host_tools=True,
-                native_tools=False,
-                sandbox=capabilities.sandbox,
-                usage_reporting=capabilities.usage_reporting,
-            )
-        if spec.security_policy != "isolated" or spec.host_tools.value != "disabled":
-            return RuntimeCapabilities(
-                structured_output=False,
-                ephemeral_sessions=capabilities.ephemeral_sessions,
-                persistent_sessions=capabilities.persistent_sessions,
-                streaming=capabilities.streaming,
-                interruption=capabilities.interruption,
-                host_tools=False,
-                native_tools=False,
-                sandbox=capabilities.sandbox,
-                usage_reporting=capabilities.usage_reporting,
-            )
-        return capabilities
+        )
+        allows_structured = (
+            self._tool_snapshot is None
+            and spec.security_policy == "isolated"
+            and spec.host_tools.value == "disabled"
+        )
+        return RuntimeCapabilities(
+            structured_output=bool(capabilities.structured_output and allows_structured),
+            ephemeral_sessions=capabilities.ephemeral_sessions,
+            persistent_sessions=capabilities.persistent_sessions,
+            streaming=capabilities.streaming,
+            interruption=capabilities.interruption,
+            host_tools=has_tools,
+            native_tools=False,
+            sandbox=capabilities.sandbox,
+            usage_reporting=capabilities.usage_reporting,
+        )
 
     async def _start_run(
         self,

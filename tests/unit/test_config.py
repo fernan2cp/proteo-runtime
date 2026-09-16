@@ -39,3 +39,15 @@ def test_invalid_keys_versions_and_missing_mappings_raise_path_errors() -> None:
     config = validate_config(_payload())
     with pytest.raises(ConfigurationError, match="profiles.brain.high"):
         config.lookup("brain", "high")
+
+
+def test_packaged_defaults_resolve_controlled_agent_all_logical_levels() -> None:
+    """Packaged default configuration resolves controlled_agent across all logical levels."""
+    from proteo_runtime.config import load_runtime_config
+    from proteo_runtime.core.profiles import LogicalLevel
+
+    config = load_runtime_config()
+    for level in LogicalLevel:
+        mapping = config.lookup("controlled_agent", level)
+        assert mapping.model
+        assert mapping.reasoning_effort

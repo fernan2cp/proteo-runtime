@@ -256,7 +256,7 @@ def _config_for_model(model: str) -> Any:
 def install_sdk(monkeypatch: pytest.MonkeyPatch, sdk: FakeSDK) -> None:
     """Install one SDK double through the provider factory."""
 
-    monkeypatch.setattr(codex_runtime, "_create_sdk", lambda: sdk)
+    monkeypatch.setattr(codex_runtime, "_create_sdk", lambda *args, **kwargs: sdk)
 
 
 @pytest.mark.asyncio
@@ -354,7 +354,7 @@ async def test_hidden_models_and_effort_validation(monkeypatch: pytest.MonkeyPat
         "gpt-5.6-luna",
         "gpt-5.6-sol",
     ]
-    model = await runtime.brain(InvocationConfig(reasoning_effort="high"))
+    model = await runtime.brain(InvocationConfig(model="gpt-5.6-terra", reasoning_effort="high"))
     with pytest.raises(CapabilityError):
         await model.ainvoke("bad effort")
 
