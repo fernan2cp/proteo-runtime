@@ -4,7 +4,7 @@
 **Target repository:** `fernan2cp/proteo-runtime`
 **Recommended location:** `examples/smart_quote_agent/`
 **Baseline:** Proteo Runtime `0.6.x`, with Phases 0–5 completed
-**Purpose:** small integrated demo showing LangGraph orchestration, structured routing/planning, Codex execution, host-managed tools, authorization, HITL, SQLite persistence, and observability without introducing Phase 6 infrastructure.
+**Purpose:** small integrated demo showing LangGraph orchestration, structured routing/planning, Codex execution, host-managed tools, authorization, HITL, and SQLite persistence without introducing Phase 6 infrastructure. Observability is applied afterward through the separate Smart Quote Agent observability guide.
 
 ---
 
@@ -26,8 +26,8 @@ The example must demonstrate, in one coherent application:
 - final human approval before persistence;
 - SQLite persistence;
 - quote and quote-line history;
-- runtime/tool observability;
-- explicit separation between model decisions and host authority.
+- explicit separation between model decisions and host authority;
+- a clean handoff to the separate observability phase once the functional agent is validated.
 
 The example is intentionally **not** a production commerce system, IAM system, checkout flow, or security sandbox.
 
@@ -68,8 +68,8 @@ This keeps the demo agentic where flexibility is useful and deterministic where 
 - Host-managed tools.
 - Structured routing/planning.
 - LangGraph orchestration.
-- Metadata-only observability.
 - Real Codex execution when explicitly run by the user.
+- Observability integration is deferred to the separate Smart Quote Agent observability implementation phase.
 
 ### Explicitly excluded
 
@@ -513,39 +513,34 @@ Recommended graph:
                              |
                              v
                         intent_router
-                      /      |       \
-                     /       |        \
-                  login    logout    request
-                   |         |          |
-                   v         v          v
-              login_hitl  clear_auth  request_router
-                   |         |        /      \
-                   |         |       /        \
-                   |         |  quote_create  agent_request
-                   |         |       |            |
-                   |         |       v            v
-                   |         | quote_planner  controlled_agent
-                   |         |       |
-                   |         |       v
-                   |         | auth_guard
-                   |         |       |
-                   |         |       v
-                   |         | resolve_quote_data
-                   |         |       |
-                   |         |       v
-                   |         | discount_hitl
-                   |         |       |
-                   |         |       v
-                   |         | create_quote_tool
-                   |         |   + approval
-                   |         |       |
-                   \_________|_______/
-                             |
-                             v
-                         final_output
-                             |
-                             v
-                            END
+                    /      |       |       \
+                 login   logout  quote_create  agent_request
+                   |       |         |              |
+                   v       v         v              v
+              login_hitl clear_auth auth_guard  controlled_agent
+                                   /      \
+                                deny      allow
+                                 |          |
+                                 |          v
+                                 |     quote_planner
+                                 |          |
+                                 |          v
+                                 |   resolve_quote_data
+                                 |          |
+                                 |          v
+                                 |     discount_hitl
+                                 |          |
+                                 |          v
+                                 |   create_quote_tool
+                                 |      + approval
+                                 |          |
+                   _____________|__________|
+                  /
+                 v
+             final_output
+                 |
+                 v
+                END
 ```
 
 ### Deliberate architectural choice
@@ -581,6 +576,17 @@ class IntentDecision(BaseModel):
 
 The router never receives credentials.
 
+Routing is **heuristic-first**: unequivocal commands are classified deterministically. If the heuristic cannot identify the intent confidently, it returns `None` and the host invokes the structured LLM classifier.
+
+Live mode uses two distinct bindings, both at logical level `low`:
+
+```python
+structured_model = runtime.model(profile="structured", level="low")
+controlled_agent_model = runtime.model(profile="controlled_agent", level="low")
+```
+
+`structured_model` is used for ambiguous intent classification and quote extraction. `controlled_agent_model` is used only for the conversational tool-using branch. Live Codex startup must enable host-managed dynamic tools with `CodexRuntime(experimental_dynamic_tools=True)`.
+
 ### Routing semantics
 
 `login`:
@@ -607,22 +613,27 @@ For `quote_create`, use structured output to convert the natural-language reques
 
 ```python
 class RequestedItem(BaseModel):
-    product: str
-    quantity: int
+    product: str | None = None
+    quantity: int | None = Field(default=None, gt=0)
 
 
 class QuoteRequest(BaseModel):
-    customer: str
-    items: list[RequestedItem]
+    customer: str | None = None
+    items: list[RequestedItem] = Field(default_factory=list)
 ```
 
-Validation:
+The structured model is instructed to extract only information explicitly present in the request and never invent customer, product, or quantity values.
+
+Host-side validation then requires:
 
 ```text
 customer non-empty
-at least one item
+at least one complete item
+product non-empty
 quantity > 0
 ```
+
+If required data is missing, the workflow returns a clarification request and stops before database resolution or HITL.
 
 The planner does not resolve:
 
@@ -649,6 +660,7 @@ class DemoState(TypedDict, total=False):
     authenticated_user: AuthenticatedUser | None
 
     intent: str
+    quote_authorized: bool | None
     quote_request: QuoteRequest | None
     quote_draft: QuoteDraft | None
     created_quote_id: int | None
@@ -884,9 +896,16 @@ ToolPermissionPolicy(
 
 A login changes the host-selected permission policy for subsequent requests.
 
-The registry itself can remain the same.
+The conversational registry is also narrowed by role:
 
-The host decides which executor/policy is bound for the current interaction.
+```text
+anonymous/client -> list_products, find_product, calculate_quote
+staff            -> the same tools + find_customer, list_quotes, get_quote
+```
+
+`create_quote` is never exposed to the conversational controlled agent. It lives in a dedicated write registry used only by the deterministic quote-creation branch.
+
+The host decides which registry and executor/policy are bound for the current interaction.
 
 Registration of a tool does not imply permission to execute it.
 
@@ -934,7 +953,9 @@ Show quote 12.
 Which customer owns quote 8?
 ```
 
-The controlled agent may select host-managed tools dynamically.
+The controlled agent may select host-managed tools dynamically from the role-appropriate conversational registry.
+
+It must never receive `create_quote`; persistent quote mutation is reachable only through the deterministic quote workflow.
 
 It must not receive arbitrary shell, filesystem-write, browser, network, SQL, or MCP authority.
 
@@ -963,15 +984,14 @@ Create a quote for Globex for 3 Notebook Pro and 5 Wireless Mouse.
         {"product":"Wireless Mouse","quantity":5}
       ]
 
-4. find_customer
+4. host resolves customer from SQLite
    -> Globex LLC / customer_id=2
 
-5. find_product
+5. host resolves products from SQLite
    -> NB-PRO
    -> MS-WL
 
-6. calculate_quote
-   -> authoritative subtotal
+6. host computes authoritative subtotal from DB prices
 
 7. discount HITL
    -> 10%
@@ -1174,12 +1194,24 @@ Subtotal: $3,800.00
 Apply discount? [y/N]: y
 Discount percentage [0-30, default 0]: 10
 
-Discount: 10% ($380.00)
+==================================================
+HOST QUOTE REVIEW
+==================================================
+Customer: Globex LLC (ID: 2)
+Line items:
+  - Notebook Pro (NB-PRO): 3x @ $1,200.00 = $3,600.00
+  - Wireless Mouse (MS-WL): 5x @ $40.00 = $200.00
+Subtotal:        $3,800.00
+Discount:        10% ($380.00)
+Total:           $3,420.00
+==================================================
+
+[APPROVAL REQUIRED] Tool execution requested: create_quote
+Approve quote creation? [y/N]: y
+[APPROVED] Action approved.
+
+[SUCCESS] Quote #1 created for Globex LLC.
 Total: $3,420.00
-
-Create this quote? [y/N]: y
-
-✓ Quote #1 created.
 ```
 
 Later:
@@ -1202,32 +1234,15 @@ Total:                $3,420.00
 
 ---
 
-## 26. Observability
+## 26. Observability handoff
 
-Default demo observability should be safe and local.
+Observability is intentionally implemented as a **separate second phase** after the functional agent in this guide has been validated.
 
-Recommended default:
+The base Smart Quote Agent must not require a console observer, LangSmith, OpenTelemetry, or a telemetry SQLite database in order to run.
 
-```text
-metadata-only console observer
-```
+The separate observability guide may attach Phase 4 observers/exporters to this same runtime/tool activity while preserving the functional workflow unchanged.
 
-Useful visible events:
-
-```text
-invocation_started
-invocation_completed
-tool_requested
-tool_started
-tool_completed
-tool_denied
-tool_approval_requested
-tool_approval_resolved
-```
-
-Optional LangSmith/OpenTelemetry configuration may be documented, but must not be required to run the base demo.
-
-Never export:
+Regardless of the observer/exporter used, never export:
 
 ```text
 password
@@ -1235,9 +1250,7 @@ raw login input
 unredacted credentials
 ```
 
-Login can be represented by host console messages, not runtime telemetry.
-
-Quote/customer/product tool activity may use normal Phase 4 metadata-only observability.
+Login remains a host interaction and credentials must not enter runtime telemetry.
 
 ---
 
@@ -1285,8 +1298,11 @@ examples/
     ├── tools.py
     ├── graph.py
     ├── hitl.py
-    └── data/
-        └── .gitkeep
+    ├── data/
+    │   └── .gitkeep
+    └── tests/
+        ├── __init__.py
+        └── test_agent.py
 ```
 
 ### Responsibilities
@@ -1342,17 +1358,20 @@ examples/
 - example sessions;
 - security disclaimer.
 
+`tests/test_agent.py`
+- deterministic, zero-quota regression coverage for routing, authorization, tools, HITL, persistence, and live-error propagation.
+
 ---
 
 ## 29. Implementation boundary
 
-The example should target roughly:
+The example should remain intentionally small and explicit. The original rough target was:
 
 ```text
-300–500 lines of application code
+300–500 lines of core application logic
 ```
 
-excluding comments/README/schema.
+excluding comments/README/schema/tests. Treat this as a complexity guideline rather than a hard acceptance gate; clarity and explicit security boundaries take priority over compressing the implementation.
 
 Do not introduce abstractions merely to make the demo look enterprise-ready.
 
@@ -1438,8 +1457,8 @@ The example is ready when all of these can be demonstrated.
 - controlled agent selects tools on open-ended requests;
 - ToolPermissionPolicy gates capabilities;
 - Phase 5 approval is used for final persistence;
-- tool events are observable;
-- no provider-specific SDK object leaks into graph state.
+- no provider-specific SDK object leaks into graph state;
+- observability remains a separate follow-on implementation phase and is not required for functional-agent acceptance.
 
 ---
 
@@ -1490,7 +1509,7 @@ This sequence demonstrates the architecture much better than a single happy-path
 - Quote creation is transactional.
 - Open-ended queries use the controlled agent.
 - Privileged mutation uses deterministic workflow orchestration.
-- Observability is metadata-only by default.
+- Observability is applied in a separate follow-on phase without changing functional authority boundaries.
 - The demo does not attempt to implement Phase 6 security hardening.
 ```
 
@@ -1503,8 +1522,8 @@ This example should stay aligned with the repository's existing contracts:
 ```text
 docs/design/project-guide.md
 docs/plans/complete/phase-3-langgraph-integration/
-docs/plans/complete/phase-4-observability-langsmith-opentelemetry/
 docs/plans/complete/phase-5-host-managed-tools/
+docs/plans/complete/phase-4-observability-langsmith-opentelemetry/  # follow-on observability phase
 ```
 
 In particular:
@@ -1513,6 +1532,6 @@ In particular:
 - LangGraph remains outside the core;
 - tools are host-managed capabilities;
 - tool permissions are exact host-side allow-lists;
-- exporter payloads are metadata-only by default;
+- Phase 4 exporter payloads remain metadata-only when the separate observability phase is applied;
 - controlled tools do not grant native shell/filesystem/network authority;
 - strong runtime isolation remains separate from this demo.
