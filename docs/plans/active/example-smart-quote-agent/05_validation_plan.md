@@ -121,8 +121,17 @@ Execute `python examples/smart_quote_agent/app.py` and run through the following
 
 | Date | Task / AC | Command / Test Executed | Output / Evidence | Status |
 |---|---|---|---|---|
-| *Pending* | `SQA-TASK-0001` / `AC-SQA-001` | `git status --short` | *Pending execution* | `pending` |
-| *Pending* | `SQA-TASK-0002` / `AC-SQA-002` | `python examples/smart_quote_agent/init_demo.py --reset` | *Pending execution* | `pending` |
-| *Pending* | `SQA-TASK-0010` / `AC-SQA-011` | `uv run mypy examples/smart_quote_agent --strict` | *Pending execution* | `pending` |
-| *Pending* | `SQA-TASK-0010` / `AC-SQA-011` | `uv run ruff check examples/smart_quote_agent` | *Pending execution* | `pending` |
-| *Pending* | `SQA-TASK-0010` / `AC-SQA-011` | `uv run ruff format --check examples/smart_quote_agent` | *Pending execution* | `pending` |
+| 2026-09-16 | `SQA-TASK-0001` / `AC-SQA-001` | `git status --short` | `?? examples/smart_quote_agent/` (0 project files modified) | Pass |
+| 2026-09-16 | `SQA-TASK-0002` / `AC-SQA-002`, `AC-SQA-008` | `python examples/smart_quote_agent/init_demo.py --reset` & headless smoke test | Demo initialized with 4 customers, 5 users, 6 products; decimal rounding and transactional rollback assertions passed | Pass |
+| 2026-09-16 | `SQA-TASK-0003` / `AC-SQA-003`, `AC-SQA-011` | Pydantic schema unit validation & `mypy --strict` | IntentDecision, RequestedItem, QuoteRequest validations, slots dataclass AuthenticatedUser | Pass |
+| 2026-09-16 | `SQA-TASK-0004` / `AC-SQA-003`, `AC-SQA-004` | Auth unit test with mock getpass | Password masking, credential cleanup, role-based ToolPermissionPolicy mapping verified | Pass |
+| 2026-09-16 | `SQA-TASK-0005` / `AC-SQA-004`, `AC-SQA-005` | ToolExecutor authorization test | 7 @runtime_tools verified, staff creation permitted, client creation denied | Pass |
+| 2026-09-16 | `SQA-TASK-0006` / `AC-SQA-006` | HITL discount prompt bounds test | 0..30 bounds, re-prompting on invalid/out-of-range inputs verified | Pass |
+| 2026-09-16 | `SQA-TASK-0007` / `AC-SQA-004`, `AC-SQA-005`, `AC-SQA-009` | StateGraph execution workflow test | Anonymous catalog queries, anonymous denial, client denial, staff quote creation, and quote lookup verified | Pass |
+| 2026-09-16 | `SQA-TASK-0008` / `AC-SQA-010` | Interactive CLI scripted session & observer | REPL loop, dynamic prompt reflection, secret-safe ConsoleMetadataObserver verified | Pass |
+| 2026-09-16 | `SQA-TASK-0009` / `AC-SQA-011` | Documentation inspection | `examples/smart_quote_agent/README.md` complete with architecture, credentials, 4 transcripts, and security limits | Pass |
+| 2026-09-16 | `SQA-TASK-0010` / `AC-SQA-007` | Automated ApprovalHandler denial/allow test | Denial returns denied=True, 0 rows committed; approval commits atomic transaction | Pass |
+| 2026-09-16 | `SQA-TASK-0010` / `AC-SQA-011` | `uv run mypy examples/smart_quote_agent --strict` | Success: no issues found in 8 source files | Pass |
+| 2026-09-16 | `SQA-TASK-0010` / `AC-SQA-011` | `uv run ruff check examples/smart_quote_agent` | All checks passed! | Pass |
+| 2026-09-16 | `SQA-TASK-0010` / `AC-SQA-011` | `uv run ruff format --check examples/smart_quote_agent` | 9 files already formatted | Pass |
+| 2026-09-16 | `SQA-TASK-0010` / `AC-SQA-001` | `git status --short` | Zero files outside `examples/smart_quote_agent/` touched | Pass |

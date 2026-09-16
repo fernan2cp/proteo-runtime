@@ -14,7 +14,7 @@ No files outside `examples/smart_quote_agent/` may be created, modified, or touc
 
 ### SQA-TASK-0001 — Directory Layout and Data Placeholder
 
-**State:** `pending`
+**State:** `done`
 **Depends on:** none
 **Requirements:** `SQA-REQ-001`
 **Acceptance:** `AC-SQA-001`
@@ -22,12 +22,13 @@ No files outside `examples/smart_quote_agent/` may be created, modified, or touc
 - Create directory `examples/smart_quote_agent/data/` if not present.
 - Place `examples/smart_quote_agent/data/.gitkeep` to maintain directory tracking without checking in transient SQLite files.
 - Verify working tree boundaries: no modifications outside `examples/smart_quote_agent/`.
+- Evidence: `examples/smart_quote_agent/data/.gitkeep` created; `git status --short` confirmed 0 files modified outside target.
 
 ---
 
 ### SQA-TASK-0002 — SQLite Schema, Query Helpers and Initialization Script
 
-**State:** `pending`
+**State:** `done`
 **Depends on:** `SQA-TASK-0001`
 **Requirements:** `SQA-REQ-002`, `SQA-REQ-006`
 **Acceptance:** `AC-SQA-002`, `AC-SQA-008`
@@ -42,12 +43,13 @@ No files outside `examples/smart_quote_agent/` may be created, modified, or touc
   - CLI argument parsing for `--reset`.
   - Database provisioning and seed execution (4 customers, 5 users with password `1234`, 6 active products).
   - Status printout displaying credentials and database location.
+- Evidence: `database.py` and `init_demo.py` implemented; verified with `init_demo.py --reset`, table counts, constraint enforcement, and transactional rollback tests.
 
 ---
 
 ### SQA-TASK-0003 — Pydantic Structured Schemas and Graph State Types
 
-**State:** `pending`
+**State:** `done`
 **Depends on:** `SQA-TASK-0001`
 **Requirements:** `SQA-REQ-003`, `SQA-REQ-012`
 **Acceptance:** `AC-SQA-003`, `AC-SQA-011`
@@ -57,12 +59,13 @@ No files outside `examples/smart_quote_agent/` may be created, modified, or touc
   - `RequestedItem` and `QuoteRequest` structured output schemas for quote extraction with strict field validations (`quantity > 0`, non-empty customer and items).
   - `AuthenticatedUser` dataclass with slots and immutability.
   - `QuoteLineDraft`, `QuoteDraft`, and `DemoState` typed dictionaries for LangGraph state management.
+- Evidence: `models.py` implemented; verified with `mypy --strict`, ruff checks, and Pydantic validation unit tests.
 
 ---
 
 ### SQA-TASK-0004 — Host Authentication, Masked Input and Permission Policy Mapping
 
-**State:** `pending`
+**State:** `done`
 **Depends on:** `SQA-TASK-0002`, `SQA-TASK-0003`
 **Requirements:** `SQA-REQ-004`, `SQA-REQ-005`
 **Acceptance:** `AC-SQA-003`, `AC-SQA-004`, `AC-SQA-005`
@@ -72,12 +75,13 @@ No files outside `examples/smart_quote_agent/` may be created, modified, or touc
   - Verification against `users` table; immediate password variable cleanup.
   - Returns `AuthenticatedUser` on success, `None` on invalid credentials.
   - `get_permission_policy_for_user(user)` mapping staff role to full permissions and client/anonymous to public read/calculate permissions.
+- Evidence: `auth.py` implemented; verified with `mypy --strict`, ruff checks, and unit assertions on authentication, getpass masking, credential cleanup, and role permission policies.
 
 ---
 
 ### SQA-TASK-0005 — Host-Managed Tools and Tool Registry Factory
 
-**State:** `pending`
+**State:** `done`
 **Depends on:** `SQA-TASK-0002`, `SQA-TASK-0004`
 **Requirements:** `SQA-REQ-005`, `SQA-REQ-006`
 **Acceptance:** `AC-SQA-004`, `AC-SQA-005`, `AC-SQA-007`
@@ -93,12 +97,13 @@ No files outside `examples/smart_quote_agent/` may be created, modified, or touc
     - `get_quote`: `quote.read`, `SideEffect.READ`.
   - `create_tool_registry(conn)` returning populated `ToolRegistry`.
   - `create_tool_executor(registry, user, approval_handler)` returning bound `ToolExecutor`.
+- Evidence: `tools.py` implemented; verified with `mypy --strict`, ruff checks, and full ToolExecutor assertions confirming permission allow-lists, client denial, and staff creation.
 
 ---
 
 ### SQA-TASK-0006 — Human-In-The-Loop Discount Prompt and Approval Handler
 
-**State:** `pending`
+**State:** `done`
 **Depends on:** `SQA-TASK-0002`, `SQA-TASK-0003`
 **Requirements:** `SQA-REQ-007`
 **Acceptance:** `AC-SQA-006`, `AC-SQA-007`
@@ -106,12 +111,13 @@ No files outside `examples/smart_quote_agent/` may be created, modified, or touc
 - Implement `examples/smart_quote_agent/hitl.py`:
   - `prompt_discount_interactive(subtotal_cents)` prompting for whole percentage `0..30` (default 0), with validation and re-prompting.
   - `ConsoleApprovalHandler` implementing `ApprovalHandler` protocol: renders quote details, asks `Approve? [y/N]`, and returns `ApprovalDecision.ALLOW` or `ApprovalDecision.DENY`.
+- Evidence: `hitl.py` implemented; verified with `mypy --strict`, ruff checks, and unit tests confirming discount prompt validation (0..30 bounds, re-prompt on invalid) and ConsoleApprovalHandler approve/deny logic.
 
 ---
 
 ### SQA-TASK-0007 — LangGraph Workflow Graph and Hybrid Execution Assembly
 
-**State:** `pending`
+**State:** `done`
 **Depends on:** `SQA-TASK-0003`, `SQA-TASK-0004`, `SQA-TASK-0005`, `SQA-TASK-0006`
 **Requirements:** `SQA-REQ-008`, `SQA-REQ-010`
 **Acceptance:** `AC-SQA-004`, `AC-SQA-005`, `AC-SQA-009`, `AC-SQA-010`
@@ -123,12 +129,13 @@ No files outside `examples/smart_quote_agent/` may be created, modified, or touc
   - Wire `auth_guard` rejection for non-staff directly to `final_output`.
   - Wire authorized quote path: `quote_planner` -> `resolve_quote_data` -> `discount_hitl` -> `create_quote_tool` -> `final_output`.
   - Compile the graph.
+- Evidence: `graph.py` implemented; verified with `mypy --strict`, ruff checks, and end-to-end LangGraph StateGraph execution assertions covering anonymous catalog queries, anonymous denial, client denial, staff quote creation, and quote lookup.
 
 ---
 
 ### SQA-TASK-0008 — Interactive CLI Entrypoint and REPL Loop
 
-**State:** `pending`
+**State:** `done`
 **Depends on:** `SQA-TASK-0007`
 **Requirements:** `SQA-REQ-009`, `SQA-REQ-010`
 **Acceptance:** `AC-SQA-003`, `AC-SQA-009`, `AC-SQA-010`
@@ -139,12 +146,13 @@ No files outside `examples/smart_quote_agent/` may be created, modified, or touc
   - Deterministic handling of `exit` and `quit`.
   - State preservation (`authenticated_user`) between conversational turns.
   - Metadata-only observer binding configuration.
+- Evidence: `app.py` implemented; verified with `mypy --strict`, ruff checks, and automated scripted REPL session testing banner display, prompt mode formatting, query execution, and deterministic exit.
 
 ---
 
 ### SQA-TASK-0009 — Comprehensive Example Documentation and User Guide
 
-**State:** `pending`
+**State:** `done`
 **Depends on:** `SQA-TASK-0008`
 **Requirements:** `SQA-REQ-011`
 **Acceptance:** `AC-SQA-011`
@@ -154,12 +162,13 @@ No files outside `examples/smart_quote_agent/` may be created, modified, or touc
   - Setup instructions and default credentials table.
   - 4 complete example interaction transcripts.
   - Security boundaries and limitations disclaimer.
+- Evidence: `examples/smart_quote_agent/README.md` created with complete sections on architecture, credentials table, installation, CLI usage, 4 comprehensive scenario transcripts, and security boundaries.
 
 ---
 
 ### SQA-TASK-0010 — Static Analysis, Linting and Verification Execution
 
-**State:** `pending`
+**State:** `done`
 **Depends on:** `SQA-TASK-0009`
 **Requirements:** `SQA-REQ-001`, `SQA-REQ-012`, `SQA-REQ-013`
 **Acceptance:** `AC-SQA-001`, `AC-SQA-011`
@@ -169,3 +178,4 @@ No files outside `examples/smart_quote_agent/` may be created, modified, or touc
 - Run `uv run ruff format --check examples/smart_quote_agent`.
 - Verify `git status` confirms zero modifications outside `examples/smart_quote_agent/`.
 - Record execution logs and evidence in `05_validation_plan.md`.
+- Evidence: `mypy --strict` passed cleanly (8 files, 0 errors); `ruff check` passed (0 errors); `ruff format --check` passed (9 files formatted); `ApprovalHandler` denial/allow test passed; `git status` verified zero modifications outside `examples/smart_quote_agent/`.
