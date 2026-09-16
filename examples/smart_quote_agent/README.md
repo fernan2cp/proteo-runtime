@@ -8,38 +8,51 @@ A complete, self-contained demonstration of **Proteo Runtime** showcasing LangGr
 
 > **"The model may decide what it wants to do. The host decides what it is allowed to do and what is actually executed."**
 
-The application is deliberately partitioned into two operational spheres:
+The application enforces a clear **three-level separation of concerns**:
+1. **Model / Intent Classification**: Identifies what action the user is attempting (including recognizing forbidden operations or unsupported requests) using an 8-action schema.
+2. **Host Action Authorization Policy (`allowed_actions`)**: The host authoritatively evaluates whether that recognized action is valid and allowed for the current access level (anonymous, client, or staff). If denied, out of scope, or a help request, the host responds deterministically without invoking the controlled LLM.
+3. **Host Tool Permission Policy (`ToolPermissionPolicy`)**: The host authoritatively mediates all tool execution via `ToolExecutor`. The conversational agent never has write tools in its registry.
 
-- **Controlled Conversational Agent**: Handles open-ended natural language inquiries (such as product catalog lookup, item specifications, calculation previews, and general assistant guidance) using host-managed tools. Under **no circumstances** does this agent receive the `create_quote` tool.
-- **Deterministic State Workflow**: Governs privileged mutations (quote planning, host completeness validation, customer resolution, discount selection via HITL, dual-layer authorization checks, human write confirmation, and atomic SQLite persistence).
+### Recognized Application Actions
+- `login`: User wants to authenticate/sign in.
+- `logout`: User wants to sign out.
+- `help`: User asks what the agent can do, asks for help, or greets without another concrete request.
+- `catalog_query`: Product, catalog, or price availability questions.
+- `quote_preview`: Non-persistent calculations or preliminary quote previews.
+- `quote_history`: List or inspect persisted quotes (staff only).
+- `quote_create`: Create or persist a new quote for a customer (staff only).
+- `out_of_scope`: Any request unrelated to Smart Quote Agent capabilities.
+
+### Flow Architecture
 
 ```mermaid
 flowchart TD
     User([User Input]) --> Router[Heuristic Router]
-    Router -->|Unequivocal| DirectBranch{Intent}
+    Router -->|Unequivocal| DirectIntent{Intent}
     Router -->|Ambiguous| StructuredClassifier[Structured Classifier: structured / low]
-    StructuredClassifier --> DirectBranch
+    StructuredClassifier --> DirectIntent
 
-    DirectBranch -->|login| LoginHITL[Masked Login Prompt]
-    DirectBranch -->|logout| Logout[Clear Auth State]
-    DirectBranch -->|agent_request| ControlledAgent[Controlled Agent: controlled_agent / low]
-    DirectBranch -->|quote_create| AuthGuard[Host Auth Guard]
+    DirectIntent --> ScopeGate[Host Scope Gate: allowed_actions]
 
-    AuthGuard -->|Non-Staff / Anon| AccessDenied[Access Denied]
+    ScopeGate -->|out_of_scope| OutOfScopeOutput[Host: Out-of-Scope Response]
+    ScopeGate -->|help| HelpOutput[Host: Role-Specific Guidance]
+    ScopeGate -->|Unauthorized Action| DeniedOutput[Host: Permission Denied]
+
+    ScopeGate -->|login allowed| LoginHITL[Masked Login Prompt]
+    ScopeGate -->|logout allowed| Logout[Clear Auth State]
+    ScopeGate -->|catalog_query / quote_preview / allowed quote_history| ControlledAgent[Controlled Agent: controlled_agent / low]
+    ScopeGate -->|quote_create allowed| AuthGuard[Host Auth Guard]
+
     AuthGuard -->|Staff| QuotePlanner[Quote Planner: structured / low]
-
     QuotePlanner -->|Incomplete / Missing Data| ClarifyPrompt[Clarification Request]
     QuotePlanner -->|Valid Request| ResolveData[Resolve DB IDs & Catalog Prices]
-
     ResolveData -->|Not Found / Ambiguous| AmbiguityMessage[Disambiguation / Error]
     ResolveData -->|Resolved| DiscountHITL[Discount HITL Prompt 0-30%]
-
     DiscountHITL --> QuoteReview[Authoritative Host Quote Review Display]
     QuoteReview --> CreateQuoteTool[Direct ToolExecutor: create_quote]
     CreateQuoteTool --> ApprovalHITL[Phase 5 Console Approval]
-
     ApprovalHITL -->|Approved| AtomicWrite[(SQLite: quotes & quote_lines)]
-    ApprovalHITL -->|Denied| DeniedOutput[Quote Cancelled / Rollback]
+    ApprovalHITL -->|Denied| CancelledOutput[Quote Cancelled / Rollback]
 ```
 
 ---
@@ -51,11 +64,13 @@ The demo requires and establishes two distinct model bindings, each configured e
 1. **`structured_model`** (`profile="structured"`, `level="low"`):
    - Used for deterministic JSON schema outputs (`IntentDecision` and `QuoteRequest`).
    - Does not bind tools; operates with structured output policies and strict schema validation (`extra="forbid"`).
+   - Injected with role context and recognized actions, classifying user intent even if forbidden for the current role.
    - Instructed to extract only information explicitly stated and never invent or guess missing customer names, products, or quantities.
 2. **`controlled_agent_model`** (`profile="controlled_agent"`, `level="low"`):
-   - Used for conversational tool use and general assistant inquiries.
+   - Used for conversational tool use on allowed inquiries (`catalog_query`, `quote_preview`, `quote_history`).
    - Bound with host-managed tools via `.with_tools(agent_registry, executor=executor)`.
    - Never exposed to `create_quote`.
+   - **Defense-in-Depth System Instruction**: Injects dynamic role, bound conversational tools, explicit disclaimers of generic capabilities (browsing, file analysis, code execution/editing, image generation, external connected apps), and instructions to return a containment message if an out-of-scope query leaks through.
 
 ### Experimental Dynamic Tools Flag
 When instantiating `CodexRuntime`, the runtime must be initialized with:
@@ -145,14 +160,14 @@ examples/smart_quote_agent/
 
 All demo accounts use the trivial password `1234` for ease of local testing:
 
-| Username | Password | Role | Customer Associated | Permissions | Conversational Tools Available |
-|---|---|---|---|---|---|
-| `staff` | `1234` | `staff` | *None* | `catalog.read`, `quote.calculate`, `customer.read`, `quote.create`, `quote.read` | `list_products`, `find_product`, `calculate_quote`, `find_customer`, `list_quotes`, `get_quote` |
-| `client1` | `1234` | `client` | Acme Corp. (`1`) | `catalog.read`, `quote.calculate` | `list_products`, `find_product`, `calculate_quote` |
-| `client2` | `1234` | `client` | Globex LLC (`2`) | `catalog.read`, `quote.calculate` | `list_products`, `find_product`, `calculate_quote` |
-| `client3` | `1234` | `client` | Initech (`3`) | `catalog.read`, `quote.calculate` | `list_products`, `find_product`, `calculate_quote` |
-| `client4` | `1234` | `client` | Northwind Traders (`4`) | `catalog.read`, `quote.calculate` | `list_products`, `find_product`, `calculate_quote` |
-| *Anonymous* | — | *None* | *None* | `catalog.read`, `quote.calculate` | `list_products`, `find_product`, `calculate_quote` |
+| Role | Customer Associated | Allowed Actions (`allowed_actions`) | Permissions (`ToolPermissionPolicy`) | Conversational Tools Available |
+|---|---|---|---|---|
+| `staff` | *None* | `logout`, `help`, `catalog_query`, `quote_preview`, `quote_history`, `quote_create` | `catalog.read`, `quote.calculate`, `customer.read`, `quote.create`, `quote.read` | `list_products`, `find_product`, `calculate_quote`, `find_customer`, `list_quotes`, `get_quote` |
+| `client1` (`client`) | Acme Corp. (`1`) | `logout`, `help`, `catalog_query`, `quote_preview` | `catalog.read`, `quote.calculate` | `list_products`, `find_product`, `calculate_quote` |
+| `client2` (`client`) | Globex LLC (`2`) | `logout`, `help`, `catalog_query`, `quote_preview` | `catalog.read`, `quote.calculate` | `list_products`, `find_product`, `calculate_quote` |
+| `client3` (`client`) | Initech (`3`) | `logout`, `help`, `catalog_query`, `quote_preview` | `catalog.read`, `quote.calculate` | `list_products`, `find_product`, `calculate_quote` |
+| `client4` (`client`) | Northwind Traders (`4`) | `logout`, `help`, `catalog_query`, `quote_preview` | `catalog.read`, `quote.calculate` | `list_products`, `find_product`, `calculate_quote` |
+| *Anonymous* | *None* | `login`, `help`, `catalog_query`, `quote_preview` | `catalog.read`, `quote.calculate` | `list_products`, `find_product`, `calculate_quote` |
 
 > [!WARNING]
 > **Demo Security Disclaimer**: Authentication in this example is intended exclusively for demonstrating host-managed authorization and HITL workflows. It does not use salted password hashing, JWT tokens, or production IAM infrastructure.
@@ -199,7 +214,7 @@ uv run python examples/smart_quote_agent/app.py --offline
 ```
 
 ### Running the Test Suite
-The complete 24-point audit and hardening test suite runs deterministically with zero quota consumption:
+The complete 44-point audit, containment, and hardening test suite runs deterministically with zero quota consumption:
 ```bash
 uv run pytest examples/smart_quote_agent/tests
 ```
@@ -208,20 +223,29 @@ uv run pytest examples/smart_quote_agent/tests
 
 ## 9. Interactive Scenarios & Transcripts
 
-### Scenario A: General Capabilities & Assistant Guidance
+### Scenario A: General Capabilities & Assistant Guidance (Host Deterministic)
 ```text
-> Que puedo hacer con este agente?
+> Que cosas podría hacer?
 
-Soy el asistente Smart Quote. Puedo ayudarte con:
-1. Consultar el catálogo de productos y especificaciones disponibles.
-2. Calcular subtotales y presupuestos preliminares sin compromiso.
-3. Si eres personal de ventas (staff), registrar cotizaciones formales con descuentos y persistencia en base de datos.
-4. Revisar el historial de cotizaciones recientes emitidas para clientes.
+I can help you consult products and prices or calculate preliminary quote previews. You can also log in to access privileged features.
 
-Para comenzar, puedes escribir 'productos' o iniciar sesión con 'login'.
+> help
+
+I can help you consult products and prices or calculate preliminary quote previews. You can also log in to access privileged features.
 ```
 
-### Scenario B: Anonymous Catalog Exploration & Authorization Denied
+### Scenario B: Application-Scope Containment (Unsupported General-Purpose Requests)
+```text
+> Write a python script to parse CSV files
+
+That request is outside the scope of this agent. I can help you consult products, prices, or calculate a preliminary quote preview.
+
+> Search the web for latest tech news
+
+That request is outside the scope of this agent. I can help you consult products, prices, or calculate a preliminary quote preview.
+```
+
+### Scenario C: Anonymous Catalog Exploration & Authorization Denied
 ```text
 > What notebooks do you have?
 
@@ -238,7 +262,7 @@ Available products:
 Access denied. Persisted quotes can only be created by staff.
 ```
 
-### Scenario C: Client Login & Authorization Denied
+### Scenario D: Client Login & Authorization Denied
 ```text
 > login
 Username: client2
@@ -253,21 +277,21 @@ Access denied. Persisted quotes can only be created by staff.
 Logged out. Continuing as anonymous.
 ```
 
-### Scenario D: Incomplete Quote Request (Clarification Safeguard)
+### Scenario E: Incomplete Quote Request (Clarification Safeguard)
 ```text
 [staff] > Create a quote for Globex
 
 Could not extract complete quote details. Please specify both the customer name and items with quantities (e.g. 'Create a quote for Globex for 2 Notebook Pro').
 ```
 
-### Scenario E: Ambiguous Search Query (Disambiguation Safeguard)
+### Scenario F: Ambiguous Search Query (Disambiguation Safeguard)
 ```text
 [staff] > Create a quote for Globex for 2 Notebook
 
 Multiple products matched 'Notebook': Notebook Pro (NB-PRO), Notebook Air (NB-AIR). Please specify exact SKU or name.
 ```
 
-### Scenario F: Staff Login, Discount HITL, Host Quote Review & Approved Creation
+### Scenario G: Staff Login, Discount HITL, Host Quote Review & Approved Creation
 ```text
 > login
 Username: staff
@@ -303,7 +327,7 @@ Approve quote creation? [y/N]: y
 Total: $3,420.00
 ```
 
-### Scenario G: Staff Quote Creation Denied at Final Approval
+### Scenario H: Staff Quote Creation Denied at Final Approval
 ```text
 [staff] > Create a quote for Globex for 1 Notebook Air.
 
@@ -331,7 +355,7 @@ Approve quote creation? [y/N]: n
 Quote creation was denied by user. Nothing was persisted.
 ```
 
-### Scenario H: Inspecting Quote History (Staff Only)
+### Scenario I: Inspecting Quote History (Staff Only)
 ```text
 [staff] > Show the latest quotes
 
@@ -363,10 +387,11 @@ Observability is intentionally structured as a **separate follow-on phase** afte
 
 ---
 
-## 11. 24-Point Audit & Verification Matrix
+## 11. 44-Point Audit, Scope Containment & Verification Matrix
 
-The test suite in `examples/smart_quote_agent/tests/test_agent.py` validates 24 distinct architectural audit points:
+The test suite in `examples/smart_quote_agent/tests/test_agent.py` validates 44 distinct architectural audit and containment points:
 
+### Core Architecture & Workflow (Points 1–24)
 1. **Deterministic Router**: Unequivocal phrases (`login`, `logout`, `create quote`, `products`) route without LLM invocation.
 2. **Ambiguous Routing**: Ambiguous inputs invoke the low-level structured classifier.
 3. **Controlled Agent Queries**: Capability and catalog queries reach the controlled agent path.
@@ -392,11 +417,34 @@ The test suite in `examples/smart_quote_agent/tests/test_agent.py` validates 24 
 23. **Transparent Exceptions**: Live model exceptions (e.g. `TransportError`) propagate cleanly without being swallowed.
 24. **Legacy Signature Removal**: The legacy single `model` parameter is completely removed from `create_demo_graph`.
 
+### Application-Scope Containment (Points 25–44 / `test_scope_01` – `test_scope_20`)
+25. **Scope Heuristic Help/Greeting**: Exact greeting and help phrases route deterministically to `help` without LLM invocation.
+26. **Scope Heuristic Unequivocal Catalog**: Exact catalog and product phrases route deterministically to `catalog_query` without LLM invocation.
+27. **Scope Heuristic Unequivocal Quotes**: Exact quote phrases route deterministically to `quote_history` without LLM invocation.
+28. **Scope Heuristic Ambiguity Deferral**: Open-ended or arbitrary tasks return `None` from heuristic and defer to the structured classifier.
+29. **Scope Classifier Out-of-Scope Recognition**: Generic assistant requests (coding, essays, web search, image generation) are classified as `out_of_scope`.
+30. **Scope Classifier Catalog Recognition**: Product and price queries are classified as `catalog_query`.
+31. **Scope Classifier Role Context**: Classifier prompt receives current access level and allowed actions context.
+32. **Scope Policy Anonymous**: Anonymous user policy contains only public actions (`login`, `help`, `catalog_query`, `quote_preview`).
+33. **Scope Policy Client**: Client user policy excludes quote creation and quote history (`logout`, `help`, `catalog_query`, `quote_preview`).
+34. **Scope Policy Staff**: Staff user policy includes all supported actions (`logout`, `help`, `catalog_query`, `quote_preview`, `quote_history`, `quote_create`).
+35. **Scope Gate Out-of-Scope (Anonymous)**: Unsupported queries return concise host containment reply without invoking the controlled LLM.
+36. **Scope Gate Out-of-Scope (Staff)**: Unsupported queries for staff also return concise host containment reply without invoking the controlled LLM.
+37. **Scope Gate Help (Anonymous)**: Returns deterministic public guidance host-side without LLM invocation.
+38. **Scope Gate Help (Staff)**: Returns deterministic staff guidance host-side without LLM invocation.
+39. **Scope Gate Allowed Catalog Query**: Supported catalog inquiries pass the scope gate and reach the controlled agent.
+40. **Scope Gate Allowed Quote Preview**: Supported preliminary quote preview requests pass the scope gate and reach the controlled agent.
+41. **Scope Gate Allowed Staff History**: Quote history inquiries for staff pass the scope gate and reach the controlled agent.
+42. **Scope Controlled Agent Instruction**: Controlled agent system instruction explicitly disclaims generic assistant capabilities (browsing, files, code execution, image generation, external apps).
+43. **Scope Action Matrix Full Sweep**: Complete matrix of 8 actions verified across anonymous, client, and staff access levels.
+44. **Scope End-to-End Workflow Integrity**: Quote creation, HITL discount, review display, approval, and SQLite persistence continue operating without regressions.
+
 ---
 
 ## 12. Security Boundaries & Invariants
 
 ### Guarantees Enforced:
+- **Application-Scope Containment**: General-purpose assistant requests (browsing the internet, analyzing arbitrary files, writing code, generating images, connecting external apps) are classified as `out_of_scope` and intercepted host-side by `scope_gate_node` without consuming controlled agent LLM turns. The controlled agent prompt provides defense-in-depth disclaimers.
 - **Host-Owned Credentials**: Passwords collected via `getpass` are evaluated in-memory and deleted (`del password`). They never enter LangGraph state, runtime inputs, tool arguments, or telemetry.
 - **Dual-Layer Authorization**: Host Graph Guard rejects unauthorized users before quote planning; `ToolPermissionPolicy` enforces fine-grained permissions inside `ToolExecutor`.
 - **Absolute Tool Segregation**: The conversational agent registry *never* contains `create_quote`. Write mutations are exclusively reachable through the deterministic workflow path.

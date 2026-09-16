@@ -53,6 +53,7 @@ from database import (  # noqa: E402
     seed_database,
 )
 from graph import (  # noqa: E402
+    allowed_actions,
     classify_intent_heuristic,
     create_demo_graph,
 )
@@ -156,8 +157,13 @@ def test_point_01_deterministic_router_unequivocal_commands() -> None:
     assert classify_intent_heuristic("crear cotizacion") == "quote_create"
     assert classify_intent_heuristic("nueva cotizacion") == "quote_create"
     assert classify_intent_heuristic("presupuesto para Globex") == "quote_create"
-    assert classify_intent_heuristic("products") == "agent_request"
-    assert classify_intent_heuristic("catalogo") == "agent_request"
+    assert classify_intent_heuristic("products") == "catalog_query"
+    assert classify_intent_heuristic("catalogo") == "catalog_query"
+    assert classify_intent_heuristic("help") == "help"
+    assert classify_intent_heuristic("ayuda") == "help"
+    assert classify_intent_heuristic("hello") == "help"
+    assert classify_intent_heuristic("hola") == "help"
+    assert classify_intent_heuristic("show quotes") == "quote_history"
 
 
 @pytest.mark.asyncio
@@ -165,13 +171,13 @@ async def test_point_02_ambiguous_routing_invokes_structured_classifier(
     db_conn: sqlite3.Connection, staff_user: AuthenticatedUser
 ) -> None:
     """Validate ambiguous requests return None in heuristic and invoke structured model."""
-    ambiguous_input = "Necesito ver precios de laptops y cotizar si es posible"
+    ambiguous_input = "I want to inspect laptop prices and check quotes"
     assert classify_intent_heuristic(ambiguous_input) is None
 
     structured_runtime = FakeRuntime(
-        turns=[FakeTurn(value=IntentDecision(intent="agent_request").model_dump_json())]
+        turns=[FakeTurn(value=IntentDecision(intent="catalog_query").model_dump_json())]
     )
-    agent_runtime = FakeRuntime(turns=[FakeTurn(value="Respuesta del agente")])
+    agent_runtime = FakeRuntime(turns=[FakeTurn(value="Agent response")])
 
     structured_model = structured_runtime.model(profile="structured", level="low")
     controlled_model = agent_runtime.model(profile="controlled_agent", level="low")
@@ -187,35 +193,27 @@ async def test_point_02_ambiguous_routing_invokes_structured_classifier(
         "authenticated_user": staff_user,
     }
     result = await graph.ainvoke(state)
-    assert result.get("intent") == "agent_request"
+    assert result.get("intent") == "catalog_query"
+    assert result.get("action_allowed") is True
 
 
 @pytest.mark.asyncio
-async def test_point_03_help_capability_reaches_controlled_agent_path(
+async def test_point_03_help_capability_handled_host_side_without_controlled_agent(
     db_conn: sqlite3.Connection, staff_user: AuthenticatedUser
 ) -> None:
-    """Validate capability questions reach controlled LLM rather than a hardcoded response."""
-    help_query = "Que puedo hacer con este agente?"
+    """Validate capability questions receive a deterministic host response without controlled LLM."""
+    help_query = "What can I do with this agent?"
     assert classify_intent_heuristic(help_query) is None
 
     structured_runtime = FakeRuntime(
-        turns=[FakeTurn(value=IntentDecision(intent="agent_request").model_dump_json())]
+        turns=[FakeTurn(value=IntentDecision(intent="help").model_dump_json())]
     )
-    agent_runtime = FakeRuntime(
-        turns=[
-            FakeTurn(
-                value="Soy el asistente Smart Quote. Puedo ayudarte a consultar productos y registrar cotizaciones."
-            )
-        ]
-    )
-
-    structured_model = structured_runtime.model(profile="structured", level="low")
-    controlled_model = agent_runtime.model(profile="controlled_agent", level="low")
+    agent_runtime = FakeRuntime(turns=[])  # Empty turns: controlled LLM must not be invoked
 
     graph = create_demo_graph(
         conn=db_conn,
-        structured_model=structured_model,
-        controlled_agent_model=controlled_model,
+        structured_model=structured_runtime.model(profile="structured", level="low"),
+        controlled_agent_model=agent_runtime.model(profile="controlled_agent", level="low"),
     )
 
     state: DemoState = {
@@ -223,7 +221,10 @@ async def test_point_03_help_capability_reaches_controlled_agent_path(
         "authenticated_user": staff_user,
     }
     result = await graph.ainvoke(state)
-    assert "Smart Quote" in result.get("output", "")
+    assert result.get("intent") == "help"
+    assert result.get("action_allowed") is True
+    output = result.get("output", "")
+    assert "consult products and prices" in output.lower() or "create quotes" in output.lower()
 
 
 def test_point_04_distinct_model_bindings_for_structured_and_controlled() -> None:
@@ -716,3 +717,598 @@ def test_legacy_model_parameter_removed_from_create_demo_graph() -> None:
     assert "model" not in sig.parameters
     assert "structured_model" in sig.parameters
     assert "controlled_agent_model" in sig.parameters
+
+
+# =============================================================================
+# Scope Containment & Host Policy Tests (20 Audit Requirements)
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_scope_01_greeting_resolves_to_help_and_avoids_generic_assistant_claims(
+    db_conn: sqlite3.Connection,
+) -> None:
+    """Validate greeting input resolves to help and never claims generic capabilities.
+
+    Args:
+        db_conn: SQLite connection fixture.
+    """
+    assert classify_intent_heuristic("Hello") == "help"
+    assert classify_intent_heuristic("Hola") == "help"
+
+    agent_runtime = FakeRuntime(turns=[])
+    graph = create_demo_graph(
+        conn=db_conn,
+        controlled_agent_model=agent_runtime.model(profile="controlled_agent", level="low"),
+    )
+
+    result = await graph.ainvoke({"input": "Hello", "authenticated_user": None})
+    output = result.get("output", "").lower()
+    assert result.get("intent") == "help"
+    assert result.get("action_allowed") is True
+    assert any(term in output for term in ("product", "price", "quote", "preview"))
+    for generic in ("browse", "internet", "code", "image", "file", "weather", "fastapi"):
+        assert generic not in output
+
+
+@pytest.mark.asyncio
+async def test_scope_02_capability_query_returns_role_appropriate_scope(
+    db_conn: sqlite3.Connection,
+    client_user: AuthenticatedUser,
+    staff_user: AuthenticatedUser,
+) -> None:
+    """Validate capability questions return only role-appropriate application actions.
+
+    Args:
+        db_conn: SQLite connection fixture.
+        client_user: Authenticated client user fixture.
+        staff_user: Authenticated staff user fixture.
+    """
+    agent_runtime = FakeRuntime(turns=[])
+    graph = create_demo_graph(
+        conn=db_conn,
+        controlled_agent_model=agent_runtime.model(profile="controlled_agent", level="low"),
+    )
+
+    # 1. Anonymous user
+    res_anon = await graph.ainvoke({"input": "What things could I do?", "authenticated_user": None})
+    out_anon = res_anon.get("output", "").lower()
+    assert "log in" in out_anon or "login" in out_anon
+    assert "create quotes" not in out_anon
+
+    # 2. Client user
+    res_client = await graph.ainvoke(
+        {"input": "What things could I do?", "authenticated_user": client_user}
+    )
+    out_client = res_client.get("output", "").lower()
+    assert "log out" in out_client or "logout" in out_client
+    assert "create quotes" not in out_client
+
+    # 3. Staff user
+    res_staff = await graph.ainvoke(
+        {"input": "What things could I do?", "authenticated_user": staff_user}
+    )
+    out_staff = res_staff.get("output", "").lower()
+    assert "create quotes" in out_staff or "persisted quotes" in out_staff
+
+
+@pytest.mark.asyncio
+async def test_scope_03_unrelated_query_classifies_as_out_of_scope(
+    db_conn: sqlite3.Connection,
+    staff_user: AuthenticatedUser,
+) -> None:
+    """Validate unrelated general knowledge questions classify as out_of_scope.
+
+    Args:
+        db_conn: SQLite connection fixture.
+        staff_user: Authenticated staff user fixture.
+    """
+    unrelated_input = "How do I implement an API with FastAPI?"
+    assert classify_intent_heuristic(unrelated_input) is None
+
+    structured_runtime = FakeRuntime(
+        turns=[FakeTurn(value=IntentDecision(intent="out_of_scope").model_dump_json())]
+    )
+    agent_runtime = FakeRuntime(turns=[])
+    graph = create_demo_graph(
+        conn=db_conn,
+        structured_model=structured_runtime.model(profile="structured", level="low"),
+        controlled_agent_model=agent_runtime.model(profile="controlled_agent", level="low"),
+    )
+
+    result = await graph.ainvoke({"input": unrelated_input, "authenticated_user": staff_user})
+    assert result.get("intent") == "out_of_scope"
+    assert result.get("action_allowed") is False
+
+
+@pytest.mark.asyncio
+async def test_scope_04_out_of_scope_never_reaches_controlled_agent(
+    db_conn: sqlite3.Connection,
+) -> None:
+    """Validate out-of-scope requests never invoke the controlled agent LLM.
+
+    Args:
+        db_conn: SQLite connection fixture.
+    """
+    structured_runtime = FakeRuntime(
+        turns=[FakeTurn(value=IntentDecision(intent="out_of_scope").model_dump_json())]
+    )
+    agent_runtime = FakeRuntime(turns=[])
+    graph = create_demo_graph(
+        conn=db_conn,
+        structured_model=structured_runtime.model(profile="structured", level="low"),
+        controlled_agent_model=agent_runtime.model(profile="controlled_agent", level="low"),
+    )
+
+    result = await graph.ainvoke(
+        {"input": "Write me a poem about summer", "authenticated_user": None}
+    )
+    assert result.get("intent") == "out_of_scope"
+    assert result.get("action_allowed") is False
+    assert "outside the scope" in result.get("output", "").lower()
+
+
+@pytest.mark.asyncio
+async def test_scope_05_out_of_scope_response_does_not_answer_underlying_question(
+    db_conn: sqlite3.Connection,
+) -> None:
+    """Validate out-of-scope response provides a refusal without answering the topic.
+
+    Args:
+        db_conn: SQLite connection fixture.
+    """
+    structured_runtime = FakeRuntime(
+        turns=[FakeTurn(value=IntentDecision(intent="out_of_scope").model_dump_json())]
+    )
+    agent_runtime = FakeRuntime(turns=[])
+    graph = create_demo_graph(
+        conn=db_conn,
+        structured_model=structured_runtime.model(profile="structured", level="low"),
+        controlled_agent_model=agent_runtime.model(profile="controlled_agent", level="low"),
+    )
+
+    result = await graph.ainvoke(
+        {"input": "How do I implement an API with FastAPI?", "authenticated_user": None}
+    )
+    output = result.get("output", "")
+    assert "outside the scope" in output.lower()
+    for forbidden in ("fastapi", "uvicorn", "endpoint", "@app", "def root"):
+        assert forbidden not in output.lower()
+
+
+@pytest.mark.asyncio
+async def test_scope_06_ambiguous_supported_requests_invoke_structured_classifier(
+    db_conn: sqlite3.Connection,
+    staff_user: AuthenticatedUser,
+) -> None:
+    """Validate ambiguous requests invoke the low-level structured classifier.
+
+    Args:
+        db_conn: SQLite connection fixture.
+        staff_user: Authenticated staff user fixture.
+    """
+    ambiguous = "Could you check the pricing on available hardware?"
+    assert classify_intent_heuristic(ambiguous) is None
+
+    structured_runtime = FakeRuntime(
+        turns=[FakeTurn(value=IntentDecision(intent="catalog_query").model_dump_json())]
+    )
+    agent_runtime = FakeRuntime(turns=[FakeTurn(value="Hardware pricing list")])
+    graph = create_demo_graph(
+        conn=db_conn,
+        structured_model=structured_runtime.model(profile="structured", level="low"),
+        controlled_agent_model=agent_runtime.model(profile="controlled_agent", level="low"),
+    )
+
+    result = await graph.ainvoke({"input": ambiguous, "authenticated_user": staff_user})
+    assert result.get("intent") == "catalog_query"
+    assert result.get("action_allowed") is True
+
+
+@pytest.mark.asyncio
+async def test_scope_07_classifier_receives_access_level_and_allowed_actions_context(
+    db_conn: sqlite3.Connection,
+    client_user: AuthenticatedUser,
+) -> None:
+    """Validate structured classifier prompt receives access level and allowed action context.
+
+    Args:
+        db_conn: SQLite connection fixture.
+        client_user: Authenticated client user fixture.
+    """
+    captured_prompts: list[str] = []
+
+    class InspectingModel:
+        """Double that captures input prompt text."""
+
+        def with_structured_output(self, schema: Any) -> Any:
+            del schema
+            return self
+
+        async def ainvoke(self, input_: Any, **kwargs: Any) -> Any:
+            del kwargs
+            for msg in getattr(input_, "messages", ()):
+                text = getattr(msg, "text", "")
+                if text:
+                    captured_prompts.append(text)
+            return type("Res", (), {"value": IntentDecision(intent="catalog_query")})()
+
+    graph = create_demo_graph(
+        conn=db_conn,
+        structured_model=InspectingModel(),  # type: ignore[arg-type]
+    )
+
+    await graph.ainvoke(
+        {"input": "What laptops are currently available?", "authenticated_user": client_user}
+    )
+    assert len(captured_prompts) >= 1
+    system_text = captured_prompts[0]
+    assert "Current access level: client" in system_text
+    assert "Actions currently available for this access level:" in system_text
+    assert "out_of_scope" in system_text
+
+
+def test_scope_08_anonymous_allowed_actions() -> None:
+    """Validate anonymous user action policy includes only public actions."""
+    assert allowed_actions(None) == frozenset({"login", "help", "catalog_query", "quote_preview"})
+
+
+def test_scope_09_client_allowed_actions_exclude_quote_history_and_create(
+    client_user: AuthenticatedUser,
+) -> None:
+    """Validate client user action policy excludes quote_history and quote_create.
+
+    Args:
+        client_user: Authenticated client user fixture.
+    """
+    actions = allowed_actions(client_user)
+    assert "quote_history" not in actions
+    assert "quote_create" not in actions
+    assert actions == frozenset({"logout", "help", "catalog_query", "quote_preview"})
+
+
+def test_scope_10_staff_allowed_actions_include_quote_history_and_create(
+    staff_user: AuthenticatedUser,
+) -> None:
+    """Validate staff user action policy includes quote_history and quote_create.
+
+    Args:
+        staff_user: Authenticated staff user fixture.
+    """
+    actions = allowed_actions(staff_user)
+    assert "quote_history" in actions
+    assert "quote_create" in actions
+    assert actions == frozenset(
+        {
+            "logout",
+            "help",
+            "catalog_query",
+            "quote_preview",
+            "quote_history",
+            "quote_create",
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_scope_11_client_quote_history_recognized_but_denied_host_side(
+    db_conn: sqlite3.Connection,
+    client_user: AuthenticatedUser,
+) -> None:
+    """Validate client asking for quote history is recognized as quote_history but denied by host.
+
+    Args:
+        db_conn: SQLite connection fixture.
+        client_user: Authenticated client user fixture.
+    """
+    agent_runtime = FakeRuntime(turns=[])
+    graph = create_demo_graph(
+        conn=db_conn,
+        controlled_agent_model=agent_runtime.model(profile="controlled_agent", level="low"),
+    )
+
+    result = await graph.ainvoke(
+        {"input": "Show the latest quotes", "authenticated_user": client_user}
+    )
+    assert result.get("intent") == "quote_history"
+    assert result.get("action_allowed") is False
+    assert "staff only" in result.get("output", "").lower()
+    assert "outside the scope" not in result.get("output", "").lower()
+
+
+@pytest.mark.asyncio
+async def test_scope_12_anonymous_and_client_quote_create_denied_before_workflow(
+    db_conn: sqlite3.Connection,
+    client_user: AuthenticatedUser,
+) -> None:
+    """Validate quote creation is blocked host-side for anonymous and client users.
+
+    Args:
+        db_conn: SQLite connection fixture.
+        client_user: Authenticated client user fixture.
+    """
+    graph = create_demo_graph(conn=db_conn)
+
+    # Anonymous
+    res_anon = await graph.ainvoke({"input": "create quote for Globex", "authenticated_user": None})
+    assert res_anon.get("intent") == "quote_create"
+    assert res_anon.get("action_allowed") is False
+    assert res_anon.get("quote_authorized") is False
+    assert "access denied" in res_anon.get("output", "").lower()
+
+    # Client
+    res_client = await graph.ainvoke(
+        {"input": "create quote for Globex", "authenticated_user": client_user}
+    )
+    assert res_client.get("intent") == "quote_create"
+    assert res_client.get("action_allowed") is False
+    assert res_client.get("quote_authorized") is False
+    assert "access denied" in res_client.get("output", "").lower()
+
+
+@pytest.mark.asyncio
+async def test_scope_13_staff_quote_create_follows_deterministic_write_path(
+    db_conn: sqlite3.Connection,
+    staff_user: AuthenticatedUser,
+) -> None:
+    """Validate staff quote creation proceeds through deterministic workflow nodes.
+
+    Args:
+        db_conn: SQLite connection fixture.
+        staff_user: Authenticated staff user fixture.
+    """
+    graph = create_demo_graph(
+        conn=db_conn,
+        discount_prompter=lambda _subtotal: 10,
+        approval_handler=ConsoleApprovalHandler(input_func=lambda _prompt: "yes"),
+        quote_reviewer=lambda _draft: None,
+    )
+
+    result = await graph.ainvoke(
+        {
+            "input": "create quote for Globex for 2 Notebook Pro",
+            "authenticated_user": staff_user,
+        }
+    )
+    assert result.get("intent") == "quote_create"
+    assert result.get("action_allowed") is True
+    assert result.get("quote_authorized") is True
+    assert result.get("created_quote_id") is not None
+    assert "[SUCCESS]" in result.get("output", "")
+
+
+def test_scope_14_create_quote_absent_from_every_conversational_registry(
+    db_conn: sqlite3.Connection,
+    client_user: AuthenticatedUser,
+    staff_user: AuthenticatedUser,
+) -> None:
+    """Validate create_quote is never exposed in any conversational tool registry.
+
+    Args:
+        db_conn: SQLite connection fixture.
+        client_user: Authenticated client user fixture.
+        staff_user: Authenticated staff user fixture.
+    """
+    for user in (None, client_user, staff_user):
+        reg = get_agent_tool_registry(db_conn, user)
+        names = {d.name for d in reg.definitions()}
+        assert "create_quote" not in names
+
+
+@pytest.mark.asyncio
+async def test_scope_15_supported_catalog_queries_reach_controlled_agent(
+    db_conn: sqlite3.Connection,
+    staff_user: AuthenticatedUser,
+) -> None:
+    """Validate supported catalog inquiries reach controlled agent and execute tools.
+
+    Args:
+        db_conn: SQLite connection fixture.
+        staff_user: Authenticated staff user fixture.
+    """
+    agent_runtime = FakeRuntime(
+        turns=[
+            FakeTurn(
+                value="Notebook Pro and Wireless Mouse in catalog",
+                tool_calls=(("c1", "list_products", {}),),
+            ),
+        ]
+    )
+    graph = create_demo_graph(
+        conn=db_conn,
+        controlled_agent_model=agent_runtime.model(profile="controlled_agent", level="low"),
+    )
+
+    result = await graph.ainvoke({"input": "products", "authenticated_user": staff_user})
+    assert result.get("intent") == "catalog_query"
+    assert result.get("action_allowed") is True
+    assert "Notebook Pro" in result.get("output", "")
+
+
+@pytest.mark.asyncio
+async def test_scope_16_supported_quote_preview_reaches_controlled_agent(
+    db_conn: sqlite3.Connection,
+) -> None:
+    """Validate quote preview calculations reach controlled agent and tool executor.
+
+    Args:
+        db_conn: SQLite connection fixture.
+    """
+    agent_runtime = FakeRuntime(
+        turns=[
+            FakeTurn(
+                value="Subtotal is $2,400.00",
+                tool_calls=(
+                    (
+                        "c1",
+                        "calculate_quote",
+                        {"items": [{"product_id": 1, "quantity": 2}], "discount_percent": 0},
+                    ),
+                ),
+            ),
+        ]
+    )
+    graph = create_demo_graph(
+        conn=db_conn,
+        structured_model=FakeRuntime(
+            turns=[FakeTurn(value=IntentDecision(intent="quote_preview").model_dump_json())]
+        ).model(profile="structured", level="low"),
+        controlled_agent_model=agent_runtime.model(profile="controlled_agent", level="low"),
+    )
+
+    result = await graph.ainvoke(
+        {"input": "Calculate price preview for 2 laptops", "authenticated_user": None}
+    )
+    assert result.get("intent") == "quote_preview"
+    assert result.get("action_allowed") is True
+    assert "Subtotal is $2,400.00" in result.get("output", "")
+
+
+@pytest.mark.asyncio
+async def test_scope_17_staff_quote_history_reaches_controlled_agent_with_read_tools(
+    db_conn: sqlite3.Connection,
+    staff_user: AuthenticatedUser,
+) -> None:
+    """Validate staff quote history inquiries reach controlled agent and read tools.
+
+    Args:
+        db_conn: SQLite connection fixture.
+        staff_user: Authenticated staff user fixture.
+    """
+    agent_runtime = FakeRuntime(
+        turns=[
+            FakeTurn(
+                value="Quote #1 for Globex",
+                tool_calls=(("c1", "list_quotes", {"limit": 5}),),
+            ),
+        ]
+    )
+    graph = create_demo_graph(
+        conn=db_conn,
+        controlled_agent_model=agent_runtime.model(profile="controlled_agent", level="low"),
+    )
+
+    result = await graph.ainvoke({"input": "show quotes", "authenticated_user": staff_user})
+    assert result.get("intent") == "quote_history"
+    assert result.get("action_allowed") is True
+    assert "Quote #1 for Globex" in result.get("output", "")
+
+
+@pytest.mark.asyncio
+async def test_scope_18_controlled_agent_system_instruction_prohibits_generic_capabilities(
+    db_conn: sqlite3.Connection,
+    staff_user: AuthenticatedUser,
+) -> None:
+    """Validate controlled agent system instruction explicitly disclaims generic capabilities.
+
+    Args:
+        db_conn: SQLite connection fixture.
+        staff_user: Authenticated staff user fixture.
+    """
+    captured_system_instructions: list[str] = []
+
+    class InspectingAgentModel:
+        """Double that captures the system prompt passed to controlled_agent."""
+
+        def with_tools(self, registry: Any, executor: Any = None) -> Any:
+            del registry, executor
+            return self
+
+        async def ainvoke(self, input_: Any, **kwargs: Any) -> Any:
+            del kwargs
+            for msg in getattr(input_, "messages", ()):
+                if getattr(msg, "role", "") == "system":
+                    text = getattr(msg, "text", "")
+                    if text:
+                        captured_system_instructions.append(text)
+            return type("Res", (), {"value": "Inspected response"})()
+
+    graph = create_demo_graph(
+        conn=db_conn,
+        controlled_agent_model=InspectingAgentModel(),  # type: ignore[arg-type]
+    )
+
+    await graph.ainvoke({"input": "products", "authenticated_user": staff_user})
+    assert len(captured_system_instructions) >= 1
+    sys_prompt = captured_system_instructions[0]
+    assert "You are ONLY the Smart Quote Agent for this application." in sys_prompt
+    assert "Current role: staff" in sys_prompt
+    assert "internet browsing" in sys_prompt
+    assert "code execution/editing" in sys_prompt
+    assert "image generation" in sys_prompt
+    assert "filesystem access" in sys_prompt
+
+
+@pytest.mark.asyncio
+async def test_scope_19_offline_mode_follows_same_scope_semantics(
+    db_conn: sqlite3.Connection,
+    client_user: AuthenticatedUser,
+    staff_user: AuthenticatedUser,
+) -> None:
+    """Validate offline mode enforces identical scope and containment rules.
+
+    Args:
+        db_conn: SQLite connection fixture.
+        client_user: Authenticated client user fixture.
+        staff_user: Authenticated staff user fixture.
+    """
+    graph = create_demo_graph(conn=db_conn, structured_model=None, controlled_agent_model=None)
+
+    # 1. Help query
+    res_help = await graph.ainvoke({"input": "help", "authenticated_user": None})
+    assert res_help.get("intent") == "help"
+    assert "consult products and prices" in res_help.get("output", "").lower()
+
+    # 2. Out of scope
+    res_oos = await graph.ainvoke(
+        {"input": "How do I build a nuclear reactor?", "authenticated_user": None}
+    )
+    assert res_oos.get("intent") == "out_of_scope"
+    assert "outside the scope" in res_oos.get("output", "").lower()
+
+    # 3. Client denied quote history
+    res_client = await graph.ainvoke({"input": "show quotes", "authenticated_user": client_user})
+    assert res_client.get("intent") == "quote_history"
+    assert "staff only" in res_client.get("output", "").lower()
+
+    # 4. Staff allowed quote history
+    res_staff = await graph.ainvoke({"input": "show quotes", "authenticated_user": staff_user})
+    assert res_staff.get("intent") == "quote_history"
+    assert "quotes" in res_staff.get("output", "").lower()
+
+
+@pytest.mark.asyncio
+async def test_scope_20_existing_quote_creation_hitl_and_database_flows_continue_to_pass(
+    db_conn: sqlite3.Connection,
+    staff_user: AuthenticatedUser,
+) -> None:
+    """Validate existing quote creation, discount prompt, and DB persistence continue working.
+
+    Args:
+        db_conn: SQLite connection fixture.
+        staff_user: Authenticated staff user fixture.
+    """
+    graph = create_demo_graph(
+        conn=db_conn,
+        discount_prompter=lambda _subtotal: 5,
+        approval_handler=ConsoleApprovalHandler(input_func=lambda _prompt: "yes"),
+        quote_reviewer=lambda _draft: None,
+    )
+
+    result = await graph.ainvoke(
+        {
+            "input": "create quote for Globex for 1 Notebook Pro and 2 Wireless Mouse",
+            "authenticated_user": staff_user,
+        }
+    )
+    assert result.get("intent") == "quote_create"
+    assert result.get("quote_authorized") is True
+    assert result.get("created_quote_id") is not None
+
+    cur = db_conn.execute(
+        "SELECT customer_id, total_cents FROM quotes WHERE id = ?",
+        (result["created_quote_id"],),
+    )
+    row = cur.fetchone()
+    assert row is not None
+    assert row[0] == 2  # Globex LLC is customer ID 2

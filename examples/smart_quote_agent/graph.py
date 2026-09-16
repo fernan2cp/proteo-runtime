@@ -41,6 +41,31 @@ from proteo_runtime.tools import (
 )
 
 
+def allowed_actions(user: AuthenticatedUser | None) -> frozenset[str]:
+    """Return the set of actions authorized for the current user role.
+
+    Args:
+        user: Currently authenticated user, or None if anonymous.
+
+    Returns:
+        Frozenset of authorized action strings.
+    """
+    if user is None:
+        return frozenset({"login", "help", "catalog_query", "quote_preview"})
+    if user.role == "staff":
+        return frozenset(
+            {
+                "logout",
+                "help",
+                "catalog_query",
+                "quote_preview",
+                "quote_history",
+                "quote_create",
+            }
+        )
+    return frozenset({"logout", "help", "catalog_query", "quote_preview"})
+
+
 def classify_intent_heuristic(text: str) -> str | None:
     """Classify user intent deterministically only when unequivocal.
 
@@ -48,11 +73,11 @@ def classify_intent_heuristic(text: str) -> str | None:
         text: Raw user input text.
 
     Returns:
-        One of 'login', 'logout', 'quote_create', 'agent_request', or None if ambiguous.
+        One of the canonical application actions, or None if ambiguous.
     """
     clean = text.strip().lower()
     if not clean:
-        return "agent_request"
+        return "help"
 
     # 1. Unequivocal login phrases
     if clean in ("login", "iniciar sesion", "iniciar sesión", "log in", "sign in", "quiero entrar"):
@@ -91,19 +116,59 @@ def classify_intent_heuristic(text: str) -> str | None:
     ):
         return "quote_create"
 
-    # 4. Unequivocal read-only catalog / help / quote list inquiries
-    if clean in (
+    # 4. Unequivocal help / capability / greeting phrases
+    core = clean.strip("?¿!¡. ")
+    if core in (
         "help",
         "ayuda",
+        "hola",
+        "hello",
+        "hi",
+        "buen dia",
+        "buen día",
+        "buenos dias",
+        "buenos días",
+        "buenas tardes",
+        "buenas",
+        "que puedo hacer",
+        "qué puedo hacer",
+        "what can i do",
+        "what things could i do",
+        "que cosas podria hacer",
+        "que cosas podría hacer",
+        "qué cosas podria hacer",
+        "qué cosas podría hacer",
+        "para que sirve este agente",
+        "para qué sirve este agente",
+        "what is this agent for",
+    ):
+        return "help"
+
+    # 5. Unequivocal catalog inquiries
+    if clean in (
         "products",
         "productos",
         "catalogo",
         "catálogo",
+        "catalog",
         "list products",
         "show products",
         "listar productos",
         "ver catalogo",
         "ver catálogo",
+    ) or clean.startswith(
+        (
+            "list products",
+            "show products",
+            "listar productos",
+            "ver catalogo",
+            "ver catálogo",
+        )
+    ):
+        return "catalog_query"
+
+    # 6. Unequivocal quote history inquiries
+    if clean in (
         "quotes",
         "cotizaciones",
         "show quotes",
@@ -111,17 +176,18 @@ def classify_intent_heuristic(text: str) -> str | None:
         "show latest quotes",
         "show the latest quotes",
         "ver cotizaciones",
+        "historial de cotizaciones",
     ) or clean.startswith(
         (
-            "list products",
-            "show products",
             "show quotes",
             "list quotes",
             "show the latest quotes",
             "show quote ",
+            "ver cotizacion ",
+            "ver cotización ",
         )
     ):
-        return "agent_request"
+        return "quote_history"
 
     # Anything genuinely ambiguous or open-ended
     return None
@@ -224,6 +290,7 @@ def create_demo_graph(
     async def intent_router_node(state: DemoState) -> dict[str, Any]:
         """Classify user intent via deterministic rules or low-level structured classifier."""
         user_input = state.get("input", "")
+        user = state.get("authenticated_user")
 
         # 1. Deterministic heuristic check
         heuristic = classify_intent_heuristic(user_input)
@@ -232,14 +299,30 @@ def create_demo_graph(
 
         # 2. Ambiguous phrasing: invoke structured model if available
         if active_structured_model is not None:
+            role_label = user.role if user is not None else "anonymous"
+            available = sorted(allowed_actions(user))
             instructions = (
-                "You are an intent classifier for the Smart Quote Agent CLI. "
-                "Classify the user input into exactly one of these four categories:\n"
-                "- 'login': The user wants to sign in, log in, or authenticate.\n"
-                "- 'logout': The user wants to sign out, log out, or exit their account.\n"
-                "- 'quote_create': The user wants to create, generate, or initiate a new quote/budget for a customer.\n"
-                "- 'agent_request': The user is exploring products, asking about prices, requesting calculations, "
-                "asking about system capabilities, or inspecting quote history.\n"
+                "You classify requests for the Smart Quote Agent.\n"
+                f"Current access level: {role_label}\n"
+                "Recognized application actions:\n"
+                "- 'login': User wants to authenticate/sign in.\n"
+                "- 'logout': User wants to sign out.\n"
+                "- 'help': User asks what the agent can do, asks for help, greets the agent without "
+                "another concrete request, or asks about the application itself.\n"
+                "- 'catalog_query': Product, catalog, or price availability questions.\n"
+                "- 'quote_preview': Non-persistent calculations or quote previews.\n"
+                "- 'quote_history': List or inspect persisted quotes.\n"
+                "- 'quote_create': Create or persist a new quote for a customer.\n"
+                "- 'out_of_scope': Any request unrelated to Smart Quote Agent capabilities.\n"
+                f"Actions currently available for this access level:\n"
+                + "\n".join(f"- {act}" for act in available)
+                + "\n\n"
+                "Instructions:\n"
+                "- Classify what the user is asking for.\n"
+                "- Identify the requested action even if the current user is not allowed to perform it.\n"
+                "- Use 'out_of_scope' when the request is unrelated to this application.\n"
+                "- Do not map generic assistant tasks, programming, web research, arbitrary files, "
+                "image generation, or unrelated knowledge questions into a supported action."
             )
             runtime_input = RuntimeInput(
                 (
@@ -252,8 +335,114 @@ def create_demo_graph(
             decision = cast(IntentDecision, res.value)
             return {"intent": decision.intent}
 
-        # 3. Fallback when offline
-        return {"intent": "agent_request"}
+        # 3. Explicit offline deterministic fallback (provider-free)
+        clean = user_input.strip().lower()
+        if any(
+            term in clean
+            for term in (
+                "product",
+                "producto",
+                "notebook",
+                "mouse",
+                "keyboard",
+                "precio",
+                "price",
+                "catalog",
+                "catalogo",
+            )
+        ):
+            return {"intent": "catalog_query"}
+        if any(term in clean for term in ("calculate", "calcular", "preview", "preliminar")):
+            return {"intent": "quote_preview"}
+        if any(
+            term in clean
+            for term in (
+                "quote #",
+                "cotizacion #",
+                "cotización #",
+                "history",
+                "historial",
+                "show quotes",
+                "list quotes",
+            )
+        ):
+            return {"intent": "quote_history"}
+        return {"intent": "out_of_scope"}
+
+    async def scope_gate_node(state: DemoState) -> dict[str, Any]:
+        """Apply host-owned action policy and handle help/out-of-scope requests deterministically."""
+        intent = state.get("intent", "out_of_scope")
+        user = state.get("authenticated_user")
+        allowed = allowed_actions(user)
+
+        # 1. Out-of-scope requests: short deterministic reply, never reach LLM
+        if intent == "out_of_scope":
+            return {
+                "action_allowed": False,
+                "output": (
+                    "That request is outside the scope of this agent. "
+                    "I can help you consult products, prices, or calculate a preliminary quote preview."
+                ),
+            }
+
+        # 2. Help requests: role-specific deterministic capability summary, no LLM
+        if intent == "help":
+            if user is None:
+                msg = (
+                    "I can help you consult products and prices or calculate preliminary quote previews. "
+                    "You can also log in to access privileged features."
+                )
+            elif user.role == "client":
+                msg = (
+                    "I can help you consult products and prices or calculate preliminary quote previews. "
+                    "You can also log out."
+                )
+            else:
+                msg = (
+                    "I can consult products and prices, calculate quote previews, "
+                    "create quotes, and inspect persisted quotes."
+                )
+            return {
+                "action_allowed": True,
+                "output": msg,
+            }
+
+        # 3. Action recognized but forbidden for the current role
+        if intent not in allowed:
+            if intent == "logout" and user is None:
+                return {
+                    "action_allowed": False,
+                    "output": "No active session to log out from. You can log in using 'login'.",
+                }
+            if intent == "login" and user is not None:
+                return {
+                    "action_allowed": False,
+                    "output": (
+                        f"Already logged in as {user.display_name} ({user.role}). "
+                        "To switch accounts, please log out first using 'logout'."
+                    ),
+                }
+            if intent == "quote_history":
+                return {
+                    "action_allowed": False,
+                    "output": (
+                        "Quote history is available to staff only. "
+                        "You can consult products, prices, or calculate a quote preview."
+                    ),
+                }
+            if intent == "quote_create":
+                return {
+                    "action_allowed": False,
+                    "quote_authorized": False,
+                    "output": "Access denied. Persisted quotes can only be created by staff.",
+                }
+            return {
+                "action_allowed": False,
+                "output": "This action is not available for your current access level.",
+            }
+
+        # 4. Action is authorized
+        return {"action_allowed": True}
 
     async def login_hitl_node(state: DemoState) -> dict[str, Any]:
         """Execute interactive login and record sanitized identity."""
@@ -472,23 +661,34 @@ def create_demo_graph(
             approval_handler=actual_approval_handler,
         )
 
+        role_label = user.role if user is not None else "anonymous"
+        tool_names = [d.name for d in agent_registry.definitions()]
+
         # If a live controlled agent model is available, invoke it directly
         if active_controlled_agent_model is not None:
             agent_model = active_controlled_agent_model.with_tools(
                 agent_registry, executor=executor
             )
             system_instruction = (
-                "You are the Smart Quote Agent, a helpful assistant for product exploration, "
-                "authoritative pricing inquiries, non-persisted quote calculations, and quote record reviews.\n"
+                "You are ONLY the Smart Quote Agent for this application.\n"
+                f"Current role: {role_label}\n"
+                f"Available conversational tools: {', '.join(tool_names)}\n\n"
                 "Rules:\n"
-                "- Explore products and retrieve authoritative prices using host-managed tools.\n"
-                "- Calculate non-persisted quote previews using calculate_quote.\n"
-                "- Inspect persisted quote history using list_quotes and get_quote only when host permissions allow it.\n"
-                "- Explain your own capabilities accurately when asked.\n"
-                "- Always use tools for business facts rather than inventing products, prices, quotes, or customers.\n"
+                "- Your conversational scope is strictly limited to product exploration, "
+                "authoritative pricing inquiries, non-persisted quote calculations, and quote reviews (staff only).\n"
+                "- Do not answer general-purpose requests outside this scope.\n"
+                "- Do not claim capabilities simply because the underlying model could normally perform them.\n"
+                "- You do NOT have arbitrary internet browsing, filesystem access, code execution/editing, "
+                "image generation, document analysis, external connected applications, shell access, or "
+                "unrestricted network tools.\n"
+                "- Always use host-managed tools for business facts. Never invent products, prices, "
+                "customers, or persisted quotes.\n"
                 "- Reply in the user's language.\n"
                 "- Treat tool permission denial as authoritative.\n"
-                "- Never claim that quote persistence occurred unless the host tool reports success."
+                "- Never claim that quote persistence occurred unless a host tool reports success.\n"
+                "- If an out-of-scope request reaches this node unexpectedly, do not answer the request. "
+                "Return only: 'That request is outside the scope of this agent. I can help you consult "
+                "products, prices, or calculate a preliminary quote preview.'"
             )
             runtime_input = RuntimeInput(
                 (
@@ -507,6 +707,8 @@ def create_demo_graph(
             or "catalogo" in clean
             or "catalog" in clean
             or "accessories" in clean
+            or "mouse" in clean
+            or "keyboard" in clean
         ):
             prods = list_active_products(conn)
             lines = [
@@ -566,21 +768,42 @@ def create_demo_graph(
                 )
                 return {"output": f"Recent quotes:\n{fmt}"}
 
-        return {"output": "I can help you explore products, calculate previews, or manage quotes."}
+        return {
+            "output": (
+                "That request is outside the scope of this agent. "
+                "I can help you consult products, prices, or calculate a preliminary quote preview."
+            )
+        }
 
     async def final_output_node(state: DemoState) -> dict[str, Any]:
         """Ensure final output text is present."""
         return {"output": state.get("output", "")}
 
-    def route_intent(state: DemoState) -> str:
-        intent = state.get("intent", "agent_request")
+    def route_scope_gate(state: DemoState) -> str:
+        """Route user request from the host scope gate according to authorization and intent.
+
+        Args:
+            state: Current graph state.
+
+        Returns:
+            Target node name in the LangGraph StateGraph.
+        """
+        intent = state.get("intent", "out_of_scope")
+        action_allowed = state.get("action_allowed")
+
+        if not action_allowed or intent == "help":
+            return "final_output"
+
         if intent == "login":
             return "login_hitl"
         if intent == "logout":
             return "clear_auth"
         if intent == "quote_create":
             return "auth_guard"
-        return "controlled_agent"
+        if intent in ("catalog_query", "quote_preview", "quote_history"):
+            return "controlled_agent"
+
+        return "final_output"
 
     def route_auth_guard(state: DemoState) -> str:
         if state.get("quote_authorized") is not True:
@@ -600,6 +823,7 @@ def create_demo_graph(
     builder = StateGraph(DemoState)
 
     builder.add_node("intent_router", intent_router_node)
+    builder.add_node("scope_gate", scope_gate_node)
     builder.add_node("login_hitl", login_hitl_node)
     builder.add_node("clear_auth", clear_auth_node)
     builder.add_node("auth_guard", auth_guard_node)
@@ -611,14 +835,16 @@ def create_demo_graph(
     builder.add_node("final_output", final_output_node)
 
     builder.add_edge(START, "intent_router")
+    builder.add_edge("intent_router", "scope_gate")
     builder.add_conditional_edges(
-        "intent_router",
-        route_intent,
+        "scope_gate",
+        route_scope_gate,
         {
             "login_hitl": "login_hitl",
             "clear_auth": "clear_auth",
             "auth_guard": "auth_guard",
             "controlled_agent": "controlled_agent",
+            "final_output": "final_output",
         },
     )
 

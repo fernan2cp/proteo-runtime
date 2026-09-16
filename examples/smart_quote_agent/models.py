@@ -13,7 +13,16 @@ class IntentDecision(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    intent: Literal["login", "logout", "quote_create", "agent_request"] = Field(
+    intent: Literal[
+        "login",
+        "logout",
+        "help",
+        "catalog_query",
+        "quote_preview",
+        "quote_history",
+        "quote_create",
+        "out_of_scope",
+    ] = Field(
         description="The classified intent of the user request.",
     )
 
@@ -108,6 +117,7 @@ class DemoState(TypedDict, total=False):
     output: str
     authenticated_user: AuthenticatedUser | None
     intent: str
+    action_allowed: bool | None
     quote_authorized: bool | None
     quote_request: QuoteRequest | None
     quote_draft: QuoteDraft | None
