@@ -54,7 +54,7 @@ async def test_non_owning_observer_does_not_flush_or_close(temp_obs_db: Path) ->
     # 2. Verify close is a no-op on the underlying observer
     await non_owning.close()
     assert underlying.close_count == 0
-    assert getattr(underlying, "is_closed") is False
+    assert bool(underlying.is_closed) is False
 
     # 3. Verify on_event forwards to underlying observer
     evt = RuntimeEvent(
@@ -79,7 +79,7 @@ async def test_non_owning_observer_does_not_flush_or_close(temp_obs_db: Path) ->
 
     # Cleanup underlying observer
     await underlying.close()
-    assert getattr(underlying, "is_closed") is True
+    assert bool(underlying.is_closed) is True
     assert underlying.close_count == 1
 
 
@@ -121,10 +121,10 @@ async def test_observability_manager_single_ownership_and_lifecycle(temp_obs_db:
             break
 
     assert sqlite_obs is not None
-    assert getattr(sqlite_obs, "is_closed") is False
+    assert bool(sqlite_obs.is_closed) is False
     assert sqlite_obs.close_count == 0
     if mgr.otel_bundle is not None:
-        assert getattr(mgr.otel_bundle, "is_shutdown") is False
+        assert bool(mgr.otel_bundle.is_shutdown) is False
 
     # Host ToolExecutor emits event via mgr.bus
     evt_host = RuntimeEvent(
@@ -145,10 +145,10 @@ async def test_observability_manager_single_ownership_and_lifecycle(temp_obs_db:
     assert sqlite_obs.flush_count >= 1
 
     await mgr.close()
-    assert getattr(sqlite_obs, "is_closed") is True
+    assert bool(sqlite_obs.is_closed) is True
     assert sqlite_obs.close_count == 1
     if mgr.otel_bundle is not None:
-        assert getattr(mgr.otel_bundle, "is_shutdown") is True
+        assert bool(mgr.otel_bundle.is_shutdown) is True
 
     # Idempotent close
     await mgr.close()

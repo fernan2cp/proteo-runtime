@@ -42,7 +42,7 @@ flowchart TD
 
     ScopeGate -->|login allowed| LoginHITL[Masked Login Prompt]
     ScopeGate -->|logout allowed| Logout[Clear Auth State]
-    ScopeGate -->|catalog_query / quote_preview / allowed quote_history| ControlledAgent[Controlled Agent: controlled_agent / low]
+    ScopeGate -->|catalog_query / quote_preview / allowed quote_history| ControlledAgent[Controlled Agent: controlled_turn / low]
     ScopeGate -->|quote_create allowed| AuthGuard[Host Auth Guard]
 
     AuthGuard -->|Staff| QuotePlanner[Quote Planner: structured / low]
@@ -68,7 +68,7 @@ The demo requires and establishes two distinct model bindings, each configured e
    - Does not bind tools; operates with structured output policies and strict schema validation (`extra="forbid"`).
    - Injected with role context and recognized actions, classifying user intent even if forbidden for the current role.
    - Instructed to extract only information explicitly stated and never invent or guess missing customer names, products, or quantities.
-2. **`controlled_agent_model`** (`profile="controlled_agent"`, `level="low"`):
+2. **`controlled_agent_model`** (`profile="controlled_turn"`, `level="low"`):
    - Used for conversational tool use on allowed inquiries (`catalog_query`, `quote_preview`, `quote_history`).
    - Bound with host-managed tools via `.with_tools(agent_registry, executor=executor)`.
    - Never exposed to `create_quote`.
@@ -79,7 +79,7 @@ When instantiating `CodexRuntime`, the runtime must be initialized with:
 ```python
 runtime = CodexRuntime(experimental_dynamic_tools=True)
 ```
-`experimental_dynamic_tools=True` is required when binding host-managed tools to the `controlled_agent` profile. If disabled, `CodexRuntime` fails closed with `CapabilityError`.
+`experimental_dynamic_tools=True` is required when binding host-managed tools to the `controlled_turn` profile. If disabled, `CodexRuntime` fails closed with `CapabilityError`.
 
 ### Clean Model Parameters
 The legacy single `model` parameter has been completely removed from `create_demo_graph`. Both `structured_model` and `controlled_agent_model` are explicit, independent parameters (defaulting to `None` for offline deterministic execution).

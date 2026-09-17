@@ -421,7 +421,7 @@ def create_demo_graph(
     Args:
         conn: Open SQLite database connection.
         structured_model: RuntimeModel bound with profile='structured', level='low'.
-        controlled_agent_model: RuntimeModel bound with profile='controlled_agent', level='low'.
+        controlled_agent_model: RuntimeModel bound with profile='controlled_turn', level='low'.
         approval_handler: Optional Phase 5 ApprovalHandler for write confirmation.
         discount_prompter: Optional callback for discount prompt (defaults to prompt_discount_interactive).
         auth_interactive: Optional callback for interactive login (defaults to authenticate_user_interactive).

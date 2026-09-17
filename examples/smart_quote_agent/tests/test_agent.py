@@ -181,7 +181,7 @@ async def test_point_02_ambiguous_routing_invokes_structured_classifier(
     agent_runtime = FakeRuntime(turns=[FakeTurn(value="Agent response")])
 
     structured_model = structured_runtime.model(profile="structured", level="low")
-    controlled_model = agent_runtime.model(profile="controlled_agent", level="low")
+    controlled_model = agent_runtime.model(profile="controlled_turn", level="low")
 
     graph = create_demo_graph(
         conn=db_conn,
@@ -214,7 +214,7 @@ async def test_point_03_help_capability_handled_host_side_without_controlled_age
     graph = create_demo_graph(
         conn=db_conn,
         structured_model=structured_runtime.model(profile="structured", level="low"),
-        controlled_agent_model=agent_runtime.model(profile="controlled_agent", level="low"),
+        controlled_agent_model=agent_runtime.model(profile="controlled_turn", level="low"),
     )
 
     state: DemoState = {
@@ -232,18 +232,18 @@ def test_point_04_distinct_model_bindings_for_structured_and_controlled() -> Non
     """Validate structured_model and controlled_agent_model have distinct profile bindings."""
     runtime = FakeRuntime()
     structured = runtime.model(profile="structured", level="low")
-    controlled = runtime.model(profile="controlled_agent", level="low")
+    controlled = runtime.model(profile="controlled_turn", level="low")
 
     assert structured.profile != controlled.profile
     assert structured.profile == "structured"
-    assert controlled.profile == "controlled_agent"
+    assert controlled.profile == "controlled_turn"
 
 
 def test_point_05_every_model_binding_uses_level_low() -> None:
     """Validate all model bindings are explicitly configured with logical level 'low'."""
     runtime = FakeRuntime()
     structured = runtime.model(profile="structured", level="low")
-    controlled = runtime.model(profile="controlled_agent", level="low")
+    controlled = runtime.model(profile="controlled_turn", level="low")
 
     assert structured.level in (LogicalLevel.LOW, "low")
     assert controlled.level in (LogicalLevel.LOW, "low")
@@ -266,7 +266,7 @@ async def test_point_06_controlled_agent_binds_tools_without_capability_error(
         ]
     )
 
-    bound = fake_runtime.model(profile="controlled_agent", level="low").with_tools(
+    bound = fake_runtime.model(profile="controlled_turn", level="low").with_tools(
         registry, executor=executor
     )
     result = await bound.ainvoke("Listar productos")
@@ -304,7 +304,7 @@ async def test_point_09_anonymous_cannot_create_persisted_quotes(
     graph = create_demo_graph(
         conn=db_conn,
         structured_model=structured_runtime.model(profile="structured", level="low"),
-        controlled_agent_model=agent_runtime.model(profile="controlled_agent", level="low"),
+        controlled_agent_model=agent_runtime.model(profile="controlled_turn", level="low"),
     )
 
     state: DemoState = {
@@ -333,7 +333,7 @@ async def test_point_10_client_cannot_create_persisted_quotes(
     graph = create_demo_graph(
         conn=db_conn,
         structured_model=structured_runtime.model(profile="structured", level="low"),
-        controlled_agent_model=agent_runtime.model(profile="controlled_agent", level="low"),
+        controlled_agent_model=agent_runtime.model(profile="controlled_turn", level="low"),
     )
 
     state: DemoState = {
@@ -376,7 +376,7 @@ async def test_point_11_staff_can_enter_quote_workflow(
     graph = create_demo_graph(
         conn=db_conn,
         structured_model=structured_runtime.model(profile="structured", level="low"),
-        controlled_agent_model=agent_runtime.model(profile="controlled_agent", level="low"),
+        controlled_agent_model=agent_runtime.model(profile="controlled_turn", level="low"),
         approval_handler=ImmediateApproval(),
         discount_prompter=lambda _: 0,
         quote_reviewer=lambda _: None,
@@ -413,7 +413,7 @@ async def test_point_12_missing_customer_or_items_cannot_hallucinate_draft(
     graph = create_demo_graph(
         conn=db_conn,
         structured_model=structured_runtime.model(profile="structured", level="low"),
-        controlled_agent_model=agent_runtime.model(profile="controlled_agent", level="low"),
+        controlled_agent_model=agent_runtime.model(profile="controlled_turn", level="low"),
     )
 
     state: DemoState = {
@@ -468,7 +468,7 @@ async def test_point_14_final_approval_denial_writes_nothing(
     graph = create_demo_graph(
         conn=db_conn,
         structured_model=structured_runtime.model(profile="structured", level="low"),
-        controlled_agent_model=agent_runtime.model(profile="controlled_agent", level="low"),
+        controlled_agent_model=agent_runtime.model(profile="controlled_turn", level="low"),
         approval_handler=DenialApproval(),
         discount_prompter=lambda _: 0,
         quote_reviewer=lambda _: None,
@@ -740,7 +740,7 @@ async def test_scope_01_greeting_resolves_to_help_and_avoids_generic_assistant_c
     agent_runtime = FakeRuntime(turns=[])
     graph = create_demo_graph(
         conn=db_conn,
-        controlled_agent_model=agent_runtime.model(profile="controlled_agent", level="low"),
+        controlled_agent_model=agent_runtime.model(profile="controlled_turn", level="low"),
     )
 
     result = await graph.ainvoke({"input": "Hello", "authenticated_user": None})
@@ -768,7 +768,7 @@ async def test_scope_02_capability_query_returns_role_appropriate_scope(
     agent_runtime = FakeRuntime(turns=[])
     graph = create_demo_graph(
         conn=db_conn,
-        controlled_agent_model=agent_runtime.model(profile="controlled_agent", level="low"),
+        controlled_agent_model=agent_runtime.model(profile="controlled_turn", level="low"),
     )
 
     # 1. Anonymous user
@@ -814,7 +814,7 @@ async def test_scope_03_unrelated_query_classifies_as_out_of_scope(
     graph = create_demo_graph(
         conn=db_conn,
         structured_model=structured_runtime.model(profile="structured", level="low"),
-        controlled_agent_model=agent_runtime.model(profile="controlled_agent", level="low"),
+        controlled_agent_model=agent_runtime.model(profile="controlled_turn", level="low"),
     )
 
     result = await graph.ainvoke({"input": unrelated_input, "authenticated_user": staff_user})
@@ -838,7 +838,7 @@ async def test_scope_04_out_of_scope_never_reaches_controlled_agent(
     graph = create_demo_graph(
         conn=db_conn,
         structured_model=structured_runtime.model(profile="structured", level="low"),
-        controlled_agent_model=agent_runtime.model(profile="controlled_agent", level="low"),
+        controlled_agent_model=agent_runtime.model(profile="controlled_turn", level="low"),
     )
 
     result = await graph.ainvoke(
@@ -865,7 +865,7 @@ async def test_scope_05_out_of_scope_response_does_not_answer_underlying_questio
     graph = create_demo_graph(
         conn=db_conn,
         structured_model=structured_runtime.model(profile="structured", level="low"),
-        controlled_agent_model=agent_runtime.model(profile="controlled_agent", level="low"),
+        controlled_agent_model=agent_runtime.model(profile="controlled_turn", level="low"),
     )
 
     result = await graph.ainvoke(
@@ -898,7 +898,7 @@ async def test_scope_06_ambiguous_supported_requests_invoke_structured_classifie
     graph = create_demo_graph(
         conn=db_conn,
         structured_model=structured_runtime.model(profile="structured", level="low"),
-        controlled_agent_model=agent_runtime.model(profile="controlled_agent", level="low"),
+        controlled_agent_model=agent_runtime.model(profile="controlled_turn", level="low"),
     )
 
     result = await graph.ainvoke({"input": ambiguous, "authenticated_user": staff_user})
@@ -1010,7 +1010,7 @@ async def test_scope_11_client_quote_history_recognized_but_denied_host_side(
     agent_runtime = FakeRuntime(turns=[])
     graph = create_demo_graph(
         conn=db_conn,
-        controlled_agent_model=agent_runtime.model(profile="controlled_agent", level="low"),
+        controlled_agent_model=agent_runtime.model(profile="controlled_turn", level="low"),
     )
 
     result = await graph.ainvoke(
@@ -1122,7 +1122,7 @@ async def test_scope_15_supported_catalog_queries_reach_controlled_agent(
     )
     graph = create_demo_graph(
         conn=db_conn,
-        controlled_agent_model=agent_runtime.model(profile="controlled_agent", level="low"),
+        controlled_agent_model=agent_runtime.model(profile="controlled_turn", level="low"),
     )
 
     result = await graph.ainvoke({"input": "products", "authenticated_user": staff_user})
@@ -1159,7 +1159,7 @@ async def test_scope_16_supported_quote_preview_reaches_controlled_agent(
         structured_model=FakeRuntime(
             turns=[FakeTurn(value=IntentDecision(intent="quote_preview").model_dump_json())]
         ).model(profile="structured", level="low"),
-        controlled_agent_model=agent_runtime.model(profile="controlled_agent", level="low"),
+        controlled_agent_model=agent_runtime.model(profile="controlled_turn", level="low"),
     )
 
     result = await graph.ainvoke(
@@ -1191,7 +1191,7 @@ async def test_scope_17_staff_quote_history_reaches_controlled_agent_with_read_t
     )
     graph = create_demo_graph(
         conn=db_conn,
-        controlled_agent_model=agent_runtime.model(profile="controlled_agent", level="low"),
+        controlled_agent_model=agent_runtime.model(profile="controlled_turn", level="low"),
     )
 
     result = await graph.ainvoke({"input": "show quotes", "authenticated_user": staff_user})

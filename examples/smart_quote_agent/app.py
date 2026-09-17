@@ -156,7 +156,7 @@ async def run_cli_loop(
             )
             async with runtime_cm as runtime:
                 structured_model = runtime.model(profile="structured", level="low")
-                controlled_agent_model = runtime.model(profile="controlled_agent", level="low")
+                controlled_agent_model = runtime.model(profile="controlled_turn", level="low")
 
                 app_graph = create_demo_graph(
                     conn,

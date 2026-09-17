@@ -218,12 +218,12 @@ def test_local_otel_bundle_lifecycle(temp_telemetry_db: Path) -> None:
     spans = fetch_otel_spans(temp_telemetry_db)
     assert len(spans) == 1
 
-    assert getattr(bundle, "is_shutdown") is False
+    assert bool(bundle.is_shutdown) is False
     bundle.shutdown()
-    assert getattr(bundle, "is_shutdown") is True
+    assert bool(bundle.is_shutdown) is True
     # Idempotent call
     bundle.shutdown()
-    assert getattr(bundle, "is_shutdown") is True
+    assert bool(bundle.is_shutdown) is True
 
 
 def test_delta_temporality_and_histogram_count(temp_telemetry_db: Path) -> None:
