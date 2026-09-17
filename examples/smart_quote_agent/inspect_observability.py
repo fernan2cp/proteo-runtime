@@ -7,6 +7,7 @@ never imports or starts the Codex runtime.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import sys
 from collections import defaultdict
@@ -20,11 +21,12 @@ if _DEMO_DIR not in sys.path:
     sys.path.insert(0, _DEMO_DIR)
 
 from telemetry_db import (  # noqa: E402
+    derive_invocation_status,
     fetch_invocation_events,
-    fetch_langsmith_runs,
+    fetch_langsmith_runs_for_invocation,
     fetch_last_invocation_id,
     fetch_otel_span_events,
-    fetch_otel_spans,
+    fetch_otel_spans_for_invocation,
     fetch_recent_invocations,
     get_telemetry_connection,
     get_telemetry_db_path,
@@ -192,6 +194,78 @@ def build_langsmith_tree(runs: Sequence[dict[str, Any]]) -> list[str]:
     return result
 
 
+def build_otel_span_tree(
+    spans: Sequence[dict[str, Any]],
+    db_path: Path | str | None = None,
+) -> list[str]:
+    """Reconstruct a recursive tree representation from OpenTelemetry span records.
+
+    Args:
+        spans: Sequence of span dictionaries containing span_id and parent_span_id.
+        db_path: Optional database path to fetch associated span events.
+
+    Returns:
+        List of formatted lines representing the span execution hierarchy.
+    """
+    if not spans:
+        return ["(No OpenTelemetry spans recorded for this invocation)"]
+
+    span_by_id: dict[str, dict[str, Any]] = {str(s["span_id"]): dict(s) for s in spans}
+    children_map: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    root_spans: list[dict[str, Any]] = []
+
+    for s in spans:
+        parent_id = s.get("parent_span_id")
+        if parent_id and str(parent_id) in span_by_id:
+            children_map[str(parent_id)].append(dict(s))
+        else:
+            root_spans.append(dict(s))
+
+    def _render_node(
+        span: dict[str, Any],
+        prefix: str,
+        is_last: bool,
+        is_root: bool,
+    ) -> list[str]:
+        output: list[str] = []
+        name = span.get("name") or "span"
+        dur_val = span.get("duration_ms")
+        dur_text = f"{dur_val:.0f} ms" if dur_val is not None else "-"
+
+        if is_root:
+            output.append(f"{prefix}{name:<24} {dur_text:>10}".rstrip())
+            child_prefix = prefix
+            event_prefix = prefix + "  "
+        else:
+            connector = "└── " if is_last else "├── "
+            output.append(f"{prefix}{connector}{name:<24} {dur_text:>10}".rstrip())
+            child_prefix = prefix + ("    " if is_last else "│   ")
+            event_prefix = child_prefix
+
+        span_id = str(span["span_id"])
+        if db_path is not None:
+            span_events = fetch_otel_span_events(db_path, span_id)
+            for se in span_events:
+                output.append(f"{event_prefix}event: {se.get('name')}")
+
+        children = children_map.get(span_id, [])
+        for i, child in enumerate(children):
+            output.extend(
+                _render_node(
+                    child,
+                    child_prefix,
+                    i == len(children) - 1,
+                    is_root=False,
+                )
+            )
+        return output
+
+    result: list[str] = []
+    for root in root_spans:
+        result.extend(_render_node(root, "", is_last=True, is_root=True))
+    return result
+
+
 def render_invocation_details(
     db_path: Path | str | None,
     invocation_id: str,
@@ -218,23 +292,10 @@ def render_invocation_details(
 
     # Extract invocation scalar attributes from events
     first_event = events[0]
-    last_event = events[-1]
     started_at = first_event.get("occurred_at", "-")
 
-    # Determine status
-    status = "running"
-    for e in events:
-        if e.get("event_kind") == "invocation_completed":
-            status = "completed"
-            break
-        if e.get("event_kind") == "invocation_failed":
-            status = "failed"
-            break
-    if status == "running" and last_event.get("event_kind") in (
-        "tool_completed",
-        "turn_completed",
-    ):
-        status = "completed"
+    # Determine status using shared terminal mapping
+    status = derive_invocation_status(events)
 
     # Extract model, profile, reasoning, duration
     model = None
@@ -290,21 +351,12 @@ def render_invocation_details(
                 "",
             ]
         )
-        all_runs = fetch_langsmith_runs(db_path)
-        # Filter runs related to this invocation
-        matching_runs = [
-            r
-            for r in all_runs
-            if invocation_id in (r.get("metadata_json") or "")
-            or invocation_id in (r.get("extra_json") or "")
-            or invocation_id in (r.get("run_id") or "")
-        ]
+        matching_runs = fetch_langsmith_runs_for_invocation(db_path, invocation_id)
         if not matching_runs:
-            # Fallback: if single invocation or runs present, include them
-            matching_runs = all_runs
-
-        tree_lines = build_langsmith_tree(matching_runs)
-        lines.extend(tree_lines)
+            lines.append("(No LangSmith runs recorded for this invocation)")
+        else:
+            tree_lines = build_langsmith_tree(matching_runs)
+            lines.extend(tree_lines)
         lines.append("")
 
     # Section 3: OpenTelemetry Projection
@@ -316,22 +368,9 @@ def render_invocation_details(
                 "",
             ]
         )
-        all_spans = fetch_otel_spans(db_path)
-        matching_spans = [s for s in all_spans if invocation_id in (s.get("attributes_json") or "")]
-        if not matching_spans:
-            matching_spans = all_spans
-
-        if not matching_spans:
-            lines.append("(No OpenTelemetry spans recorded for this invocation)")
-        else:
-            for s in matching_spans:
-                name = s.get("name", "span")
-                dur_val = s.get("duration_ms")
-                dur_text = f"{dur_val:.0f} ms" if dur_val is not None else "-"
-                lines.append(f"{name:<24} {dur_text:>10}")
-                span_events = fetch_otel_span_events(db_path, s["span_id"])
-                for se in span_events:
-                    lines.append(f"  event: {se.get('name')}")
+        matching_spans = fetch_otel_spans_for_invocation(db_path, invocation_id)
+        tree_lines = build_otel_span_tree(matching_spans, db_path)
+        lines.extend(tree_lines)
         lines.append("")
 
         lines.extend(
@@ -345,9 +384,8 @@ def render_invocation_details(
         try:
             metric_rows = conn.execute(
                 """
-                SELECT instrument_name, instrument_type, SUM(value) AS total, COUNT(*) AS count
+                SELECT instrument_name, instrument_type, value, attributes_json
                 FROM otel_metrics
-                GROUP BY instrument_name
                 ORDER BY instrument_name ASC
                 """
             ).fetchall()
@@ -357,10 +395,33 @@ def render_invocation_details(
         if not metric_rows:
             lines.append("(No OpenTelemetry metrics recorded)")
         else:
-            for m in metric_rows:
-                inst_name = str(m["instrument_name"])
-                total = float(m["total"])
-                count = int(m["count"])
+            metrics_summary: dict[str, dict[str, Any]] = {}
+            for row in metric_rows:
+                inst_name = str(row["instrument_name"])
+                val = float(row["value"])
+                itype = str(row["instrument_type"])
+                attrs_raw = row["attributes_json"] or "{}"
+                try:
+                    attrs = json.loads(attrs_raw) if isinstance(attrs_raw, str) else dict(attrs_raw)
+                except Exception:
+                    attrs = {}
+
+                if inst_name not in metrics_summary:
+                    metrics_summary[inst_name] = {
+                        "type": itype,
+                        "total": 0.0,
+                        "count": 0,
+                    }
+                metrics_summary[inst_name]["total"] += val
+                sample_count = attrs.get("count", 1)
+                if isinstance(sample_count, int | float):
+                    metrics_summary[inst_name]["count"] += int(sample_count)
+                else:
+                    metrics_summary[inst_name]["count"] += 1
+
+            for inst_name, data in sorted(metrics_summary.items()):
+                total = data["total"]
+                count = data["count"]
                 if "duration" in inst_name and count > 0:
                     val_str = f"{total / count:.0f} ms"
                 elif total.is_integer():
@@ -439,6 +500,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     Returns:
         Exit code: 0 on success, non-zero on error.
     """
+    if hasattr(sys.stdout, "reconfigure"):
+        with contextlib.suppress(Exception):
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
     parser = argparse.ArgumentParser(
         description="Inspect local Proteo telemetry from observability.sqlite3",
     )

@@ -15,6 +15,7 @@ if str(_DEMO_DIR) not in sys.path:
 
 from inspect_observability import (  # noqa: E402
     build_langsmith_tree,
+    build_otel_span_tree,
     inspect_telemetry,
     main,
     render_recent_invocations_summary,
@@ -245,3 +246,210 @@ def test_main_cli_execution(clean_obs_db: Path, capsys: pytest.CaptureFixture[st
     assert code == 1
     captured = capsys.readouterr()
     assert "not found in telemetry database" in captured.out
+
+
+def test_build_otel_span_tree_reconstruction() -> None:
+    """Verify recursive OpenTelemetry span tree hierarchy reconstruction."""
+    spans: list[dict[str, Any]] = [
+        {
+            "span_id": "span_root",
+            "parent_span_id": None,
+            "name": "proteo.runtime",
+            "duration_ms": 250.0,
+        },
+        {
+            "span_id": "span_turn",
+            "parent_span_id": "span_root",
+            "name": "proteo.turn",
+            "duration_ms": 200.0,
+        },
+        {
+            "span_id": "span_tool",
+            "parent_span_id": "span_turn",
+            "name": "proteo.tool",
+            "duration_ms": 50.0,
+        },
+    ]
+    tree_lines = build_otel_span_tree(spans)
+    rendered = "\n".join(tree_lines)
+
+    assert "proteo.runtime" in rendered
+    assert "└── proteo.turn" in rendered
+    assert "└── proteo.tool" in rendered
+    assert "250 ms" in rendered
+    assert "50 ms" in rendered
+
+
+def test_inspector_correlation_isolation_no_fallback(clean_obs_db: Path) -> None:
+    """Verify exact correlation matching without fallback to other invocations' data."""
+    inv_a = "inv_session_alpha"
+    inv_b = "inv_session_beta"
+
+    # Seed Invocation A with events, LangSmith runs, and OTel spans
+    insert_runtime_event(
+        clean_obs_db,
+        event_id="ea1",
+        event_kind="invocation_started",
+        occurred_at="2026-09-16T10:00:00.000Z",
+        invocation_id=inv_a,
+    )
+    insert_runtime_event(
+        clean_obs_db,
+        event_id="ea2",
+        event_kind="invocation_completed",
+        occurred_at="2026-09-16T10:00:01.000Z",
+        invocation_id=inv_a,
+    )
+    insert_langsmith_create_run(
+        clean_obs_db,
+        run_id="run_a",
+        name="proteo.runtime.alpha",
+        metadata={"proteo.invocation_id": inv_a},
+    )
+    insert_otel_span(
+        clean_obs_db,
+        trace_id="trace_a",
+        span_id="span_a",
+        name="span.alpha",
+        started_at="2026-09-16T10:00:00.000Z",
+        attributes={"proteo.invocation_id": inv_a},
+    )
+
+    # Seed Invocation B with events ONLY (no LangSmith runs, no OTel spans)
+    insert_runtime_event(
+        clean_obs_db,
+        event_id="eb1",
+        event_kind="invocation_started",
+        occurred_at="2026-09-16T11:00:00.000Z",
+        invocation_id=inv_b,
+    )
+    insert_runtime_event(
+        clean_obs_db,
+        event_id="eb2",
+        event_kind="invocation_completed",
+        occurred_at="2026-09-16T11:00:01.000Z",
+        invocation_id=inv_b,
+    )
+
+    # Inspect Invocation B: must NOT contain Invocation A's runs or spans
+    detail_b = inspect_telemetry(clean_obs_db, invocation=inv_b)
+    assert f"Invocation {inv_b}" in detail_b
+    assert "proteo.runtime.alpha" not in detail_b
+    assert "span.alpha" not in detail_b
+    assert "(No LangSmith runs recorded for this invocation)" in detail_b
+    assert "(No OpenTelemetry spans recorded for this invocation)" in detail_b
+
+    # Inspect Invocation A: must contain its own runs and spans
+    detail_a = inspect_telemetry(clean_obs_db, invocation=inv_a)
+    assert f"Invocation {inv_a}" in detail_a
+    assert "proteo.runtime.alpha" in detail_a
+    assert "span.alpha" in detail_a
+
+
+def test_inspector_tool_invocation_statuses(clean_obs_db: Path) -> None:
+    """Verify statuses ('completed', 'failed', 'denied', 'running') in summary and details."""
+    # 1. Completed tool invocation
+    insert_runtime_event(
+        clean_obs_db,
+        event_id="ec1",
+        event_kind="tool_requested",
+        occurred_at="2026-09-16T12:00:00.000Z",
+        invocation_id="inv_completed",
+        tool_name="list_products",
+    )
+    insert_runtime_event(
+        clean_obs_db,
+        event_id="ec2",
+        event_kind="tool_completed",
+        occurred_at="2026-09-16T12:00:01.000Z",
+        invocation_id="inv_completed",
+        tool_name="list_products",
+    )
+
+    # 2. Denied tool invocation
+    insert_runtime_event(
+        clean_obs_db,
+        event_id="ed1",
+        event_kind="tool_requested",
+        occurred_at="2026-09-16T12:01:00.000Z",
+        invocation_id="inv_denied",
+        tool_name="create_quote",
+    )
+    insert_runtime_event(
+        clean_obs_db,
+        event_id="ed2",
+        event_kind="tool_denied",
+        occurred_at="2026-09-16T12:01:01.000Z",
+        invocation_id="inv_denied",
+        tool_name="create_quote",
+    )
+
+    # 3. Failed tool invocation
+    insert_runtime_event(
+        clean_obs_db,
+        event_id="ef1",
+        event_kind="tool_requested",
+        occurred_at="2026-09-16T12:02:00.000Z",
+        invocation_id="inv_failed",
+        tool_name="get_quote",
+    )
+    insert_runtime_event(
+        clean_obs_db,
+        event_id="ef2",
+        event_kind="tool_failed",
+        occurred_at="2026-09-16T12:02:01.000Z",
+        invocation_id="inv_failed",
+        tool_name="get_quote",
+    )
+
+    # 4. Running tool invocation (no terminal event)
+    insert_runtime_event(
+        clean_obs_db,
+        event_id="er1",
+        event_kind="tool_requested",
+        occurred_at="2026-09-16T12:03:00.000Z",
+        invocation_id="inv_running",
+        tool_name="list_quotes",
+    )
+
+    summary = render_recent_invocations_summary(clean_obs_db)
+    assert "completed" in summary
+    assert "denied" in summary
+    assert "failed" in summary
+    assert "running" in summary
+
+    detail_denied = inspect_telemetry(clean_obs_db, invocation="inv_denied")
+    assert "Status:     denied" in detail_denied
+
+    detail_completed = inspect_telemetry(clean_obs_db, invocation="inv_completed")
+    assert "Status:     completed" in detail_completed
+
+    detail_failed = inspect_telemetry(clean_obs_db, invocation="inv_failed")
+    assert "Status:     failed" in detail_failed
+
+    detail_running = inspect_telemetry(clean_obs_db, invocation="inv_running")
+    assert "Status:     running" in detail_running
+
+
+def test_inspector_histogram_metric_averaging(clean_obs_db: Path) -> None:
+    """Verify inspector parses count from attributes_json to compute average duration."""
+    inv_id = "inv_metric_test"
+    insert_runtime_event(
+        clean_obs_db,
+        event_id="em1",
+        event_kind="invocation_completed",
+        occurred_at="2026-09-16T12:00:00.000Z",
+        invocation_id=inv_id,
+    )
+    # Total sum 500.0 ms across 2 recorded calls (count=2)
+    insert_otel_metric(
+        clean_obs_db,
+        instrument_name="proteo.runtime.duration",
+        instrument_type="histogram",
+        value=500.0,
+        attributes={"count": 2},
+    )
+
+    output = inspect_telemetry(clean_obs_db, invocation=inv_id, otel_only=True)
+    # 500 / 2 = 250 ms
+    assert "250 ms" in output
