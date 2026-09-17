@@ -117,6 +117,14 @@ class OpenTelemetryObserver:
             and event.session_id
         ):
             self._end_span((event.session_id, "session"), event)
+        if event.kind is RuntimeEventKind.TASK_STARTED and event.task_id:
+            task_key = (event.task_id, "task")
+            if task_key not in self._spans:
+                span = self.tracer.start_span("proteo.task")
+                _set_attributes(span, event)
+                self._spans[task_key] = span
+        elif event.kind is RuntimeEventKind.TASK_CLOSED and event.task_id:
+            self._end_span((event.task_id, "task"), event)
         key = (invocation, _span_key(event))
         if (
             event.kind
@@ -356,6 +364,7 @@ def _set_attributes(span: Any, event: RuntimeEvent) -> None:
         "proteo.invocation_id": event.invocation_id,
         "proteo.session_id": event.session_id,
         "proteo.turn_id": event.turn_id,
+        "proteo.task_id": event.task_id,
         "proteo.runtime": _runtime_name(event),
     }
     for key in (

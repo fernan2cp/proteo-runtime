@@ -87,20 +87,42 @@ class RuntimeNode(Generic[StateT]):
         cleanup_error: BaseException | None = None
         cancel_requested = False
         try:
+            configurable = _configurable(config)
             if self._mode == "model":
-                configurable = _configurable(config)
                 if "proteo_session_id" in configurable:
                     raise ConfigurationError(
                         "Session descriptors are not accepted by a model node",
                         path="config.configurable.proteo_session_id",
                     )
+                if "proteo_task_id" in configurable:
+                    raise ConfigurationError(
+                        "Task identifiers are not accepted by a model node",
+                        path="config.configurable.proteo_task_id",
+                    )
                 executor = cast(RuntimeModel[Any], self._executor)
                 stream = executor.astream(runtime_input, config=runtime_config)
             else:
-                session_id = _session_id(config)
+                has_task = "proteo_task_id" in configurable
+                has_session = "proteo_session_id" in configurable
+                if has_task and has_session:
+                    raise ConfigurationError(
+                        "Cannot specify both proteo_task_id and proteo_session_id in RunnableConfig",
+                        path="config.configurable",
+                    )
                 runtime_executor = cast(Runtime, self._executor)
-                session = await runtime_executor.resume_session(session_id)
-                stream = session.astream(runtime_input, config=runtime_config)
+                if has_task:
+                    task_id = configurable["proteo_task_id"]
+                    if not isinstance(task_id, str) or not task_id.strip():
+                        raise ConfigurationError(
+                            "A task RuntimeNode requires a non-empty task identifier",
+                            path="config.configurable.proteo_task_id",
+                        )
+                    task = runtime_executor.get_task(task_id)
+                    stream = task.astream(runtime_input, config=runtime_config)
+                else:
+                    session_id = _session_id(config)
+                    session = await runtime_executor.resume_session(session_id)
+                    stream = session.astream(runtime_input, config=runtime_config)
             assert stream is not None
             result = await self._consume_stream(stream)
             return self._to_output(result)
@@ -303,6 +325,7 @@ def _project_event(event: RuntimeEvent) -> dict[str, Any]:
             "invocation_id": event.invocation_id,
             "session_correlation_id": _session_correlation_id(event.session_id),
             "turn_id": event.turn_id,
+            "task_id": event.task_id,
             "metadata": _project_json(event.metadata),
         },
     }

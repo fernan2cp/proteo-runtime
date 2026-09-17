@@ -27,6 +27,7 @@ from proteo_runtime.core.runtime import Runtime
 from proteo_runtime.integrations import langgraph as langgraph_integration
 from proteo_runtime.integrations.langgraph import node as node_module
 from proteo_runtime.testing import FakeRuntime, FakeTurn
+from proteo_runtime.tools import ToolRegistry, runtime_tool
 
 
 class Decision(BaseModel):
@@ -612,3 +613,87 @@ async def test_runtime_node_rejects_invalid_terminal_event(monkeypatch: pytest.M
     node = langgraph_integration.RuntimeNode[Any](cast(RuntimeModel[Any], MalformedModel()))
     with pytest.raises(RuntimeUnavailableError, match="without a result"):
         await node({"input": "invalid"})
+
+
+@runtime_tool(name="dummy_tool", description="A dummy tool for testing.", permission="dummy.perm")
+async def _dummy_node_tool(val: int) -> int:
+    """Return an integer value.
+
+    Args:
+        val: Input value.
+
+    Returns:
+        The same value.
+    """
+    return val
+
+
+@pytest.mark.asyncio
+async def test_runtime_node_routes_to_active_task_via_configurable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify RuntimeNode dispatches to active task using proteo_task_id."""
+    events = _writer(monkeypatch)
+    registry = ToolRegistry()
+    registry.register(_dummy_node_tool)
+    runtime = FakeRuntime(turns=[FakeTurn(value="task output")])
+    task = await runtime.task("controlled_agent", registry=registry)
+    node = langgraph_integration.RuntimeNode[dict[str, Any]](cast(Runtime, runtime))
+    result = await node(
+        {"input": "hello task"},
+        config={"configurable": {"proteo_task_id": task.id}},
+    )
+    assert result == {"output": "task output"}
+    assert any(e.get("event", {}).get("task_id") == task.id for e in events)
+    await task.close()
+
+
+@pytest.mark.asyncio
+async def test_runtime_node_rejects_conflicting_task_and_session_ids() -> None:
+    """Verify RuntimeNode rejects conflicting proteo_task_id and proteo_session_id."""
+    runtime = FakeRuntime()
+    node = langgraph_integration.RuntimeNode[dict[str, Any]](cast(Runtime, runtime))
+    with pytest.raises(
+        ConfigurationError,
+        match="Cannot specify both proteo_task_id and proteo_session_id",
+    ):
+        await node(
+            {"input": "conflict"},
+            config={
+                "configurable": {
+                    "proteo_task_id": "task_123",
+                    "proteo_session_id": "session_123",
+                }
+            },
+        )
+
+
+@pytest.mark.asyncio
+async def test_model_node_rejects_task_id() -> None:
+    """Verify a model-backed RuntimeNode rejects proteo_task_id."""
+    runtime = FakeRuntime()
+    model = runtime.model(profile="brain")
+    node = langgraph_integration.RuntimeNode[dict[str, Any]](model)
+    with pytest.raises(
+        ConfigurationError,
+        match="Task identifiers are not accepted by a model node",
+    ):
+        await node(
+            {"input": "test"},
+            config={"configurable": {"proteo_task_id": "task_123"}},
+        )
+
+
+@pytest.mark.asyncio
+async def test_runtime_node_rejects_empty_task_id() -> None:
+    """Verify RuntimeNode rejects empty proteo_task_id."""
+    runtime = FakeRuntime()
+    node = langgraph_integration.RuntimeNode[dict[str, Any]](cast(Runtime, runtime))
+    with pytest.raises(
+        ConfigurationError,
+        match="non-empty task identifier",
+    ):
+        await node(
+            {"input": "test"},
+            config={"configurable": {"proteo_task_id": "   "}},
+        )

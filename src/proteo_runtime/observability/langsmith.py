@@ -127,6 +127,8 @@ class LangSmithObserver:
         if key in self._runs:
             return
         metadata = dict(event.metadata)
+        if event.task_id:
+            metadata["proteo_task_id"] = event.task_id
         parent_candidate = metadata.get("langgraph_run_id") or metadata.get("parent_run_id")
         parent_id = _valid_parent_id(parent_candidate)
         if parent is not None:

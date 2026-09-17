@@ -904,3 +904,78 @@ def test_native_otel_configuration_is_private_and_capability_gated() -> None:
         CodexNativeOtelConfig(enabled=True, endpoint="https://collector.invalid?token=secret")
     with pytest.raises(ValueError):
         CodexNativeOtelConfig(resource_attributes={"api_key": "secret"})
+
+
+@pytest.mark.asyncio
+async def test_otel_records_task_spans_and_attributes() -> None:
+    """Validate OpenTelemetryObserver records task spans and proteo.task_id attribute."""
+    tracer, meter = _Tracer(), _Meter()
+    observer = OpenTelemetryObserver(tracer, meter)
+
+    await observer.on_event(
+        RuntimeEvent(
+            RuntimeEventKind.TASK_STARTED,
+            "task-start-1",
+            0,
+            datetime.now(UTC),
+            RuntimeIdentity("fake", "identity"),
+            task_id="task_12345",
+            metadata={"profile": "controlled_agent", "model": "test-model"},
+        )
+    )
+    assert len(tracer.spans) == 1
+    task_span = tracer.spans[0]
+    assert task_span.name == "proteo.task"
+    assert task_span.attributes.get("proteo.task_id") == "task_12345"
+    assert not task_span.ended
+
+    await observer.on_event(
+        RuntimeEvent(
+            RuntimeEventKind.INVOCATION_STARTED,
+            "inv-start-1",
+            1,
+            datetime.now(UTC),
+            RuntimeIdentity("fake", "identity"),
+            invocation_id="inv-1",
+            task_id="task_12345",
+        )
+    )
+    inv_span = tracer.spans[-1]
+    assert inv_span.name == "proteo.invocation"
+    assert inv_span.attributes.get("proteo.task_id") == "task_12345"
+
+    await observer.on_event(
+        RuntimeEvent(
+            RuntimeEventKind.TASK_CLOSED,
+            "task-close-1",
+            2,
+            datetime.now(UTC),
+            RuntimeIdentity("fake", "identity"),
+            task_id="task_12345",
+        )
+    )
+    assert task_span.ended
+
+
+@pytest.mark.asyncio
+async def test_langsmith_observer_projects_proteo_task_id() -> None:
+    """Validate LangSmithObserver projects metadata['proteo_task_id']."""
+    client = _LangClient()
+    observer = LangSmithObserver(client=client)
+
+    await observer.on_event(
+        RuntimeEvent(
+            RuntimeEventKind.INVOCATION_STARTED,
+            "inv-1",
+            0,
+            datetime.now(UTC),
+            RuntimeIdentity("fake", "identity"),
+            invocation_id="inv-1",
+            task_id="task_abc",
+        )
+    )
+    assert len(client.created) == 1
+    run = client.created[0]
+    extra = cast(dict[str, Any], run.get("extra", {}))
+    metadata = cast(dict[str, Any], extra.get("metadata", {}))
+    assert metadata.get("proteo_task_id") == "task_abc"
