@@ -119,6 +119,8 @@ async def start_thread(sdk: Any, *, dynamic_tools: ToolSnapshot, **params: Any) 
     require_dynamic_tools()
     await sdk._ensure_initialized()
     raw = {key: value for key, value in params.items() if value is not None}
+    if "developer_instructions" in raw:
+        raw["developerInstructions"] = raw.pop("developer_instructions")
     raw["dynamicTools"] = list(dynamic_tool_specs(dynamic_tools))
     response = await sdk._client.thread_start(raw)
     from openai_codex import AsyncThread
@@ -150,20 +152,33 @@ class CodexToolBridge:
         loop: asyncio.AbstractEventLoop | None = None,
         *,
         invocation_id: str | None = None,
+        task_id: str | None = None,
     ) -> None:
         """Capture the host loop used to await tool calls."""
 
         self.executor = executor
         self.loop = loop or asyncio.get_running_loop()
         self.invocation_id = invocation_id
+        self.task_id = task_id
         self.thread_id: str | None = None
         self.turn_id: str | None = None
         self._pending: set[Any] = set()
 
-    def bind(self, *, thread_id: str, turn_id: str) -> None:
+    def bind(
+        self,
+        *,
+        thread_id: str,
+        turn_id: str,
+        invocation_id: str | None = None,
+        task_id: str | None = None,
+    ) -> None:
         """Bind this bridge to one provider thread and turn."""
 
         self.thread_id, self.turn_id = thread_id, turn_id
+        if invocation_id is not None:
+            self.invocation_id = invocation_id
+        if task_id is not None:
+            self.task_id = task_id
 
     def unbind(self) -> None:
         """Cancel pending reader-thread waits and remove provider identifiers."""
@@ -173,7 +188,7 @@ class CodexToolBridge:
         self._pending.clear()
         if self.invocation_id:
             self.executor.end_invocation(self.invocation_id)
-        self.thread_id = self.turn_id = None
+        self.thread_id = self.turn_id = self.task_id = None
 
     def matches(self, params: Mapping[str, Any]) -> bool:
         """Return whether a protocol request belongs to this bridge."""
@@ -217,13 +232,19 @@ class CodexToolBridge:
         if not invocation_id or not call_id or not name or not isinstance(arguments, Mapping):
             return _dynamic_response(False, "tool_execution_error", "invalid tool request")
         try:
+            session_id = (
+                None
+                if self.task_id is not None
+                else _optional_string(params.get("threadId", params.get("thread_id")))
+            )
             request = ToolRequest(
                 invocation_id,
                 call_id,
                 name,
                 arguments,
-                session_id=_optional_string(params.get("threadId", params.get("thread_id"))),
+                session_id=session_id,
                 turn_id=_optional_string(params.get("turnId", params.get("turn_id"))),
+                task_id=self.task_id,
             )
         except (TypeError, ValueError):
             return _dynamic_response(False, "tool_execution_error", "invalid tool request")
@@ -253,10 +274,23 @@ class CodexToolMux:
 
         self._routes: dict[tuple[str, str], CodexToolBridge] = {}
 
-    def register(self, bridge: CodexToolBridge, *, thread_id: str, turn_id: str) -> None:
+    def register(
+        self,
+        bridge: CodexToolBridge,
+        *,
+        thread_id: str,
+        turn_id: str,
+        invocation_id: str | None = None,
+        task_id: str | None = None,
+    ) -> None:
         """Register one active provider route."""
 
-        bridge.bind(thread_id=thread_id, turn_id=turn_id)
+        bridge.bind(
+            thread_id=thread_id,
+            turn_id=turn_id,
+            invocation_id=invocation_id,
+            task_id=task_id,
+        )
         self._routes[(thread_id, turn_id)] = bridge
 
     def unregister(self, bridge: CodexToolBridge) -> None:

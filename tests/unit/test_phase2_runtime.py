@@ -485,9 +485,11 @@ async def test_codex_profile_capabilities_and_session_overrides(monkeypatch: Any
     install_sdk(monkeypatch, sdk)
     runtime = codex_runtime.CodexRuntime()
     await runtime.start()
+    with pytest.raises(CapabilityError, match="requires an explicit task lifecycle"):
+        runtime.model(profile="controlled_agent")
     with pytest.raises(CapabilityError):
-        await runtime.model(profile="controlled_agent").ainvoke("tools")
-    deferred = runtime.model(profile="controlled_agent").with_structured_output(Answer)
+        await runtime.model(profile="controlled_turn").ainvoke("tools")
+    deferred = runtime.model(profile="controlled_turn").with_structured_output(Answer)
     with pytest.raises(CapabilityError):
         await deferred.effective_capabilities()
     assert not sdk.start_calls

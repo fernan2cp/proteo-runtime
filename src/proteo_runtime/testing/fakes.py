@@ -11,6 +11,7 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
+from uuid import uuid4
 
 from jsonschema import Draft202012Validator, SchemaError
 from pydantic import BaseModel, ValidationError
@@ -40,6 +41,7 @@ from proteo_runtime.core.model_info import ModelInfo
 from proteo_runtime.core.observability import ObservabilityStatus
 from proteo_runtime.core.profiles import profile_spec
 from proteo_runtime.core.session_codec import SessionCodec
+from proteo_runtime.core.task import RuntimeTask, TaskState, validate_task_input
 from proteo_runtime.core.usage import RuntimeUsage
 from proteo_runtime.observability import ObservabilityConfig, RuntimeEventBus
 from proteo_runtime.tools import ToolExecutor, ToolRegistry, ToolRequest, ToolSnapshot
@@ -104,6 +106,7 @@ class FakeRuntime:
         self._capabilities = capabilities or RuntimeCapabilities(
             structured_output=True,
             ephemeral_sessions=True,
+            ephemeral_tasks=True,
             persistent_sessions=True,
             streaming=True,
             interruption=True,
@@ -113,6 +116,7 @@ class FakeRuntime:
             usage_reporting=True,
         )
         self._sessions: dict[str, _SessionState] = {}
+        self._tasks: dict[str, FakeTask] = {}
         self._deleted_sessions: set[str] = set()
         self._sequence = 0
         self._started = False
@@ -138,6 +142,7 @@ class FakeRuntime:
         invocation_id: str | None = None,
         session_id: str | None = None,
         turn_id: str | None = None,
+        task_id: str | None = None,
         metadata: dict[str, Any] | None = None,
         result: RuntimeResult[Any] | None = None,
         payload: Mapping[str, Any] | None = None,
@@ -156,6 +161,7 @@ class FakeRuntime:
             metadata or {},
             result,
             payload or {},
+            task_id=task_id,
         )
         self._sequence += 1
         self.events.append(event)
@@ -186,27 +192,43 @@ class FakeRuntime:
         del exc_type, exc_value, traceback
         await self.close()
 
+    @property
+    def name(self) -> str:
+        """Return the runtime provider name."""
+
+        return "fake"
+
     async def close(self) -> None:
         """Close the fake runtime while preserving session state."""
 
-        if self._started and not self._closed:
+        if not self._closed:
             self._closed = True
-            observability_error: AgentRuntimeError | None = None
-            try:
-                await self._dispatch(self._emit(RuntimeEventKind.RUNTIME_STOPPED))
-            except AgentRuntimeError as exc:
-                observability_error = exc
-            try:
-                await self._observability.close()
-            except AgentRuntimeError as exc:
-                observability_error = observability_error or exc
-            if observability_error is not None:
-                raise observability_error
+            for task in list(self._tasks.values()):
+                with suppress(Exception):
+                    await task.close()
+            self._tasks.clear()
+            if self._started:
+                observability_error: AgentRuntimeError | None = None
+                try:
+                    await self._dispatch(self._emit(RuntimeEventKind.RUNTIME_STOPPED))
+                except AgentRuntimeError as exc:
+                    observability_error = exc
+                try:
+                    await self._observability.close()
+                except AgentRuntimeError as exc:
+                    observability_error = observability_error or exc
+                if observability_error is not None:
+                    raise observability_error
 
     async def capabilities(self) -> RuntimeCapabilities:
         """Return fake runtime capabilities."""
 
         return self._capabilities
+
+    async def effective_capabilities(self) -> RuntimeCapabilities:
+        """Return the fake runtime capabilities."""
+
+        return await self.capabilities()
 
     async def models(self) -> list[ModelInfo]:
         """Return one deterministic model descriptor."""
@@ -221,8 +243,15 @@ class FakeRuntime:
         """Create a fake model view for a profile and level."""
 
         spec = self._profile_spec(profile)
-        if spec.persistent or spec.lifecycle.value == "explicit":
-            raise CapabilityError("Persistent and explicit profiles require a session factory")
+        if spec.context.value == "runtime" and spec.lifecycle.value == "ephemeral":
+            raise CapabilityError(
+                f"Profile '{profile}' has runtime context and requires an explicit task lifecycle "
+                f"via runtime.task(); use 'controlled_turn' for invocation-scoped model execution."
+            )
+        if spec.persistent or spec.lifecycle.value in {"explicit", "persistent"}:
+            raise CapabilityError(
+                f"Profile '{profile}' is persistent; use runtime.session() for durable sessions."
+            )
         if level not in {"low", "medium", "high", "ultra"}:
             raise CapabilityError(f"Unknown reasoning level: {level}")
         return FakeRuntimeModel(self, profile, level)
@@ -239,6 +268,14 @@ class FakeRuntime:
         """Create and retain a resumable fake session."""
 
         spec = self._profile_spec(profile)
+        if spec.lifecycle.value == "ephemeral":
+            if spec.context.value == "runtime":
+                raise CapabilityError(
+                    f"Profile '{profile}' is ephemeral; use runtime.task() for ephemeral task execution"
+                )
+            raise CapabilityError(
+                f"Profile '{profile}' is ephemeral and external; use runtime.model() for invocation-scoped execution"
+            )
         if not spec.persistent:
             raise CapabilityError("Fake persistent sessions require a persistent profile")
         if level not in {"low", "medium", "high", "ultra"}:
@@ -280,6 +317,10 @@ class FakeRuntime:
 
         if not isinstance(session_id, str):
             raise TypeError("Session descriptor must be a string")
+        if session_id.startswith("task_"):
+            raise SessionNotFoundError(
+                f"Task '{session_id}' is ephemeral and cannot be resumed as a session"
+            )
         if session_id in self._deleted_sessions:
             raise SessionNotFoundError("Fake session was not found")
         descriptor = SessionCodec.decode(session_id)
@@ -318,6 +359,81 @@ class FakeRuntime:
             state.tool_executor = tool_executor
         await self._dispatch(self._emit(RuntimeEventKind.SESSION_RESUMED, session_id=session_id))
         return FakeRuntimeSession(self, state)
+
+    async def task(
+        self,
+        profile: str = "controlled_agent",
+        *,
+        level: str = "medium",
+        instructions: str | None = None,
+        config: InvocationConfig | None = None,
+        registry: ToolRegistry | None = None,
+        executor: ToolExecutor | None = None,
+    ) -> FakeTask:
+        """Create a task-scoped ephemeral controlled agent.
+
+        Args:
+            profile: Profile name (defaults to 'controlled_agent').
+            level: Logical reasoning effort level.
+            instructions: Optional initial instructions frozen for the task lifetime.
+            config: Optional default invocation configuration for turns.
+            registry: Host-tool registry (mandatory for controlled tool profiles).
+            executor: Optional host-tool executor.
+
+        Returns:
+            An active FakeTask handle.
+
+        Raises:
+            CapabilityError: If capabilities, lifecycle, or tool bindings are invalid.
+        """
+        capabilities = await self.capabilities()
+        if not capabilities.ephemeral_tasks:
+            raise CapabilityError(
+                f"Runtime '{self.name}' does not support ephemeral multi-turn tasks."
+            )
+        spec = self._profile_spec(profile)
+        if spec.context.value == "external":
+            raise CapabilityError(
+                f"Profile '{profile}' has external context; use runtime.model() for invocation-scoped execution"
+            )
+        if spec.persistent or spec.lifecycle.value == "persistent":
+            raise CapabilityError(
+                f"Profile '{profile}' is persistent; use runtime.session() for durable sessions"
+            )
+        if registry is None:
+            raise CapabilityError("A host-tool registry is required for this profile")
+        tool_snapshot, tool_executor = self._tool_binding(spec, registry, executor)
+        task_id = f"task_{uuid4().hex}"
+        task = FakeTask(
+            runtime=self,
+            task_id=task_id,
+            profile=profile,
+            level=level,
+            instructions=instructions,
+            config=config or InvocationConfig(),
+            tool_snapshot=tool_snapshot,
+            tool_executor=tool_executor,
+        )
+        self._tasks[task_id] = task
+        await self._dispatch(self._emit(RuntimeEventKind.TASK_STARTED, task_id=task_id))
+        return task
+
+    def get_task(self, task_id: str) -> FakeTask:
+        """Resolve an active, in-memory task by its identifier.
+
+        Args:
+            task_id: Unique task identifier.
+
+        Returns:
+            The active FakeTask instance.
+
+        Raises:
+            SessionNotFoundError: If the task is missing or already closed.
+        """
+        task = self._tasks.get(task_id)
+        if task is None or task._state != TaskState.OPEN:
+            raise SessionNotFoundError(f"Task '{task_id}' not found or already closed")
+        return task
 
     def _tool_binding(
         self,
@@ -638,6 +754,8 @@ class FakeRuntime:
         turn_id: str,
         usage: RuntimeUsage,
         result: RuntimeResult[Any] | None = None,
+        *,
+        task_id: str | None = None,
     ) -> list[RuntimeEvent]:
         """Emit usage and completion events for a successful invocation."""
 
@@ -647,6 +765,7 @@ class FakeRuntime:
                 invocation_id=invocation_id,
                 session_id=session_id,
                 turn_id=turn_id,
+                task_id=task_id,
                 metadata={"total_tokens": usage.total_tokens or 0},
             ),
             self._emit(
@@ -654,15 +773,182 @@ class FakeRuntime:
                 invocation_id=invocation_id,
                 session_id=session_id,
                 turn_id=turn_id,
+                task_id=task_id,
             ),
             self._emit(
                 RuntimeEventKind.INVOCATION_COMPLETED,
                 invocation_id=invocation_id,
                 session_id=session_id,
                 turn_id=turn_id,
+                task_id=task_id,
                 result=result,
             ),
         ]
+
+    async def _execute_task_turn(
+        self,
+        task: FakeTask,
+        input: RuntimeInput,
+        *,
+        config: InvocationConfig | None = None,
+        include_raw: bool | None = None,
+        stream: bool = False,
+    ) -> tuple[RuntimeResult[Any], list[RuntimeEvent], FakeTurn]:
+        """Execute one scripted turn within a task and collect lifecycle events."""
+
+        del input, include_raw
+        invocation_id, turn_id = self._id_factory(), self._id_factory()
+        task._active_invocation_id = invocation_id
+        generated: list[RuntimeEvent] = []
+        published = False
+        try:
+            generated = [
+                self._emit(
+                    RuntimeEventKind.INVOCATION_STARTED,
+                    invocation_id=invocation_id,
+                    turn_id=turn_id,
+                    task_id=task.id,
+                    metadata={
+                        **dict(config.metadata if config else {}),
+                        "model": task._model,
+                        "profile": task._profile,
+                        "reasoning_effort": task._level,
+                        "ephemeral": True,
+                        "structured_output": False,
+                        "context_policy": "runtime",
+                        "security_policy": "controlled_tools",
+                    },
+                ),
+                self._emit(
+                    RuntimeEventKind.TURN_STARTED,
+                    invocation_id=invocation_id,
+                    turn_id=turn_id,
+                    task_id=task.id,
+                ),
+            ]
+            turn = self._next_turn()
+            if task._tool_executor is not None and turn.tool_calls:
+                event_start = len(task._tool_executor.events)
+                for call_id, tool_name, arguments in turn.tool_calls:
+                    await task._tool_executor.execute(
+                        ToolRequest(
+                            invocation_id,
+                            call_id,
+                            tool_name,
+                            arguments,
+                            session_id=None,
+                            turn_id=turn_id,
+                            task_id=task.id,
+                        )
+                    )
+                generated.extend(task._tool_executor.events[event_start:])
+            if turn.delay_seconds:
+                await asyncio.sleep(turn.delay_seconds)
+            if task._interrupted:
+                generated.extend(
+                    [
+                        self._emit(
+                            RuntimeEventKind.TURN_INTERRUPTED,
+                            invocation_id=invocation_id,
+                            turn_id=turn_id,
+                            task_id=task.id,
+                        ),
+                        self._emit(
+                            RuntimeEventKind.INTERRUPTED,
+                            invocation_id=invocation_id,
+                            turn_id=turn_id,
+                            task_id=task.id,
+                        ),
+                    ]
+                )
+                raise InterruptedError("Fake turn was interrupted")
+            if turn.error:
+                if isinstance(turn.error, InterruptedError):
+                    generated.extend(
+                        [
+                            self._emit(
+                                RuntimeEventKind.TURN_INTERRUPTED,
+                                invocation_id=invocation_id,
+                                turn_id=turn_id,
+                                task_id=task.id,
+                            ),
+                            self._emit(
+                                RuntimeEventKind.INTERRUPTED,
+                                invocation_id=invocation_id,
+                                turn_id=turn_id,
+                                task_id=task.id,
+                            ),
+                        ]
+                    )
+                else:
+                    generated.extend(
+                        [
+                            self._emit(
+                                RuntimeEventKind.TURN_FAILED,
+                                invocation_id=invocation_id,
+                                turn_id=turn_id,
+                                task_id=task.id,
+                            ),
+                            self._emit(
+                                RuntimeEventKind.INVOCATION_FAILED,
+                                invocation_id=invocation_id,
+                                turn_id=turn_id,
+                                task_id=task.id,
+                            ),
+                        ]
+                    )
+                if isinstance(turn.error, AgentRuntimeError):
+                    raise turn.error
+                raise RuntimeUnavailableError(
+                    "Fake turn failed", details={"exception_type": type(turn.error).__name__}
+                ) from None
+            result = RuntimeResult(
+                value=turn.value,
+                usage=turn.usage,
+                runtime=self._identity,
+                model=task._model,
+                profile=task._profile,
+                reasoning_effort=task._level,
+                session_id=None,
+                task_id=task.id,
+                turn_id=turn_id,
+                diagnostics=turn.diagnostics,
+            )
+            if not stream:
+                generated.extend(
+                    self._terminal_events(
+                        invocation_id, None, turn_id, turn.usage, result, task_id=task.id
+                    )
+                )
+                generated = await self._publish_events(generated)
+                published = True
+                terminal = next(
+                    (event.result for event in reversed(generated) if event.result is not None),
+                    None,
+                )
+                if terminal is not None:
+                    result = terminal
+            return result, generated, turn
+        except asyncio.CancelledError as exc:
+            generated.append(
+                self._emit(
+                    RuntimeEventKind.CANCELLED,
+                    invocation_id=invocation_id,
+                    turn_id=turn_id,
+                    task_id=task.id,
+                )
+            )
+            if not published:
+                await self._publish_events(generated)
+            raise CancellationError("Fake turn was cancelled") from exc
+        except Exception:
+            if not published and generated:
+                await self._publish_events(generated)
+            raise
+        finally:
+            if task._tool_executor is not None:
+                task._tool_executor.end_invocation(invocation_id)
+            task._active_invocation_id = None
 
 
 class FakeRuntimeModel:
@@ -1163,6 +1449,255 @@ class FakeRuntimeSession:
             await self._runtime._dispatch(
                 self._runtime._emit(RuntimeEventKind.SESSION_DELETED, session_id=self.id)
             )
+
+
+class FakeTask(RuntimeTask[Any]):
+    """Deterministic in-memory task handle implementing RuntimeTask."""
+
+    def __init__(
+        self,
+        runtime: FakeRuntime,
+        task_id: str,
+        *,
+        profile: str,
+        level: str,
+        instructions: str | None,
+        config: InvocationConfig,
+        tool_snapshot: ToolSnapshot | None = None,
+        tool_executor: ToolExecutor | None = None,
+    ) -> None:
+        """Initialize an active fake task.
+
+        Args:
+            runtime: Owning FakeRuntime instance.
+            task_id: Unique task identifier.
+            profile: Execution profile name.
+            level: Logical reasoning effort level.
+            instructions: Frozen initial instructions.
+            config: Default invocation configuration.
+            tool_snapshot: Optional frozen tool definitions.
+            tool_executor: Optional host tool executor.
+        """
+        self._runtime = runtime
+        self._id = task_id
+        self._profile = profile
+        self._level = level
+        self._model = "fake-model"
+        self._instructions = instructions
+        self._config = config
+        self._tool_snapshot = tool_snapshot
+        self._tool_executor = tool_executor
+        self._state = TaskState.OPEN
+        self._active = False
+        self._interrupted = False
+        self._active_invocation_id: str | None = None
+        self._lock = asyncio.Lock()
+        self._close_lock = asyncio.Lock()
+        self._close_event = asyncio.Event()
+
+    @property
+    def id(self) -> str:
+        """Return the unique task identifier string."""
+        return self._id
+
+    @property
+    def instructions(self) -> str | None:
+        """Return initial task instructions frozen at creation."""
+        return self._instructions
+
+    @property
+    def state(self) -> TaskState:
+        """Return the current lifecycle state of the task."""
+        return self._state
+
+    def _ensure_open(self) -> None:
+        """Raise SessionNotFoundError if the task is closing or closed."""
+        if self._state in (TaskState.CLOSING, TaskState.CLOSED):
+            raise SessionNotFoundError(f"Task '{self._id}' not found or already closed")
+
+    def _validate_config(self, config: InvocationConfig | None) -> None:
+        """Reject prohibited per-turn configuration overrides.
+
+        Args:
+            config: Per-turn invocation config to validate.
+
+        Raises:
+            ConfigurationError: If model or reasoning effort modification is attempted.
+        """
+        if config is None:
+            return
+        if config.model is not None and config.model != self._model:
+            raise ConfigurationError(
+                f"Cannot change model from '{self._model}' to '{config.model}' on active task"
+            )
+        if config.reasoning_effort is not None and config.reasoning_effort != self._level:
+            raise ConfigurationError(
+                f"Cannot change reasoning effort from '{self._level}' to '{config.reasoning_effort}' on active task"
+            )
+
+    async def ainvoke(
+        self,
+        input: str | RuntimeInput,
+        *,
+        config: InvocationConfig | None = None,
+        include_raw: bool | None = None,
+    ) -> RuntimeResult[Any]:
+        """Execute one turn within the task, reusing the task context.
+
+        Args:
+            input: Turn input string or structured RuntimeInput.
+            config: Optional per-turn invocation configuration.
+            include_raw: Optional override to include raw payloads.
+
+        Returns:
+            The terminal RuntimeResult.
+
+        Raises:
+            SessionNotFoundError: If the task is closing or already closed.
+            SessionBusyError: If another turn is currently running.
+            ConfigurationError: If forbidden configuration overrides are passed.
+            ContextPolicyError: If replaying non-user messages.
+        """
+        self._ensure_open()
+        if self._lock.locked() or self._active:
+            raise SessionBusyError("Task already has an active turn")
+        self._validate_config(config)
+        validated_input = validate_task_input(input)
+
+        async with self._lock:
+            self._active = True
+            try:
+                result, _, _ = await self._runtime._execute_task_turn(
+                    self,
+                    validated_input,
+                    config=config,
+                    include_raw=include_raw,
+                    stream=False,
+                )
+                return result
+            finally:
+                self._active = False
+
+    async def astream(
+        self,
+        input: str | RuntimeInput,
+        *,
+        config: InvocationConfig | None = None,
+        include_raw: bool | None = None,
+    ) -> AsyncIterator[RuntimeEvent]:
+        """Stream events for one turn within the task.
+
+        Args:
+            input: Turn input string or structured RuntimeInput.
+            config: Optional per-turn invocation configuration.
+            include_raw: Optional override to include raw payloads.
+
+        Yields:
+            Correlated runtime lifecycle and output events.
+
+        Raises:
+            SessionNotFoundError: If the task is closing or already closed.
+            SessionBusyError: If another turn is currently running.
+            ConfigurationError: If forbidden configuration overrides are passed.
+            ContextPolicyError: If replaying non-user messages.
+        """
+        self._ensure_open()
+        if self._lock.locked() or self._active:
+            raise SessionBusyError("Task already has an active turn")
+        self._validate_config(config)
+        validated_input = validate_task_input(input)
+
+        await self._lock.acquire()
+        try:
+            self._active = True
+            result, generated, turn = await self._runtime._execute_task_turn(
+                self,
+                validated_input,
+                config=config,
+                include_raw=include_raw,
+                stream=True,
+            )
+            invocation_id = generated[0].invocation_id or ""
+            turn_id = generated[0].turn_id or ""
+            streamed = list(generated)
+            streamed.extend(
+                turn.events
+                or (
+                    self._runtime._emit(
+                        RuntimeEventKind.OUTPUT_TEXT_DELTA,
+                        invocation_id=invocation_id,
+                        turn_id=turn_id,
+                        task_id=self.id,
+                        payload={"text": chunk},
+                    )
+                    for chunk in _chunks(str(turn.value))
+                )
+            )
+            res = RuntimeResult(
+                value=turn.value,
+                usage=turn.usage,
+                runtime=self._runtime._identity,
+                model=self._model,
+                profile=self._profile,
+                reasoning_effort=self._level,
+                turn_id=turn_id,
+                task_id=self.id,
+            )
+            streamed.extend(
+                self._runtime._terminal_events(
+                    invocation_id, None, turn_id, turn.usage, res, task_id=self.id
+                )
+            )
+            for event in await self._runtime._publish_events(streamed):
+                yield event
+        finally:
+            self._active = False
+            self._lock.release()
+
+    async def interrupt(self) -> None:
+        """Interrupt any active turn on this task.
+
+        Raises:
+            SessionNotFoundError: If the task is closing or closed.
+        """
+        self._ensure_open()
+        if self._active:
+            self._interrupted = True
+
+    async def close(self) -> None:
+        """Idempotently close this task and clean up resources."""
+        async with self._close_lock:
+            if self._state == TaskState.CLOSED:
+                return
+            if self._state == TaskState.CLOSING:
+                await self._close_event.wait()
+                return
+            self._state = TaskState.CLOSING
+
+        try:
+            if self._active and self._active_invocation_id and self._tool_executor is not None:
+                self._tool_executor.end_invocation(self._active_invocation_id)
+            self._runtime._tasks.pop(self._id, None)
+        finally:
+            self._state = TaskState.CLOSED
+            self._close_event.set()
+            await self._runtime._dispatch(
+                self._runtime._emit(RuntimeEventKind.TASK_CLOSED, task_id=self._id)
+            )
+
+    async def __aenter__(self) -> FakeTask:
+        """Enter the async context manager."""
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: Any,
+    ) -> None:
+        """Close the task upon leaving the context manager."""
+        del exc_type, exc_val, exc_tb
+        await self.close()
 
 
 def _chunks(value: str, size: int = 8) -> tuple[str, ...]:

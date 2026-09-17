@@ -150,7 +150,27 @@ class FakeSDK:
         self.archive_calls: list[str] = []
         self.delete_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
         self.close_count = 0
-        self._client = SimpleNamespace(request=self.request)
+        self._raw_started: list[dict[str, Any]] = []
+        self._raw_resumed: list[tuple[str, dict[str, Any]]] = []
+
+        async def _raw_thread_start(params: dict[str, Any]) -> Any:
+            self._raw_started.append(params)
+            thread_id = f"thread-{len(self._raw_started)}"
+            return SimpleNamespace(thread=SimpleNamespace(id=thread_id))
+
+        async def _raw_thread_resume(thread_id: str, params: dict[str, Any]) -> Any:
+            self._raw_resumed.append((thread_id, params))
+            return SimpleNamespace(thread=SimpleNamespace(id=thread_id))
+
+        self._client = SimpleNamespace(
+            request=self.request,
+            thread_start=_raw_thread_start,
+            thread_resume=_raw_thread_resume,
+            _sync=SimpleNamespace(_approval_handler=None),
+        )
+
+    async def _ensure_initialized(self) -> None:
+        """Simulate App Server initialization."""
 
     async def account(self, refresh_token: bool = False) -> Any:
         """Return the configured managed account."""

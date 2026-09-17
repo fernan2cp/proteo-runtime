@@ -614,7 +614,7 @@ async def test_fake_runtime_executes_multiple_host_calls_and_rebinds_on_resume()
             )
         ]
     )
-    bound = fake.model(profile="controlled_agent").with_tools(registry, executor=executor)
+    bound = fake.model(profile="controlled_turn").with_tools(registry, executor=executor)
     await bound.ainvoke("run tools")
     completed = [
         event for event in executor.events if event.kind is RuntimeEventKind.TOOL_COMPLETED
@@ -847,7 +847,7 @@ async def test_fake_and_codex_tool_bindings_gate_profiles_and_sessions() -> None
         usage_reporting=True,
     )
     fake = FakeRuntime(capabilities=capabilities)
-    bound = fake.model(profile="controlled_agent").with_tools(registry)
+    bound = fake.model(profile="controlled_turn").with_tools(registry)
     assert (await bound.effective_capabilities()).host_tools is True
     with pytest.raises(CapabilityError):
         bound.with_structured_output({"type": "string"})
@@ -882,7 +882,7 @@ async def test_fake_and_codex_tool_bindings_gate_profiles_and_sessions() -> None
     )
     snapshot, executor = codex._tool_binding(spec, registry, None)
     assert snapshot is not None and executor is not None
-    model = codex.model(profile="controlled_agent").with_tools(registry)
+    model = codex.model(profile="controlled_turn").with_tools(registry)
     assert (await model.effective_capabilities()).host_tools is True
     with pytest.raises(CapabilityError):
         codex._tool_binding(spec, ToolRegistry(), None)
@@ -896,8 +896,8 @@ async def test_fake_and_codex_tool_bindings_gate_profiles_and_sessions() -> None
 
 
 @pytest.mark.asyncio
-async def test_controlled_agent_effective_capabilities_and_profile_isolation() -> None:
-    """Validate controlled_agent capabilities when bound vs unbound and tool isolation."""
+async def test_controlled_turn_effective_capabilities_and_profile_isolation() -> None:
+    """Validate controlled_turn capabilities when bound vs unbound and tool isolation."""
     registry = ToolRegistry()
     registry.register(add_value)
     executor = ToolExecutor(
@@ -906,8 +906,8 @@ async def test_controlled_agent_effective_capabilities_and_profile_isolation() -
 
     codex = CodexRuntime(experimental_dynamic_tools=True)
 
-    # 1. Bound controlled_agent with valid tools exposes host_tools=True, structured_output=False
-    model = codex.model(profile="controlled_agent", level="low").with_tools(
+    # 1. Bound controlled_turn with valid tools exposes host_tools=True, structured_output=False
+    model = codex.model(profile="controlled_turn", level="low").with_tools(
         registry, executor=executor
     )
     caps = await model.effective_capabilities()
@@ -915,8 +915,8 @@ async def test_controlled_agent_effective_capabilities_and_profile_isolation() -
     assert caps.structured_output is False
     assert caps.native_tools is False
 
-    # 2. Unbound controlled_agent does not falsely advertise executable host tools
-    unbound = codex.model(profile="controlled_agent", level="low")
+    # 2. Unbound controlled_turn does not falsely advertise executable host tools
+    unbound = codex.model(profile="controlled_turn", level="low")
     unbound_caps = await unbound.effective_capabilities()
     assert unbound_caps.host_tools is False
     assert unbound_caps.structured_output is False
@@ -934,17 +934,21 @@ async def test_controlled_agent_effective_capabilities_and_profile_isolation() -
     with pytest.raises(CapabilityError, match="cannot be combined with host-managed tools"):
         model.with_structured_output({"type": "string"})
 
-    # 6. Controlled agent fails closed without experimental_dynamic_tools=True
+    # 6. Controlled turn fails closed without experimental_dynamic_tools=True
     codex_no_flag = CodexRuntime(experimental_dynamic_tools=False)
     with pytest.raises(CapabilityError, match="experimental_dynamic_tools=True"):
-        codex_no_flag.model(profile="controlled_agent", level="low").with_tools(registry)
+        codex_no_flag.model(profile="controlled_turn", level="low").with_tools(registry)
+
+    # 7. Controlled agent is rejected synchronously on model()
+    with pytest.raises(CapabilityError, match="requires an explicit task lifecycle"):
+        codex.model(profile="controlled_agent", level="low")
 
 
 @pytest.mark.asyncio
-async def test_default_config_controlled_agent_binding_without_custom_config(
+async def test_default_config_controlled_turn_binding_without_custom_config(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Prove normal applications can bind controlled_agent with tools using packaged defaults.
+    """Prove normal applications can bind controlled_turn with tools using packaged defaults.
 
     Args:
         monkeypatch: Pytest monkeypatch fixture.
@@ -978,7 +982,7 @@ async def test_default_config_controlled_agent_binding_without_custom_config(
     await runtime.start()
 
     # Normal application usage resolving from packaged codex_v1.json
-    model = runtime.model(profile="controlled_agent", level="low").with_tools(
+    model = runtime.model(profile="controlled_turn", level="low").with_tools(
         registry, executor=executor
     )
     caps = await model.effective_capabilities()

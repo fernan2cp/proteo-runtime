@@ -51,7 +51,7 @@ def _smoke_config() -> RuntimeConfigV1:
     }
     return RuntimeConfigV1(
         runtime="codex",
-        profiles={"controlled_agent": mapping},
+        profiles={"controlled_turn": mapping},
     )
 
 
@@ -70,7 +70,7 @@ async def test_codex_dynamic_tools_two_calls() -> None:
         config=_smoke_config(),
         experimental_dynamic_tools=True,
     ) as runtime:
-        model = runtime.model(profile="controlled_agent", level="low").with_tools(
+        model = runtime.model(profile="controlled_turn", level="low").with_tools(
             registry, executor=executor
         )
         result = await model.ainvoke(

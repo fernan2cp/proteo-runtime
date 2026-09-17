@@ -46,6 +46,7 @@ def _event(
     metadata: Mapping[str, Any] | None = None,
     result: RuntimeResult[Any] | None = None,
     payload: Mapping[str, Any] | None = None,
+    task_id: str | None = None,
 ) -> RuntimeEvent:
     """Build one provider-neutral event."""
 
@@ -61,6 +62,7 @@ def _event(
         metadata=dict(metadata or {}),
         result=result,
         payload=dict(payload or {}),
+        task_id=task_id,
     )
 
 
@@ -116,6 +118,7 @@ class TurnRun:
     profile: str
     effort: str
     session_id: str | None = None
+    task_id: str | None = None
     include_raw: bool = False
     context_policy: str | None = None
     security_policy: str | None = None
@@ -155,6 +158,7 @@ class TurnRun:
             metadata=metadata,
             result=result,
             payload=payload,
+            task_id=self.task_id,
         )
         self._sequence += 1
         return event
@@ -369,6 +373,7 @@ class TurnRun:
             session_id=self.session_id,
             turn_id=str(getattr(turn, "id", getattr(self.handle, "id", ""))) or None,
             raw=raw,
+            task_id=self.task_id,
         )
 
     async def interrupt(self) -> None:
