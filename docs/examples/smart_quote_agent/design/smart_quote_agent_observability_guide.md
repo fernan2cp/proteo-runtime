@@ -465,7 +465,15 @@ On `create_run(...)`:
 - store project name;
 - store start time;
 - store metadata;
-- ignore content fields that are absent under metadata-only mode.
+- ignore content fields that are absent under metadata-only mode;
+- return an object or mapping exposing `id` or `run_id`, so the existing
+  `LangSmithObserver` can reuse that identifier for parent/child relationships.
+
+Minimal example:
+
+```python
+return {"id": run_id}
+```
 
 ### `update_run`
 
@@ -808,6 +816,37 @@ config = ObservabilityConfig(
 
 The application then passes this config to `CodexRuntime`.
 
+### Application-created `ToolExecutor` event wiring
+
+`CodexRuntime` automatically sends runtime/turn events through its configured
+observability bus. Application-created `ToolExecutor` instances are different:
+their tool lifecycle events are exported only when their public `event_sink`
+hook is connected.
+
+Phase 2 must therefore wire executors created by the Smart Quote Agent to the
+same application observability pipeline used by the demo.
+
+Relevant events include:
+
+```text
+tool_requested
+validation_failed
+tool_approval_requested
+tool_approval_resolved
+tool_started
+tool_retry_scheduled
+tool_completed
+tool_denied
+tool_failed
+```
+
+Do **not** call the private `CodexRuntime._dispatch` method from the example.
+Use only public observability/tool contracts and keep observer lifecycle
+ownership explicit so the same observer is not closed twice.
+
+This wiring is required especially for the dedicated host-side `create_quote`
+executor, whose lifecycle is not automatically part of a Codex model turn.
+
 ---
 
 ## 22. Failure behavior
@@ -897,6 +936,14 @@ The summary should be derived from local `runtime_events`.
 
 Do not require LangSmith/OTel tables to exist for this view.
 
+`--last` means the most recent **Proteo runtime invocation**, not necessarily
+the most recent CLI message. Host-only interactions such as deterministic
+help, scope rejection, acknowledgement, login/logout, authorization guards,
+discount HITL, or direct DB resolution may produce no runtime invocation at all.
+
+One user interaction may therefore produce zero, one, or multiple Proteo
+runtime invocations.
+
 ---
 
 ## 25. `--last` detailed view
@@ -917,20 +964,44 @@ Runtime Events
 ────────────────────────────────────────
 12:41:02  invocation_started
 12:41:02  turn_started
-12:41:03  tool_requested          find_customer
-12:41:03  tool_started            find_customer
-12:41:03  tool_completed          find_customer
-12:41:04  tool_requested          find_product
-12:41:04  tool_completed          find_product
-12:41:05  tool_requested          create_quote
-12:41:05  tool_approval_requested
-12:41:08  tool_approval_resolved
-12:41:08  tool_started            create_quote
-12:41:08  tool_completed          create_quote
-12:41:09  invocation_completed
+12:41:03  tool_requested          list_products
+12:41:03  tool_started            list_products
+12:41:03  tool_completed          list_products
+12:41:04  turn_completed
+12:41:04  invocation_completed
 ```
 
-Then show the two projections.
+This example represents a controlled-agent catalog request.
+
+Persistent quote creation has a different shape:
+
+```text
+Structured planner invocation
+────────────────────────────────────────
+invocation_started
+turn_started
+turn_completed
+invocation_completed
+
+Host-side deterministic work
+────────────────────────────────────────
+customer resolution      [no RuntimeEvent]
+product resolution       [no RuntimeEvent]
+discount HITL            [no RuntimeEvent]
+
+Direct create_quote ToolExecutor
+────────────────────────────────────────
+tool_requested
+tool_approval_requested
+tool_approval_resolved
+tool_started
+tool_completed
+```
+
+The direct `create_quote` tool events are visible only when the application
+has connected that executor's `event_sink` to the observability pipeline.
+
+Then show the corresponding projections for the selected invocation/event group.
 
 ---
 
@@ -944,10 +1015,12 @@ LangSmith Projection
 
 proteo.runtime
 └── proteo.turn
-    ├── proteo.tool [find_customer]
-    ├── proteo.tool [find_product]
-    └── proteo.tool [create_quote]
+    └── proteo.tool [list_products]
 ```
+
+For host-side `create_quote`, the local recording may instead contain a
+standalone tool run/event group associated with its own invocation identifier,
+depending on how the application wires the direct `ToolExecutor`.
 
 Build the tree from:
 
@@ -969,11 +1042,16 @@ OpenTelemetry Spans
 ────────────────────────────────────────
 
 proteo.invocation        4210 ms
-└── proteo.turn          4178 ms
-    ├── proteo.tool        12 ms
-    ├── proteo.tool         8 ms
-    └── proteo.tool        21 ms
+proteo.turn              4178 ms
+proteo.tool                12 ms
 ```
+
+Group and order spans primarily by safe Proteo correlation attributes such as
+`proteo.invocation_id` and timestamps.
+
+Display a parent/child tree only when the exported OpenTelemetry span context
+actually contains that relationship. Do not fabricate hierarchy from timing or
+span names alone.
 
 When span events exist:
 
@@ -983,19 +1061,24 @@ proteo.tool
   event: tool_approval_resolved
 ```
 
-Metrics:
+Metrics are low-cardinality and should be presented as recent/aggregate
+telemetry, not as exact per-invocation values:
 
 ```text
-OpenTelemetry Metrics
+OpenTelemetry Metrics — recent/aggregate
 ────────────────────────────────────────
 
-proteo.runtime.events          14
-proteo.runtime.invocations      1
-proteo.runtime.tool_calls       3
-proteo.runtime.errors           0
-proteo.runtime.tokens        1820
-proteo.runtime.duration      4210 ms
+proteo.runtime.events          ...
+proteo.runtime.invocations     ...
+proteo.runtime.tool_calls      ...
+proteo.runtime.errors          ...
+proteo.runtime.tokens          ...
+proteo.runtime.duration        ...
 ```
+
+`--invocation` may filter RuntimeEvents, LangSmith runs, and OTel spans by
+correlation identifiers. Do not claim exact invocation-level ownership for
+metrics that intentionally omit high-cardinality invocation labels.
 
 ---
 
@@ -1034,9 +1117,27 @@ Those would expand the demo without demonstrating additional Proteo behavior.
 
 ---
 
-## 29. Authentication observability boundary
+## 29. Host-only observability boundary
 
-Login/logout are host application behavior.
+Login/logout and other deterministic application behavior are host-owned.
+
+Do not create synthetic Proteo runtime events merely to make every CLI turn
+appear in telemetry.
+
+Examples that may legitimately remain outside the Proteo runtime stream:
+
+```text
+help / capability response
+out_of_scope rejection
+acknowledgement
+login / logout
+scope and authorization guards
+discount HITL
+direct customer/product DB resolution
+```
+
+This is intentional: the observability database demonstrates Proteo runtime
+behavior, not a full application audit log.
 
 Do not create synthetic Proteo runtime events for credentials.
 
@@ -1145,10 +1246,18 @@ SQLite access should be simple and safe for the demo.
 
 Recommended:
 
-- open short-lived connections;
-- enable WAL if useful;
+- open short-lived SQLite connections per operation/thread;
+- do not share one default `sqlite3.Connection` between the asyncio event loop
+  and `LangSmithObserver` worker threads;
+- enable WAL;
+- configure a bounded `busy_timeout` (for example 5000 ms);
+- keep transactions short;
 - use normal SQLite transaction semantics;
-- serialize local telemetry writes if needed.
+- serialize local telemetry writes only if needed.
+
+`LangSmithObserver.on_event()` may execute client calls in a worker thread, so
+the recording client must use thread-safe connection ownership rather than one
+shared default SQLite connection.
 
 Do not build a background queue unless measurement shows it is necessary.
 
@@ -1336,19 +1445,21 @@ Use this sequence:
 4. Login as staff.
 5. Create quote with discount.
 6. Approve persistence.
-7. Inspect latest invocation.
-8. Show RuntimeEvent sequence.
-9. Show LangSmith projection tree.
-10. Show OpenTelemetry span tree.
-11. Show OTel metrics.
-12. Open SQLite or run query proving no password exists.
+7. Inspect the structured planner invocation and the direct `create_quote`
+   ToolExecutor event group separately.
+8. Show which quote-resolution/HITL steps were intentionally host-only.
+9. Show RuntimeEvent sequence.
+10. Show LangSmith projection.
+11. Show OpenTelemetry spans grouped by safe correlation identifiers.
+12. Show recent/aggregate OTel metrics.
+13. Open SQLite or run query proving no password exists.
 ```
 
 Optional:
 
 ```text
-13. Re-run with real LangSmith enabled.
-14. Compare local LangSmith projection with remote trace.
+14. Re-run with real LangSmith enabled.
+15. Compare local LangSmith projection with remote trace.
 ```
 
 ---
@@ -1375,18 +1486,20 @@ Optional:
 
 - official `OpenTelemetryObserver` is used;
 - spans are persisted;
-- span hierarchy is reconstructable;
-- metrics are persisted;
+- spans can be grouped by safe Proteo correlation identifiers;
+- parent/child hierarchy is displayed only when present in exported span context;
+- metrics are persisted as low-cardinality recent/aggregate telemetry;
 - tool/retry/validation activity is visible when produced.
 
 ### Inspector
 
-- lists recent invocations;
-- can display last invocation;
-- can filter by invocation ID;
+- lists recent Proteo invocations;
+- clearly states that host-only CLI interactions may produce no invocation;
+- can display last runtime invocation;
+- can filter RuntimeEvents/LangSmith runs/OTel spans by invocation ID;
 - can display raw neutral event sequence;
 - can display LangSmith hierarchy;
-- can display OTel spans and metrics;
+- can display OTel spans and recent/aggregate metrics;
 - starts no Codex process.
 
 ### Safety
@@ -1403,6 +1516,9 @@ Optional:
 - no business tables are added to observability DB;
 - no observability tables are added to business DB;
 - no Proteo core changes are required;
+- application-created `ToolExecutor` instances use their public `event_sink`
+  hook when their lifecycle must enter the observability pipeline;
+- no private `CodexRuntime._dispatch` call is used from the example;
 - local recorders remain under the example;
 - real LangSmith/OpenTelemetry can be enabled without changing agent business logic.
 
@@ -1515,11 +1631,14 @@ Avoid expanding this into an observability product.
 - Local OpenTelemetry recording captures spans/metrics.
 - PayloadMode.METADATA_ONLY is the default.
 - Login credentials never enter telemetry.
+- Host-only graph behavior does not require synthetic RuntimeEvents.
 - Inspector is a separate read-only CLI.
 - Local observability requires no cloud credentials.
 - External LangSmith is optional.
 - Codex-native OTel is optional and out of the base path.
 - Observer failure does not fail agent execution by default.
+- Direct application `ToolExecutor` events are wired through the public
+  `event_sink` contract when observability is required.
 - No changes to Proteo core are required for this phase.
 ```
 
