@@ -9,14 +9,15 @@ A complete, self-contained demonstration of **Proteo Runtime** showcasing LangGr
 > **"The model may decide what it wants to do. The host decides what it is allowed to do and what is actually executed."**
 
 The application enforces a clear **three-level separation of concerns**:
-1. **Model / Intent Classification**: Identifies what action the user is attempting (including recognizing forbidden operations or unsupported requests) using an 8-action schema.
-2. **Host Action Authorization Policy (`allowed_actions`)**: The host authoritatively evaluates whether that recognized action is valid and allowed for the current access level (anonymous, client, or staff). If denied, out of scope, or a help request, the host responds deterministically without invoking the controlled LLM.
+1. **Model / Intent Classification**: Identifies what action the user is attempting (including recognizing forbidden operations or unsupported requests) using a 9-action schema.
+2. **Host Action Authorization Policy (`allowed_actions`)**: The host authoritatively evaluates whether that recognized action is valid and allowed for the current access level (anonymous, client, or staff). If denied, out of scope, a help request, or an acknowledgement, the host responds deterministically without invoking the controlled LLM.
 3. **Host Tool Permission Policy (`ToolPermissionPolicy`)**: The host authoritatively mediates all tool execution via `ToolExecutor`. The conversational agent never has write tools in its registry.
 
 ### Recognized Application Actions
-- `login`: User wants to authenticate/sign in.
-- `logout`: User wants to sign out.
-- `help`: User asks what the agent can do, asks for help, or greets without another concrete request.
+- `login`: Unequivocal direct command to authenticate/sign in (e.g. `login`, `iniciar sesion`).
+- `logout`: User wants to sign out (e.g. `logout`, `cerrar sesion`).
+- `help`: User asks what the agent can do, greets without a concrete request, or asks how to log in (e.g. `How can I login?`, `¿Cómo inicio sesión?`). Handled deterministically at host level.
+- `acknowledgement`: Conversational pleasantries, closures, or confirmations (e.g. `gracias`, `thank you`, `perfecto`, `ok`). Handled deterministically with a polite host closure without invoking the controlled LLM.
 - `catalog_query`: Product, catalog, or price availability questions.
 - `quote_preview`: Non-persistent calculations or preliminary quote previews.
 - `quote_history`: List or inspect persisted quotes (staff only).
@@ -35,7 +36,8 @@ flowchart TD
     DirectIntent --> ScopeGate[Host Scope Gate: allowed_actions]
 
     ScopeGate -->|out_of_scope| OutOfScopeOutput[Host: Out-of-Scope Response]
-    ScopeGate -->|help| HelpOutput[Host: Role-Specific Guidance]
+    ScopeGate -->|help| HelpOutput[Host: Role-Specific Guidance / Login Guidance]
+    ScopeGate -->|acknowledgement| AckOutput[Host: Polite Closure]
     ScopeGate -->|Unauthorized Action| DeniedOutput[Host: Permission Denied]
 
     ScopeGate -->|login allowed| LoginHITL[Masked Login Prompt]
@@ -44,7 +46,7 @@ flowchart TD
     ScopeGate -->|quote_create allowed| AuthGuard[Host Auth Guard]
 
     AuthGuard -->|Staff| QuotePlanner[Quote Planner: structured / low]
-    QuotePlanner -->|Incomplete / Missing Data| ClarifyPrompt[Clarification Request]
+    QuotePlanner -->|Incomplete / Missing Data| ClarifyPrompt[Host: Fine-Grained Clarification]
     QuotePlanner -->|Valid Request| ResolveData[Resolve DB IDs & Catalog Prices]
     ResolveData -->|Not Found / Ambiguous| AmbiguityMessage[Disambiguation / Error]
     ResolveData -->|Resolved| DiscountHITL[Discount HITL Prompt 0-30%]
@@ -82,6 +84,23 @@ runtime = CodexRuntime(experimental_dynamic_tools=True)
 ### Clean Model Parameters
 The legacy single `model` parameter has been completely removed from `create_demo_graph`. Both `structured_model` and `controlled_agent_model` are explicit, independent parameters (defaulting to `None` for offline deterministic execution).
 
+### Strict Structured Output Normalization (`strict=True` Compatibility)
+When OpenAI/Codex evaluates structured output schemas in strict mode, it enforces three strict schema invariants:
+1. Every property declared under `"properties"` must appear in the schema's `"required"` list.
+2. Every object schema must specify `"additionalProperties": False`.
+3. Schema properties must not define `"default"` keys.
+
+To satisfy these invariants without sacrificing domain modeling flexibility (such as allowing `customer: str | None = None` and `items: list[RequestedItem] = Field(default_factory=list)`), the core provider normalizer (`_normalize_sdk_schema` in `src/proteo_runtime/providers/codex/_structured.py`) recursively walks Pydantic schemas:
+- removes `"default"` keys so Codex does not reject default assignments;
+- adds `"additionalProperties": False` to object schemas and definitions;
+- ensures all declared `"properties"` are listed in `"required"`, while preserving nullable semantics using `anyOf: [{type: ...}, {type: "null"}]`.
+
+This ensures that models like `QuoteRequest` extract `null` for omitted fields without runtime schema validation failures or artificial sentinel values.
+
+### Silent Conversational Tool Execution & Stateless Single-Turn Architecture
+- **Silence Tool Narration**: Controlled LLMs are instructed never to narrate tool execution or progress (e.g. "Voy a consultar...", "Let me check..."). In addition, host-side processing cleans any leading narration before presenting the final response.
+- **Stateless Turns**: Interactions are strictly stateless between turns. The agent never asks open-ended conversational follow-up questions expecting multi-turn memory (e.g. "¿Cuál te interesa?"). When a request is broad or ambiguous, the agent lists all relevant catalog options and instructs the user to submit a complete standalone request specifying the exact product name and quantity.
+
 ---
 
 ## 3. Tool Registry Segregation & Dual-Layer Authorization
@@ -105,17 +124,18 @@ The architecture enforces strict asymmetric tool distribution and dual-layer aut
 
 ## 4. Host-Side Validation & Data Integrity
 
-### Strict Schema Extraction & Validation
+### Strict Schema Extraction & Fine-Grained Clarification
 The Pydantic schemas in `models.py` guarantee that missing request data cannot be hallucinated into valid drafts:
 - `RequestedItem`: `product: str | None = None`, `quantity: int | None = Field(default=None, gt=0)`
 - `QuoteRequest`: `customer: str | None = None`, `items: list[RequestedItem] = Field(default_factory=list)`
 
-Host-side validation requires:
-- `customer` must be non-empty;
-- at least one item must be present;
-- each item must have a valid `product` name and `quantity > 0`.
+Host-side validation inspects the extracted parameters and provides specific, language-aware feedback:
+- **Missing customer only**: States that the customer name or identifier is required (e.g. *"Se requiere el nombre o identificador del cliente para crear una cotización."*).
+- **Missing items only**: States that at least one product and positive quantity are required (e.g. *"Se requiere al menos un producto y su cantidad para crear una cotización."*).
+- **Missing both**: Prompts for both customer and items with quantities.
+- **Deterministic Localization**: Host messages detect the request language (`es` or `en`) via `detect_language` and respond accordingly.
 
-If information is missing, the workflow halts immediately with a clarification request and does not proceed to database resolution or HITL.
+If information is missing, the workflow halts immediately with clarification and does not proceed to database resolution or HITL.
 
 ### Disambiguation & SQL Wildcard Escaping
 - In `database.py`, `_escape_like` escapes `%` and `_` characters in queries.
@@ -162,12 +182,12 @@ All demo accounts use the trivial password `1234` for ease of local testing:
 
 | Role | Customer Associated | Allowed Actions (`allowed_actions`) | Permissions (`ToolPermissionPolicy`) | Conversational Tools Available |
 |---|---|---|---|---|
-| `staff` | *None* | `logout`, `help`, `catalog_query`, `quote_preview`, `quote_history`, `quote_create` | `catalog.read`, `quote.calculate`, `customer.read`, `quote.create`, `quote.read` | `list_products`, `find_product`, `calculate_quote`, `find_customer`, `list_quotes`, `get_quote` |
-| `client1` (`client`) | Acme Corp. (`1`) | `logout`, `help`, `catalog_query`, `quote_preview` | `catalog.read`, `quote.calculate` | `list_products`, `find_product`, `calculate_quote` |
-| `client2` (`client`) | Globex LLC (`2`) | `logout`, `help`, `catalog_query`, `quote_preview` | `catalog.read`, `quote.calculate` | `list_products`, `find_product`, `calculate_quote` |
-| `client3` (`client`) | Initech (`3`) | `logout`, `help`, `catalog_query`, `quote_preview` | `catalog.read`, `quote.calculate` | `list_products`, `find_product`, `calculate_quote` |
-| `client4` (`client`) | Northwind Traders (`4`) | `logout`, `help`, `catalog_query`, `quote_preview` | `catalog.read`, `quote.calculate` | `list_products`, `find_product`, `calculate_quote` |
-| *Anonymous* | *None* | `login`, `help`, `catalog_query`, `quote_preview` | `catalog.read`, `quote.calculate` | `list_products`, `find_product`, `calculate_quote` |
+| `staff` | *None* | `logout`, `help`, `acknowledgement`, `catalog_query`, `quote_preview`, `quote_history`, `quote_create` | `catalog.read`, `quote.calculate`, `customer.read`, `quote.create`, `quote.read` | `list_products`, `find_product`, `calculate_quote`, `find_customer`, `list_quotes`, `get_quote` |
+| `client1` (`client`) | Acme Corp. (`1`) | `logout`, `help`, `acknowledgement`, `catalog_query`, `quote_preview` | `catalog.read`, `quote.calculate` | `list_products`, `find_product`, `calculate_quote` |
+| `client2` (`client`) | Globex LLC (`2`) | `logout`, `help`, `acknowledgement`, `catalog_query`, `quote_preview` | `catalog.read`, `quote.calculate` | `list_products`, `find_product`, `calculate_quote` |
+| `client3` (`client`) | Initech (`3`) | `logout`, `help`, `acknowledgement`, `catalog_query`, `quote_preview` | `catalog.read`, `quote.calculate` | `list_products`, `find_product`, `calculate_quote` |
+| `client4` (`client`) | Northwind Traders (`4`) | `logout`, `help`, `acknowledgement`, `catalog_query`, `quote_preview` | `catalog.read`, `quote.calculate` | `list_products`, `find_product`, `calculate_quote` |
+| *Anonymous* | *None* | `login`, `help`, `acknowledgement`, `catalog_query`, `quote_preview` | `catalog.read`, `quote.calculate` | `list_products`, `find_product`, `calculate_quote` |
 
 > [!WARNING]
 > **Demo Security Disclaimer**: Authentication in this example is intended exclusively for demonstrating host-managed authorization and HITL workflows. It does not use salted password hashing, JWT tokens, or production IAM infrastructure.
@@ -223,18 +243,41 @@ uv run pytest examples/smart_quote_agent/tests
 
 ## 9. Interactive Scenarios & Transcripts
 
-### Scenario A: General Capabilities & Assistant Guidance (Host Deterministic)
+### Scenario A: General Capabilities & Assistant Guidance (Host Deterministic, Localized)
 ```text
 > Que cosas podría hacer?
 
-I can help you consult products and prices or calculate preliminary quote previews. You can also log in to access privileged features.
+Puedo ayudarte a consultar productos y precios o calcular presupuestos preliminares. También podés iniciar sesión; las funciones adicionales dependen de tu rol.
 
 > help
 
-I can help you consult products and prices or calculate preliminary quote previews. You can also log in to access privileged features.
+I can help you consult products and prices or calculate preliminary quote previews. You can also log in; additional capabilities depend on your role.
 ```
 
-### Scenario B: Application-Scope Containment (Unsupported General-Purpose Requests)
+### Scenario B: Informational Login Inquiry vs Direct Login Command
+```text
+> Como inicio sesion?
+
+Escribí 'login' para iniciar sesión.
+
+> login
+Username: staff
+Password: [MASKED]
+Logged in as Demo Staff (staff)
+```
+
+### Scenario C: Conversational Pleasantries & Acknowledgements (Host Closed, No LLM Call)
+```text
+> Muchas gracias
+
+De nada.
+
+> thank you
+
+You're welcome.
+```
+
+### Scenario D: Application-Scope Containment (Unsupported General-Purpose Requests)
 ```text
 > Write a python script to parse CSV files
 
@@ -245,7 +288,7 @@ That request is outside the scope of this agent. I can help you consult products
 That request is outside the scope of this agent. I can help you consult products, prices, or calculate a preliminary quote preview.
 ```
 
-### Scenario C: Anonymous Catalog Exploration & Authorization Denied
+### Scenario E: Anonymous Catalog Exploration & Authorization Denied
 ```text
 > What notebooks do you have?
 
@@ -262,7 +305,7 @@ Available products:
 Access denied. Persisted quotes can only be created by staff.
 ```
 
-### Scenario D: Client Login & Authorization Denied
+### Scenario F: Client Login & Authorization Denied
 ```text
 > login
 Username: client2
@@ -277,21 +320,32 @@ Access denied. Persisted quotes can only be created by staff.
 Logged out. Continuing as anonymous.
 ```
 
-### Scenario E: Incomplete Quote Request (Clarification Safeguard)
+### Scenario G: Incomplete Quote Request (Fine-Grained Clarification Safeguards)
 ```text
-[staff] > Create a quote for Globex
+# Missing customer only:
+[staff] > Crear cotización de 2 Wireless Mouse
 
-Could not extract complete quote details. Please specify both the customer name and items with quantities (e.g. 'Create a quote for Globex for 2 Notebook Pro').
+Se requiere el nombre o identificador del cliente para crear una cotización. Por favor especifica el cliente (ej. 'para Globex').
+
+# Missing items only:
+[staff] > Crear cotización para Acme
+
+Se requiere al menos un producto y su cantidad para crear una cotización. Por favor especifica los productos (ej. '2 Notebook Pro').
+
+# Missing both:
+[staff] > Create a quote
+
+Could not extract quote details. Please specify both the customer name and items with quantities (e.g. 'Create a quote for Globex for 2 Notebook Pro').
 ```
 
-### Scenario F: Ambiguous Search Query (Disambiguation Safeguard)
+### Scenario H: Ambiguous Search Query (Disambiguation Safeguard)
 ```text
 [staff] > Create a quote for Globex for 2 Notebook
 
 Multiple products matched 'Notebook': Notebook Pro (NB-PRO), Notebook Air (NB-AIR). Please specify exact SKU or name.
 ```
 
-### Scenario G: Staff Login, Discount HITL, Host Quote Review & Approved Creation
+### Scenario I: Staff Login, Discount HITL, Host Quote Review & Approved Creation
 ```text
 > login
 Username: staff
@@ -327,7 +381,7 @@ Approve quote creation? [y/N]: y
 Total: $3,420.00
 ```
 
-### Scenario H: Staff Quote Creation Denied at Final Approval
+### Scenario J: Staff Quote Creation Denied at Final Approval
 ```text
 [staff] > Create a quote for Globex for 1 Notebook Air.
 

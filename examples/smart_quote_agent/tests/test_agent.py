@@ -56,6 +56,7 @@ from graph import (  # noqa: E402
     allowed_actions,
     classify_intent_heuristic,
     create_demo_graph,
+    detect_language,
 )
 from hitl import ConsoleApprovalHandler, prompt_discount_interactive  # noqa: E402
 from models import (  # noqa: E402
@@ -307,7 +308,7 @@ async def test_point_09_anonymous_cannot_create_persisted_quotes(
     )
 
     state: DemoState = {
-        "input": "crear cotizacion",
+        "input": "create quote",
         "authenticated_user": None,
     }
     result = await graph.ainvoke(state)
@@ -336,7 +337,7 @@ async def test_point_10_client_cannot_create_persisted_quotes(
     )
 
     state: DemoState = {
-        "input": "crear cotizacion",
+        "input": "create quote",
         "authenticated_user": client_user,
     }
     result = await graph.ainvoke(state)
@@ -416,13 +417,13 @@ async def test_point_12_missing_customer_or_items_cannot_hallucinate_draft(
     )
 
     state: DemoState = {
-        "input": "crear cotizacion",
+        "input": "create quote",
         "authenticated_user": staff_user,
     }
     result = await graph.ainvoke(state)
 
     assert result.get("quote_draft") is None
-    assert "Could not extract complete quote details" in result.get("output", "")
+    assert "Could not extract quote details" in result.get("output", "")
 
 
 def test_point_13_discount_default_zero_and_range_validation() -> None:
@@ -950,7 +951,9 @@ async def test_scope_07_classifier_receives_access_level_and_allowed_actions_con
 
 def test_scope_08_anonymous_allowed_actions() -> None:
     """Validate anonymous user action policy includes only public actions."""
-    assert allowed_actions(None) == frozenset({"login", "help", "catalog_query", "quote_preview"})
+    assert allowed_actions(None) == frozenset(
+        {"login", "help", "acknowledgement", "catalog_query", "quote_preview"}
+    )
 
 
 def test_scope_09_client_allowed_actions_exclude_quote_history_and_create(
@@ -964,7 +967,9 @@ def test_scope_09_client_allowed_actions_exclude_quote_history_and_create(
     actions = allowed_actions(client_user)
     assert "quote_history" not in actions
     assert "quote_create" not in actions
-    assert actions == frozenset({"logout", "help", "catalog_query", "quote_preview"})
+    assert actions == frozenset(
+        {"logout", "help", "acknowledgement", "catalog_query", "quote_preview"}
+    )
 
 
 def test_scope_10_staff_allowed_actions_include_quote_history_and_create(
@@ -982,6 +987,7 @@ def test_scope_10_staff_allowed_actions_include_quote_history_and_create(
         {
             "logout",
             "help",
+            "acknowledgement",
             "catalog_query",
             "quote_preview",
             "quote_history",
@@ -1312,3 +1318,401 @@ async def test_scope_20_existing_quote_creation_hitl_and_database_flows_continue
     row = cur.fetchone()
     assert row is not None
     assert row[0] == 2  # Globex LLC is customer ID 2
+
+
+# =============================================================================
+# Functional Hardening Regression Tests (21 Items)
+# =============================================================================
+
+
+def test_hardening_01_and_02_login_questions_vs_direct_commands() -> None:
+    """Validate login questions route to help while direct commands route to login."""
+    # 1. Informational login queries classify as 'help'
+    assert classify_intent_heuristic("How can I login?") == "help"
+    assert classify_intent_heuristic("how do i log in") == "help"
+    assert classify_intent_heuristic("Cómo inicio sesión?") == "help"
+    assert classify_intent_heuristic("como iniciar sesion") == "help"
+    assert classify_intent_heuristic("como me logueo?") == "help"
+
+    # 2. Direct login commands classify as 'login'
+    assert classify_intent_heuristic("login") == "login"
+    assert classify_intent_heuristic("iniciar sesion") == "login"
+    assert classify_intent_heuristic("iniciar sesión") == "login"
+    assert classify_intent_heuristic("log in") == "login"
+
+
+@pytest.mark.asyncio
+async def test_hardening_01_and_02_login_routing_graph_execution(
+    db_conn: sqlite3.Connection,
+) -> None:
+    """Validate graph routing for login questions vs direct login commands.
+
+    Args:
+        db_conn: SQLite connection fixture.
+    """
+    login_called = False
+
+    def mock_auth(_conn: sqlite3.Connection) -> AuthenticatedUser | None:
+        nonlocal login_called
+        login_called = True
+        return None
+
+    graph = create_demo_graph(
+        conn=db_conn,
+        auth_interactive=mock_auth,
+    )
+
+    # Informational login query does NOT trigger login_hitl
+    res_info = await graph.ainvoke({"input": "How can I login?", "authenticated_user": None})
+    assert res_info.get("intent") == "help"
+    assert not login_called
+    assert "login" in res_info.get("output", "").lower()
+
+    # Informational Spanish query does NOT trigger login_hitl
+    res_info_es = await graph.ainvoke({"input": "Cómo inicio sesión?", "authenticated_user": None})
+    assert res_info_es.get("intent") == "help"
+    assert not login_called
+    assert "login" in res_info_es.get("output", "").lower()
+
+    # Direct login command triggers login_hitl
+    res_direct = await graph.ainvoke({"input": "login", "authenticated_user": None})
+    assert res_direct.get("intent") == "login"
+    assert login_called
+
+
+@pytest.mark.asyncio
+async def test_hardening_03_and_04_acknowledgement_handling(
+    db_conn: sqlite3.Connection,
+    client_user: AuthenticatedUser,
+    staff_user: AuthenticatedUser,
+) -> None:
+    """Validate host-side polite closures for acknowledgements without LLM calls.
+
+    Args:
+        db_conn: SQLite connection fixture.
+        client_user: Authenticated client user fixture.
+        staff_user: Authenticated staff user fixture.
+    """
+    # Allowed actions check for all roles
+    assert "acknowledgement" in allowed_actions(None)
+    assert "acknowledgement" in allowed_actions(client_user)
+    assert "acknowledgement" in allowed_actions(staff_user)
+
+    # Heuristic classifications
+    for ack_es in ("gracias", "muchas gracias", "perfecto", "ok"):
+        assert classify_intent_heuristic(ack_es) == "acknowledgement"
+    for ack_en in ("thank you", "thanks"):
+        assert classify_intent_heuristic(ack_en) == "acknowledgement"
+
+    class FailingIfCalledModel:
+        """Model double that raises if invoked."""
+
+        async def ainvoke(self, *args: Any, **kwargs: Any) -> Any:
+            raise AssertionError("Controlled LLM should never be invoked for acknowledgement.")
+
+    graph = create_demo_graph(
+        conn=db_conn,
+        controlled_agent_model=FailingIfCalledModel(),  # type: ignore[arg-type]
+    )
+
+    # Spanish acknowledgement
+    res_es = await graph.ainvoke({"input": "gracias", "authenticated_user": None})
+    assert res_es.get("intent") == "acknowledgement"
+    assert res_es.get("action_allowed") is True
+    assert "de nada" in res_es.get("output", "").lower()
+
+    # English acknowledgement
+    res_en = await graph.ainvoke({"input": "thank you", "authenticated_user": staff_user})
+    assert res_en.get("intent") == "acknowledgement"
+    assert res_en.get("action_allowed") is True
+    assert "welcome" in res_en.get("output", "").lower()
+
+
+@pytest.mark.asyncio
+async def test_hardening_05_quote_planner_fine_grained_guidance_and_localization(
+    db_conn: sqlite3.Connection,
+    staff_user: AuthenticatedUser,
+) -> None:
+    """Validate quote planner emits specific guidance for missing customer, items, or both.
+
+    Args:
+        db_conn: SQLite connection fixture.
+        staff_user: Authenticated staff user fixture.
+    """
+    # 1. Missing customer only (English)
+    runtime_missing_cust = FakeRuntime(
+        turns=[
+            FakeTurn(
+                value=QuoteRequest(
+                    customer=None,
+                    items=[RequestedItem(product="Notebook Pro", quantity=2)],
+                ).model_dump_json()
+            )
+        ]
+    )
+    graph_cust = create_demo_graph(
+        conn=db_conn,
+        structured_model=runtime_missing_cust.model(profile="structured", level="low"),
+    )
+    res_cust_en = await graph_cust.ainvoke(
+        {"input": "create quote for 2 Notebook Pro", "authenticated_user": staff_user}
+    )
+    assert res_cust_en.get("quote_request") is None
+    assert "customer name or identifier is required" in res_cust_en.get("output", "").lower()
+
+    # 2. Missing customer only (Spanish)
+    runtime_missing_cust_es = FakeRuntime(
+        turns=[
+            FakeTurn(
+                value=QuoteRequest(
+                    customer=None,
+                    items=[RequestedItem(product="Notebook Pro", quantity=2)],
+                ).model_dump_json()
+            )
+        ]
+    )
+    graph_cust_es = create_demo_graph(
+        conn=db_conn,
+        structured_model=runtime_missing_cust_es.model(profile="structured", level="low"),
+    )
+    res_cust_es = await graph_cust_es.ainvoke(
+        {"input": "crear cotización de 2 Notebook Pro", "authenticated_user": staff_user}
+    )
+    assert res_cust_es.get("quote_request") is None
+    assert (
+        "se requiere el nombre o identificador del cliente" in res_cust_es.get("output", "").lower()
+    )
+
+    # 3. Missing items only (English)
+    runtime_missing_items = FakeRuntime(
+        turns=[
+            FakeTurn(
+                value=QuoteRequest(
+                    customer="Globex",
+                    items=[],
+                ).model_dump_json()
+            )
+        ]
+    )
+    graph_items = create_demo_graph(
+        conn=db_conn,
+        structured_model=runtime_missing_items.model(profile="structured", level="low"),
+    )
+    res_items_en = await graph_items.ainvoke(
+        {"input": "create quote for Globex", "authenticated_user": staff_user}
+    )
+    assert res_items_en.get("quote_request") is None
+    assert (
+        "at least one product and quantity are required" in res_items_en.get("output", "").lower()
+    )
+
+    # 4. Missing items only (Spanish)
+    runtime_missing_items_es = FakeRuntime(
+        turns=[
+            FakeTurn(
+                value=QuoteRequest(
+                    customer="Globex",
+                    items=[],
+                ).model_dump_json()
+            )
+        ]
+    )
+    graph_items_es = create_demo_graph(
+        conn=db_conn,
+        structured_model=runtime_missing_items_es.model(profile="structured", level="low"),
+    )
+    res_items_es = await graph_items_es.ainvoke(
+        {"input": "crear cotización para Globex", "authenticated_user": staff_user}
+    )
+    assert res_items_es.get("quote_request") is None
+    assert (
+        "se requiere al menos un producto y su cantidad" in res_items_es.get("output", "").lower()
+    )
+
+    # 5. Missing both (English)
+    runtime_missing_both = FakeRuntime(
+        turns=[
+            FakeTurn(
+                value=QuoteRequest(
+                    customer=None,
+                    items=[],
+                ).model_dump_json()
+            )
+        ]
+    )
+    graph_both = create_demo_graph(
+        conn=db_conn,
+        structured_model=runtime_missing_both.model(profile="structured", level="low"),
+    )
+    res_both_en = await graph_both.ainvoke(
+        {"input": "create quote", "authenticated_user": staff_user}
+    )
+    assert res_both_en.get("quote_request") is None
+    assert "could not extract quote details" in res_both_en.get("output", "").lower()
+
+    # 6. Missing both (Spanish)
+    runtime_missing_both_es = FakeRuntime(
+        turns=[
+            FakeTurn(
+                value=QuoteRequest(
+                    customer=None,
+                    items=[],
+                ).model_dump_json()
+            )
+        ]
+    )
+    graph_both_es = create_demo_graph(
+        conn=db_conn,
+        structured_model=runtime_missing_both_es.model(profile="structured", level="low"),
+    )
+    res_both_es = await graph_both_es.ainvoke(
+        {"input": "crear cotización", "authenticated_user": staff_user}
+    )
+    assert res_both_es.get("quote_request") is None
+    assert "no se pudieron extraer los detalles" in res_both_es.get("output", "").lower()
+
+
+@pytest.mark.asyncio
+async def test_hardening_06_help_output_localization_and_role_advertisement(
+    db_conn: sqlite3.Connection,
+    client_user: AuthenticatedUser,
+    staff_user: AuthenticatedUser,
+) -> None:
+    """Validate help message localization and role-appropriate capability listing.
+
+    Args:
+        db_conn: SQLite connection fixture.
+        client_user: Authenticated client user fixture.
+        staff_user: Authenticated staff user fixture.
+    """
+    graph = create_demo_graph(conn=db_conn)
+
+    assert detect_language("ayuda") == "es"
+    assert detect_language("help") == "en"
+
+    # 1. Spanish query produces Spanish text
+    res_es = await graph.ainvoke({"input": "ayuda", "authenticated_user": None})
+    out_es = res_es.get("output", "")
+    assert "Puedo ayudarte" in out_es
+    assert "iniciar sesión" in out_es or "login" in out_es
+
+    # 2. English query produces English text
+    res_en = await graph.ainvoke({"input": "help", "authenticated_user": None})
+    out_en = res_en.get("output", "")
+    assert "I can help you" in out_en
+    assert "log in" in out_en or "login" in out_en
+
+    # 3. Anonymous user help: advertises login and public actions, NOT quote creation
+    assert "log in" in out_en or "login" in out_en
+    assert "create quotes" not in out_en
+    assert "persisted quotes" not in out_en
+
+    # 4. Client user help: advertises logout and public actions, NOT quote creation
+    res_client = await graph.ainvoke({"input": "help", "authenticated_user": client_user})
+    out_client = res_client.get("output", "")
+    assert "logout" in out_client
+    assert "create quotes" not in out_client
+    assert "persisted quotes" not in out_client
+
+    # 5. Staff user help: advertises quote creation, quote history, and public actions
+    res_staff = await graph.ainvoke({"input": "help", "authenticated_user": staff_user})
+    out_staff = res_staff.get("output", "")
+    assert "create quotes" in out_staff
+    assert "persisted quote history" in out_staff or "quote history" in out_staff
+
+
+@pytest.mark.asyncio
+async def test_hardening_07_controlled_agent_prompt_silence_narration_and_stateless_turns(
+    db_conn: sqlite3.Connection,
+    staff_user: AuthenticatedUser,
+) -> None:
+    """Validate controlled agent system prompt enforces silent tool execution and statelessness.
+
+    Args:
+        db_conn: SQLite connection fixture.
+        staff_user: Authenticated staff user fixture.
+    """
+    captured_system_instructions: list[str] = []
+
+    class InspectingAgentModel:
+        """Model double that captures system prompt passed to controlled_agent."""
+
+        def with_tools(self, registry: Any, executor: Any = None) -> Any:
+            del registry, executor
+            return self
+
+        async def ainvoke(self, input_: Any, **kwargs: Any) -> Any:
+            del kwargs
+            for msg in getattr(input_, "messages", ()):
+                if getattr(msg, "role", "") == "system":
+                    text = getattr(msg, "text", "")
+                    if text:
+                        captured_system_instructions.append(text)
+            return type("Res", (), {"value": "Inspected response"})()
+
+    graph = create_demo_graph(
+        conn=db_conn,
+        controlled_agent_model=InspectingAgentModel(),  # type: ignore[arg-type]
+    )
+
+    await graph.ainvoke({"input": "products", "authenticated_user": staff_user})
+    assert len(captured_system_instructions) >= 1
+    sys_prompt = captured_system_instructions[0]
+
+    # Silence tool narration instruction
+    assert "Do NOT narrate tool execution" in sys_prompt
+    assert "Voy a consultar" in sys_prompt
+
+    # Stateless turn limitation instruction
+    assert "stateless across turns" in sys_prompt
+    assert "Do NOT ask open-ended or conversational follow-up questions" in sys_prompt
+
+    # Ambiguity guidance instruction
+    assert "present the relevant catalog options directly" in sys_prompt
+    assert "instruct the user to submit a complete standalone request" in sys_prompt
+
+
+@pytest.mark.asyncio
+async def test_hardening_08_offline_mode_zero_live_model_calls(
+    db_conn: sqlite3.Connection,
+    staff_user: AuthenticatedUser,
+) -> None:
+    """Validate offline deterministic mode functions without any live models.
+
+    Args:
+        db_conn: SQLite connection fixture.
+        staff_user: Authenticated staff user fixture.
+    """
+    graph = create_demo_graph(
+        conn=db_conn,
+        structured_model=None,
+        controlled_agent_model=None,
+        discount_prompter=lambda _subtotal: 0,
+        approval_handler=ConsoleApprovalHandler(input_func=lambda _prompt: "yes"),
+        quote_reviewer=lambda _draft: None,
+    )
+
+    # 1. Help
+    res_help = await graph.ainvoke({"input": "help", "authenticated_user": None})
+    assert res_help.get("intent") == "help"
+    assert "consult products" in res_help.get("output", "")
+
+    # 2. Acknowledgement
+    res_ack = await graph.ainvoke({"input": "thanks", "authenticated_user": None})
+    assert res_ack.get("intent") == "acknowledgement"
+    assert "welcome" in res_ack.get("output", "").lower()
+
+    # 3. Catalog query
+    res_cat = await graph.ainvoke({"input": "products", "authenticated_user": None})
+    assert res_cat.get("intent") == "catalog_query"
+    assert "Notebook Pro" in res_cat.get("output", "")
+
+    # 4. Staff quote creation
+    res_quote = await graph.ainvoke(
+        {
+            "input": "create quote for Globex for 1 Notebook Pro",
+            "authenticated_user": staff_user,
+        }
+    )
+    assert res_quote.get("intent") == "quote_create"
+    assert res_quote.get("created_quote_id") is not None

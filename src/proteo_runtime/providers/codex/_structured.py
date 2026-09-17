@@ -87,18 +87,57 @@ class _SchemaAdapter:
 
 
 def _normalize_sdk_schema(schema: dict[str, Any]) -> dict[str, Any]:
-    """Close object schemas for the Codex response-format contract."""
+    """Close object schemas and enforce strict structured-output constraints.
+
+    Recursively normalizes supported schemas to the strict subset required by
+    Codex and OpenAI structured outputs:
+    1. Object schemas have additionalProperties set to False.
+    2. Every declared property in properties appears in required.
+    3. Default values (e.g. default: null) are removed.
+    4. Type containers (items, anyOf, oneOf, allOf, $defs, etc.) are recursed.
+
+    Args:
+        schema: Input JSON schema dictionary.
+
+    Returns:
+        Normalized JSON schema conforming to strict structured output constraints.
+    """
 
     def visit(value: Any) -> Any:
         """Recursively normalize object nodes and nested schema containers."""
-
         if isinstance(value, dict):
-            normalized = {str(key): visit(item) for key, item in value.items()}
-            if normalized.get("type") == "object" and "additionalProperties" not in normalized:
-                normalized["additionalProperties"] = False
+            normalized: dict[str, Any] = {}
+            for key, item in value.items():
+                str_key = str(key)
+                if str_key == "default":
+                    continue
+                normalized[str_key] = visit(item)
+
+            is_object = normalized.get("type") == "object" or "properties" in normalized
+            if is_object:
+                if normalized.get("additionalProperties") is not False:
+                    normalized["additionalProperties"] = False
+                if "properties" in normalized and isinstance(normalized["properties"], dict):
+                    prop_keys = list(normalized["properties"].keys())
+                    existing_req = normalized.get("required")
+                    if isinstance(existing_req, list):
+                        seen = set(existing_req)
+                        req = list(existing_req)
+                        for k in prop_keys:
+                            if k not in seen:
+                                req.append(k)
+                                seen.add(k)
+                        normalized["required"] = req
+                    else:
+                        normalized["required"] = prop_keys
+                elif normalized.get("type") == "object" and "required" not in normalized:
+                    normalized["required"] = []
+
             return normalized
+
         if isinstance(value, list):
             return [visit(item) for item in value]
+
         return value
 
     return cast(dict[str, Any], visit(schema))

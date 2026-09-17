@@ -17,6 +17,7 @@ class IntentDecision(BaseModel):
         "login",
         "logout",
         "help",
+        "acknowledgement",
         "catalog_query",
         "quote_preview",
         "quote_history",
