@@ -196,11 +196,24 @@ All demo accounts use the trivial password `1234` for ease of local testing:
 
 ## 7. Setup & Initialization
 
-Ensure dependencies are installed using `uv`:
+Ensure dependencies are installed using `uv` with the required extras:
+
+```bash
+# Sync project dependencies including LangGraph and OpenTelemetry SDK
+uv sync --extra dev --extra langgraph --extra otel
+```
+
+> [!NOTE]
+> The `--extra otel` option installs `opentelemetry-sdk` (and API), which provides the in-process tracer and meter providers and processors used by `otel_recording.py` for local SQLite telemetry recording. `--extra langgraph` installs LangGraph and LangSmith client libraries.
+
+Initialize or reset the local SQLite databases:
 
 ```bash
 # Initialize or reset the local SQLite database with demo products, users, and customers
 uv run python examples/smart_quote_agent/init_demo.py --reset
+
+# Initialize or reset the local telemetry database (observability.sqlite3)
+uv run python examples/smart_quote_agent/init_observability.py --reset
 ```
 
 Output:
@@ -591,8 +604,8 @@ proteo.runtime
 OpenTelemetry Spans
 ────────────────────────────────────────
 proteo.invocation        4210 ms
-proteo.turn              4178 ms
-proteo.tool                12 ms
+└── proteo.turn          4178 ms
+    └── proteo.tool        12 ms
 
 OpenTelemetry Metrics — recent/aggregate
 ────────────────────────────────────────
