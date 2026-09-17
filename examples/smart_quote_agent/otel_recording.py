@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import sys
 from collections.abc import Sequence
 from datetime import UTC, datetime
@@ -13,8 +14,9 @@ _DEMO_DIR = Path(__file__).resolve().parent
 if str(_DEMO_DIR) not in sys.path:
     sys.path.insert(0, str(_DEMO_DIR))
 
-from opentelemetry.sdk.metrics import MeterProvider  # noqa: E402
+from opentelemetry.sdk.metrics import Counter, Histogram, MeterProvider  # noqa: E402
 from opentelemetry.sdk.metrics.export import (  # noqa: E402
+    AggregationTemporality,
     MetricExporter,
     MetricExportResult,
     MetricsData,
@@ -38,14 +40,49 @@ from telemetry_db import (  # noqa: E402
 class SQLiteSpanExporter(SpanExporter):
     """OpenTelemetry SpanExporter persisting completed spans into otel_spans table."""
 
-    def __init__(self, db_path: Path | str | None = None) -> None:
+    def __init__(
+        self,
+        db_path: Path | str | None = None,
+        *,
+        observer: Any | None = None,
+    ) -> None:
         """Initialize exporter with a target telemetry database path.
 
         Args:
             db_path: Target SQLite database path, defaulting to DEFAULT_TELEMETRY_DB_PATH.
+            observer: Optional parent observer instance for diagnostic failure reporting.
         """
         self.db_path = get_telemetry_db_path(db_path)
+        self._observer = observer
         self._stopped = False
+        self._last_error: Exception | None = None
+        self._failure_count: int = 0
+
+    @property
+    def last_error(self) -> Exception | None:
+        """Return the most recent exception encountered during export, if any.
+
+        Returns:
+            Exception instance or None.
+        """
+        return self._last_error
+
+    @property
+    def failure_count(self) -> int:
+        """Return the number of export failures encountered.
+
+        Returns:
+            Total integer count of export failures.
+        """
+        return self._failure_count
+
+    def set_observer(self, observer: Any) -> None:
+        """Attach a parent observer for recording export failure metrics.
+
+        Args:
+            observer: Observer instance exposing record_failure.
+        """
+        self._observer = observer
 
     def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
         """Export a sequence of readable spans into the SQLite telemetry database.
@@ -59,6 +96,7 @@ class SQLiteSpanExporter(SpanExporter):
         if self._stopped:
             return SpanExportResult.FAILURE
 
+        success = True
         for span in spans:
             try:
                 trace_id = format(span.context.trace_id, "032x")
@@ -127,33 +165,94 @@ class SQLiteSpanExporter(SpanExporter):
                             occurred_at=evt_ts,
                             attributes=evt_attrs,
                         )
-            except Exception:  # noqa: BLE001
-                # Failures are isolated; do not crash the exporter loop
+            except Exception as exc:  # noqa: BLE001
+                # Isolate persistence failures without crashing inference, but record diagnostic state
+                self._last_error = exc
+                self._failure_count += 1
+                success = False
+                if self._observer is not None and hasattr(self._observer, "record_failure"):
+                    with contextlib.suppress(Exception):
+                        self._observer.record_failure("SQLiteSpanExporter")
                 continue
 
-        return SpanExportResult.SUCCESS
+        return SpanExportResult.SUCCESS if success else SpanExportResult.FAILURE
 
     def shutdown(self, **kwargs: Any) -> None:
-        """Shut down the exporter."""
+        """Shut down the exporter idempotently.
+
+        Args:
+            **kwargs: Extra unused keyword arguments.
+        """
         self._stopped = True
 
     def force_flush(self, timeout_millis: int = 30000, **kwargs: Any) -> bool:
-        """Force flush pending spans."""
+        """Force flush pending spans.
+
+        Args:
+            timeout_millis: Timeout limit in milliseconds.
+            **kwargs: Extra unused keyword arguments.
+
+        Returns:
+            Always True for synchronous SQLite operations.
+        """
         return True
 
 
 class SQLiteMetricExporter(MetricExporter):
     """OpenTelemetry MetricExporter persisting metric data points into otel_metrics table."""
 
-    def __init__(self, db_path: Path | str | None = None) -> None:
-        """Initialize metric exporter with target telemetry database path.
+    def __init__(
+        self,
+        db_path: Path | str | None = None,
+        *,
+        preferred_temporality: dict[type, AggregationTemporality] | None = None,
+        observer: Any | None = None,
+    ) -> None:
+        """Initialize metric exporter with delta temporality to prevent double counting.
 
         Args:
             db_path: Target SQLite database path, defaulting to DEFAULT_TELEMETRY_DB_PATH.
+            preferred_temporality: Optional temporality mapping. Defaults to DELTA for
+                Counter and Histogram to avoid double counting across periodic exports.
+            observer: Optional parent observer instance for diagnostic failure reporting.
         """
-        super().__init__()
+        if preferred_temporality is None:
+            preferred_temporality = {
+                Counter: AggregationTemporality.DELTA,
+                Histogram: AggregationTemporality.DELTA,
+            }
+        super().__init__(preferred_temporality=preferred_temporality)
         self.db_path = get_telemetry_db_path(db_path)
+        self._observer = observer
         self._stopped = False
+        self._last_error: Exception | None = None
+        self._failure_count: int = 0
+
+    @property
+    def last_error(self) -> Exception | None:
+        """Return the most recent exception encountered during export, if any.
+
+        Returns:
+            Exception instance or None.
+        """
+        return self._last_error
+
+    @property
+    def failure_count(self) -> int:
+        """Return the number of export failures encountered.
+
+        Returns:
+            Total integer count of export failures.
+        """
+        return self._failure_count
+
+    def set_observer(self, observer: Any) -> None:
+        """Attach a parent observer for recording export failure metrics.
+
+        Args:
+            observer: Observer instance exposing record_failure.
+        """
+        self._observer = observer
 
     def export(
         self,
@@ -174,6 +273,7 @@ class SQLiteMetricExporter(MetricExporter):
         if self._stopped:
             return MetricExportResult.FAILURE
 
+        success = True
         for rm in metrics_data.resource_metrics:
             for sm in rm.scope_metrics:
                 for metric in sm.metrics:
@@ -186,53 +286,149 @@ class SQLiteMetricExporter(MetricExporter):
                     data_points = getattr(data_container, "data_points", [])
 
                     for dp in data_points:
-                        if hasattr(dp, "value"):
-                            val = float(dp.value)
-                        elif hasattr(dp, "sum"):
-                            val = float(dp.sum)
-                        elif hasattr(dp, "count"):
-                            val = float(dp.count)
-                        else:
-                            val = 0.0
+                        try:
+                            if hasattr(dp, "sum"):
+                                val = float(dp.sum)
+                            elif hasattr(dp, "value"):
+                                val = float(dp.value)
+                            elif hasattr(dp, "count"):
+                                val = float(dp.count)
+                            else:
+                                val = 0.0
 
-                        time_nano = getattr(dp, "time_unix_nano", None)
-                        ts = (
-                            datetime.fromtimestamp(time_nano / 1e9, tz=UTC).isoformat()
-                            if time_nano
-                            else utc_now_iso()
-                        )
-                        attrs = dict(dp.attributes) if getattr(dp, "attributes", None) else {}
+                            time_nano = getattr(dp, "time_unix_nano", None)
+                            ts = (
+                                datetime.fromtimestamp(time_nano / 1e9, tz=UTC).isoformat()
+                                if time_nano
+                                else utc_now_iso()
+                            )
+                            attrs = dict(dp.attributes) if getattr(dp, "attributes", None) else {}
+                            # For histogram data points, preserve count in attributes for exact mean calculation
+                            if hasattr(dp, "count") and "count" not in attrs:
+                                attrs["count"] = int(dp.count)
 
-                        insert_otel_metric(
-                            self.db_path,
-                            instrument_name=inst_name,
-                            instrument_type=inst_type,
-                            value=val,
-                            recorded_at=ts,
-                            attributes=attrs,
-                        )
+                            insert_otel_metric(
+                                self.db_path,
+                                instrument_name=inst_name,
+                                instrument_type=inst_type,
+                                value=val,
+                                recorded_at=ts,
+                                attributes=attrs,
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            self._last_error = exc
+                            self._failure_count += 1
+                            success = False
+                            if self._observer is not None and hasattr(
+                                self._observer, "record_failure"
+                            ):
+                                with contextlib.suppress(Exception):
+                                    self._observer.record_failure("SQLiteMetricExporter")
 
-        return MetricExportResult.SUCCESS
+        return MetricExportResult.SUCCESS if success else MetricExportResult.FAILURE
 
     def force_flush(self, timeout_millis: float = 10_000, **kwargs: Any) -> bool:
-        """Flush pending metrics."""
+        """Flush pending metrics.
+
+        Args:
+            timeout_millis: Timeout limit in milliseconds.
+            **kwargs: Extra unused keyword arguments.
+
+        Returns:
+            Always True for synchronous SQLite operations.
+        """
         return True
 
     def shutdown(self, timeout_millis: float = 30_000, **kwargs: Any) -> None:
-        """Shut down the metric exporter."""
+        """Shut down the metric exporter idempotently.
+
+        Args:
+            timeout_millis: Timeout limit in milliseconds.
+            **kwargs: Extra unused keyword arguments.
+        """
         self._stopped = True
 
 
-def create_local_otel_providers(
+class LocalOtelBundle:
+    """Container for OpenTelemetry SDK providers and exporters with explicit lifecycle."""
+
+    def __init__(
+        self,
+        tracer_provider: TracerProvider,
+        meter_provider: MeterProvider,
+        span_exporter: SQLiteSpanExporter,
+        metric_exporter: SQLiteMetricExporter,
+        metric_reader: PeriodicExportingMetricReader,
+    ) -> None:
+        """Initialize bundle with providers and exporters.
+
+        Args:
+            tracer_provider: SDK TracerProvider instance.
+            meter_provider: SDK MeterProvider instance.
+            span_exporter: SQLiteSpanExporter instance.
+            metric_exporter: SQLiteMetricExporter instance.
+            metric_reader: PeriodicExportingMetricReader instance.
+        """
+        self.tracer_provider = tracer_provider
+        self.meter_provider = meter_provider
+        self.span_exporter = span_exporter
+        self.metric_exporter = metric_exporter
+        self.metric_reader = metric_reader
+        self._closed = False
+
+    @property
+    def is_shutdown(self) -> bool:
+        """Return whether the OpenTelemetry bundle has been shut down.
+
+        Returns:
+            True if shut down, False otherwise.
+        """
+        return self._closed
+
+    def force_flush(self, timeout_millis: int = 10000) -> bool:
+        """Force flush providers and exporters idempotently.
+
+        Args:
+            timeout_millis: Timeout limit in milliseconds.
+
+        Returns:
+            True if all flushes succeeded, False otherwise.
+        """
+        if self._closed:
+            return True
+        tf_ok = True
+        try:
+            tf_ok = bool(self.tracer_provider.force_flush(timeout_millis=timeout_millis))
+        except Exception:
+            tf_ok = False
+        mf_ok = True
+        try:
+            mf_ok = bool(self.meter_provider.force_flush(timeout_millis=timeout_millis))
+        except Exception:
+            mf_ok = False
+        return tf_ok and mf_ok
+
+    def shutdown(self) -> None:
+        """Shut down providers and exporters idempotently."""
+        if self._closed:
+            return
+        self._closed = True
+        with contextlib.suppress(Exception):
+            self.tracer_provider.shutdown()
+        with contextlib.suppress(Exception):
+            self.meter_provider.shutdown()
+
+
+def create_local_otel_bundle(
     db_path: Path | str | None = None,
-) -> tuple[TracerProvider, MeterProvider]:
-    """Create and configure local OpenTelemetry TracerProvider and MeterProvider backed by SQLite.
+) -> LocalOtelBundle:
+    """Create and configure local OpenTelemetry providers and exporters.
 
     Args:
         db_path: Optional custom telemetry database path.
 
     Returns:
-        Tuple of (TracerProvider, MeterProvider) configured with SQLite exporters.
+        Configured LocalOtelBundle instance.
     """
     tracer_provider = TracerProvider()
     span_exporter = SQLiteSpanExporter(db_path)
@@ -246,4 +442,25 @@ def create_local_otel_providers(
     )
     meter_provider = MeterProvider(metric_readers=[metric_reader])
 
-    return tracer_provider, meter_provider
+    return LocalOtelBundle(
+        tracer_provider=tracer_provider,
+        meter_provider=meter_provider,
+        span_exporter=span_exporter,
+        metric_exporter=metric_exporter,
+        metric_reader=metric_reader,
+    )
+
+
+def create_local_otel_providers(
+    db_path: Path | str | None = None,
+) -> tuple[TracerProvider, MeterProvider]:
+    """Create and configure local OpenTelemetry TracerProvider and MeterProvider backed by SQLite.
+
+    Args:
+        db_path: Optional custom telemetry database path.
+
+    Returns:
+        Tuple of (TracerProvider, MeterProvider) configured with SQLite exporters.
+    """
+    bundle = create_local_otel_bundle(db_path)
+    return bundle.tracer_provider, bundle.meter_provider

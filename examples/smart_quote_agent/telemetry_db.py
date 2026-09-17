@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -527,6 +527,26 @@ def insert_otel_metric(
         conn.close()
 
 
+def derive_invocation_status(events: Sequence[Mapping[str, Any]]) -> str:
+    """Derive invocation status from chronological runtime events.
+
+    Args:
+        events: Sequence of runtime event dictionaries for the invocation.
+
+    Returns:
+        One of 'completed', 'failed', 'denied', or 'running'.
+    """
+    for e in reversed(events):
+        kind = e.get("event_kind")
+        if kind in ("invocation_completed", "tool_completed"):
+            return "completed"
+        if kind in ("invocation_failed", "tool_failed"):
+            return "failed"
+        if kind == "tool_denied":
+            return "denied"
+    return "running"
+
+
 def fetch_recent_invocations(
     db_path: Path | str | None = None,
     limit: int = 10,
@@ -551,9 +571,16 @@ def fetch_recent_invocations(
                 COUNT(CASE WHEN event_kind LIKE 'tool_%' THEN 1 END) AS tool_events,
                 COUNT(DISTINCT tool_name) AS tool_count,
                 COALESCE(
-                    MAX(CASE WHEN event_kind = 'invocation_completed' THEN 'completed'
-                             WHEN event_kind = 'invocation_failed' THEN 'failed'
-                        END),
+                    (SELECT CASE
+                        WHEN e2.event_kind IN ('invocation_completed', 'tool_completed') THEN 'completed'
+                        WHEN e2.event_kind IN ('invocation_failed', 'tool_failed') THEN 'failed'
+                        WHEN e2.event_kind = 'tool_denied' THEN 'denied'
+                     END
+                     FROM runtime_events e2
+                     WHERE e2.invocation_id = runtime_events.invocation_id
+                       AND e2.event_kind IN ('invocation_completed', 'tool_completed', 'invocation_failed', 'tool_failed', 'tool_denied')
+                     ORDER BY e2.occurred_at DESC, e2.id DESC
+                     LIMIT 1),
                     'running'
                 ) AS status,
                 MAX(model) AS model,
@@ -665,6 +692,43 @@ def fetch_langsmith_runs(
         conn.close()
 
 
+def fetch_langsmith_runs_for_invocation(
+    db_path: Path | str | None,
+    invocation_id: str,
+) -> list[dict[str, Any]]:
+    """Fetch LangSmith runs strictly correlated to a specific invocation ID.
+
+    Args:
+        db_path: Database path to read from.
+        invocation_id: Target Proteo invocation ID.
+
+    Returns:
+        List of matching LangSmith run dictionaries ordered chronologically.
+    """
+    conn = get_telemetry_connection(db_path, read_only=True)
+    try:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM langsmith_runs
+            ORDER BY started_at ASC, id ASC
+            """
+        ).fetchall()
+        matching: list[dict[str, Any]] = []
+        for row in rows:
+            record = dict(row)
+            meta_raw = record.get("metadata_json") or "{}"
+            try:
+                meta = json.loads(meta_raw) if isinstance(meta_raw, str) else dict(meta_raw)
+            except Exception:
+                meta = {}
+            if isinstance(meta, dict) and meta.get("proteo.invocation_id") == invocation_id:
+                matching.append(record)
+        return matching
+    finally:
+        conn.close()
+
+
 def fetch_otel_spans(
     db_path: Path | str | None,
     *,
@@ -700,6 +764,43 @@ def fetch_otel_spans(
                 """
             ).fetchall()
         return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def fetch_otel_spans_for_invocation(
+    db_path: Path | str | None,
+    invocation_id: str,
+) -> list[dict[str, Any]]:
+    """Fetch OpenTelemetry spans strictly correlated to a specific invocation ID.
+
+    Args:
+        db_path: Database path to read from.
+        invocation_id: Target Proteo invocation ID.
+
+    Returns:
+        List of matching OpenTelemetry span dictionaries ordered chronologically.
+    """
+    conn = get_telemetry_connection(db_path, read_only=True)
+    try:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM otel_spans
+            ORDER BY started_at ASC, id ASC
+            """
+        ).fetchall()
+        matching: list[dict[str, Any]] = []
+        for row in rows:
+            record = dict(row)
+            attrs_raw = record.get("attributes_json") or "{}"
+            try:
+                attrs = json.loads(attrs_raw) if isinstance(attrs_raw, str) else dict(attrs_raw)
+            except Exception:
+                attrs = {}
+            if isinstance(attrs, dict) and attrs.get("proteo.invocation_id") == invocation_id:
+                matching.append(record)
+        return matching
     finally:
         conn.close()
 

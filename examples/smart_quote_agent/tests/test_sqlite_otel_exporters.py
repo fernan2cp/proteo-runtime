@@ -13,7 +13,12 @@ _DEMO_DIR = Path(__file__).resolve().parent.parent
 if str(_DEMO_DIR) not in sys.path:
     sys.path.insert(0, str(_DEMO_DIR))
 
+from opentelemetry.sdk.metrics.export import MetricExportResult  # noqa: E402
+from opentelemetry.sdk.trace.export import SpanExportResult  # noqa: E402
 from otel_recording import (  # noqa: E402
+    SQLiteMetricExporter,
+    SQLiteSpanExporter,
+    create_local_otel_bundle,
     create_local_otel_providers,
 )
 from telemetry_db import (  # noqa: E402
@@ -140,3 +145,106 @@ async def test_opentelemetry_observer_integration(temp_telemetry_db: Path) -> No
     assert "proteo.runtime.events" in metric_names
     assert "proteo.runtime.invocations" in metric_names
     assert "proteo.runtime.tool_calls" in metric_names
+
+
+def test_sqlite_span_exporter_failure_handling(tmp_path: Path) -> None:
+    """Verify SQLiteSpanExporter returns FAILURE, isolates exceptions, and records diagnostics."""
+    from unittest.mock import MagicMock
+
+    invalid_db = tmp_path / "non_existent_subdir" / "cannot_create" / "invalid.db"
+    exporter = SQLiteSpanExporter(invalid_db)
+
+    dummy_span = MagicMock()
+    dummy_span.context.trace_id = 12345
+    dummy_span.context.span_id = 67890
+    dummy_span.parent = None
+    dummy_span.name = "failing_span"
+    dummy_span.start_time = 1000000000
+    dummy_span.end_time = 2000000000
+    dummy_span.kind.name = "INTERNAL"
+    dummy_span.status.status_code.name = "OK"
+    dummy_span.status.description = ""
+    dummy_span.attributes = {}
+    dummy_span.events = []
+
+    res = exporter.export([dummy_span])
+    assert res == SpanExportResult.FAILURE
+    assert exporter.failure_count == 1
+    assert exporter.last_error is not None
+
+
+def test_sqlite_metric_exporter_failure_handling(tmp_path: Path) -> None:
+    """Verify SQLiteMetricExporter returns FAILURE, isolates exceptions, and records diagnostics."""
+    from unittest.mock import MagicMock
+
+    invalid_db = tmp_path / "non_existent_subdir" / "cannot_create" / "invalid.db"
+    exporter = SQLiteMetricExporter(invalid_db)
+
+    dummy_dp = MagicMock()
+    dummy_dp.value = 42.0
+    dummy_dp.attributes = {}
+    dummy_dp.time_unix_nano = 1000000000
+
+    dummy_metric = MagicMock()
+    dummy_metric.name = "failing_metric"
+    dummy_metric.description = ""
+    dummy_metric.unit = "1"
+    dummy_metric.data.data_points = [dummy_dp]
+
+    dummy_scope = MagicMock()
+    dummy_scope.metrics = [dummy_metric]
+
+    dummy_resource = MagicMock()
+    dummy_resource.scope_metrics = [dummy_scope]
+
+    metrics_data = MagicMock()
+    metrics_data.resource_metrics = [dummy_resource]
+
+    res = exporter.export(metrics_data)
+    assert res == MetricExportResult.FAILURE
+    assert exporter.failure_count == 1
+    assert exporter.last_error is not None
+
+
+def test_local_otel_bundle_lifecycle(temp_telemetry_db: Path) -> None:
+    """Verify LocalOtelBundle force_flush and idempotent shutdown."""
+    bundle = create_local_otel_bundle(temp_telemetry_db)
+    tracer = bundle.tracer_provider.get_tracer("lifecycle-tracer")
+
+    with tracer.start_as_current_span("lifecycle-span"):
+        pass
+
+    bundle.force_flush()
+    spans = fetch_otel_spans(temp_telemetry_db)
+    assert len(spans) == 1
+
+    assert getattr(bundle, "is_shutdown") is False
+    bundle.shutdown()
+    assert getattr(bundle, "is_shutdown") is True
+    # Idempotent call
+    bundle.shutdown()
+    assert getattr(bundle, "is_shutdown") is True
+
+
+def test_delta_temporality_and_histogram_count(temp_telemetry_db: Path) -> None:
+    """Verify DELTA temporality on exporter and count in histogram metrics."""
+    import json
+
+    bundle = create_local_otel_bundle(temp_telemetry_db)
+    meter = bundle.meter_provider.get_meter("test-delta")
+
+    hist = meter.create_histogram("test.latency", unit="ms")
+    hist.record(100.0, attributes={"route": "pricing"})
+    hist.record(200.0, attributes={"route": "pricing"})
+
+    bundle.force_flush()
+
+    metrics = fetch_recent_metrics(temp_telemetry_db)
+    latency_metrics = [m for m in metrics if m["instrument_name"] == "test.latency"]
+    assert len(latency_metrics) >= 1
+
+    attrs = json.loads(latency_metrics[0]["attributes_json"])
+    assert attrs.get("count") == 2
+    assert latency_metrics[0]["value"] == 300.0
+
+    bundle.shutdown()

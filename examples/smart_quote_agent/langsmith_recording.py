@@ -51,6 +51,8 @@ class RecordingLangSmithClient:
         """
         self.db_path = get_telemetry_db_path(db_path)
         self._closed = False
+        self.flush_count = 0
+        self.close_count = 0
 
     def create_run(self, **kwargs: Any) -> dict[str, Any]:
         """Record the start of a LangSmith run and return a descriptor with 'id'.
@@ -128,8 +130,9 @@ class RecordingLangSmithClient:
 
     def flush(self) -> None:
         """Flush pending writes (no-op as writes are synchronous per operation)."""
-        pass
+        self.flush_count += 1
 
     def close(self) -> None:
         """Release recording client resources idempotently."""
+        self.close_count += 1
         self._closed = True
