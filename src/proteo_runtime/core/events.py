@@ -30,6 +30,8 @@ class RuntimeEventKind(StrEnum):
     SESSION_ARCHIVED = "session_archived"
     SESSION_DELETED = "session_deleted"
     SESSION_MIGRATED = "session_migrated"
+    TASK_STARTED = "task_started"
+    TASK_CLOSED = "task_closed"
     TURN_STARTED = "turn_started"
     TURN_COMPLETED = "turn_completed"
     OUTPUT_TEXT_DELTA = "output_text_delta"
@@ -66,6 +68,7 @@ class RuntimeEvent:
     metadata: Mapping[str, Any] = field(default_factory=dict)
     result: RuntimeResult[Any] | None = None
     payload: Mapping[str, Any] = field(default_factory=dict)
+    task_id: str | None = None
 
     def __post_init__(self) -> None:
         """Validate sequencing and normalize timestamps and metadata."""

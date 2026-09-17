@@ -30,10 +30,18 @@ from .input import RuntimeInput, RuntimeMessage, TextContent
 from .model import InvocationConfig, RuntimeModel, RuntimeResult, StructuredOutputPolicy
 from .model_info import ModelInfo
 from .observability import ObservabilityStatus
-from .profiles import ExecutionProfile, HostToolsMode, LifecycleMode, LogicalLevel, ProfileSpec
+from .profiles import (
+    ExecutionProfile,
+    ExecutionProfileName,
+    HostToolsMode,
+    LifecycleMode,
+    LogicalLevel,
+    ProfileSpec,
+)
 from .runtime import Runtime
 from .security import SecurityPolicy
 from .session import RuntimeSession
+from .task import RuntimeTask
 from .usage import RuntimeUsage
 
 __all__ = [
@@ -47,6 +55,7 @@ __all__ = [
     "ContextPolicyError",
     "DiagnosticSeverity",
     "ExecutionProfile",
+    "ExecutionProfileName",
     "HostToolsMode",
     "InterruptedError",
     "InvocationConfig",
@@ -69,6 +78,7 @@ __all__ = [
     "RuntimeResult",
     "StructuredOutputPolicy",
     "RuntimeSession",
+    "RuntimeTask",
     "RuntimeTimeoutError",
     "RuntimeUnavailableError",
     "RuntimeUsage",

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Any
+from typing import Any, Literal
 
 from .context import ContextPolicy
 from .security import SecurityPolicy
@@ -17,8 +17,19 @@ class ExecutionProfile(StrEnum):
     BRAIN = "brain"
     STRUCTURED = "structured"
     SESSION = "session"
+    CONTROLLED_TURN = "controlled_turn"
     CONTROLLED_AGENT = "controlled_agent"
     NATIVE = "native"
+
+
+ExecutionProfileName = Literal[
+    "brain",
+    "structured",
+    "session",
+    "controlled_turn",
+    "controlled_agent",
+    "native",
+]
 
 
 class LogicalLevel(StrEnum):
@@ -94,9 +105,15 @@ DEFAULT_PROFILE_SPECS = MappingProxyType(
             HostToolsMode.DISABLED,
             SecurityPolicy.ISOLATED,
         ),
-        ExecutionProfile.CONTROLLED_AGENT.value: ProfileSpec(
+        ExecutionProfile.CONTROLLED_TURN.value: ProfileSpec(
             LifecycleMode.EPHEMERAL,
             ContextPolicy.EXTERNAL,
+            HostToolsMode.CONTROLLED,
+            SecurityPolicy.CONTROLLED_TOOLS,
+        ),
+        ExecutionProfile.CONTROLLED_AGENT.value: ProfileSpec(
+            LifecycleMode.EPHEMERAL,
+            ContextPolicy.RUNTIME,
             HostToolsMode.CONTROLLED,
             SecurityPolicy.CONTROLLED_TOOLS,
         ),

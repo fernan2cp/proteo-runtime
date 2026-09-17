@@ -118,11 +118,11 @@ class RuntimeConfigV1(BaseModel):
                     path=f"profile_specs.{profile}.lifecycle",
                 )
             if (
-                spec.context_policy in {ContextPolicy.RUNTIME, ContextPolicy.HYBRID}
+                spec.context_policy is ContextPolicy.HYBRID
                 and spec.lifecycle is not LifecycleMode.PERSISTENT
             ):
                 raise ConfigurationError(
-                    "runtime or hybrid context requires persistent lifecycle",
+                    "hybrid context requires persistent lifecycle",
                     path=f"profile_specs.{profile}.lifecycle",
                 )
             if spec.lifecycle is LifecycleMode.EXPLICIT:

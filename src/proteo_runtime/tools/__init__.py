@@ -243,6 +243,7 @@ class ToolRequest:
     name: str
     arguments: Mapping[str, Any]
     session_id: str | None = None
+    task_id: str | None = None
     turn_id: str | None = None
 
     def __post_init__(self) -> None:
@@ -833,6 +834,7 @@ class ToolExecutor:
             runtime=RuntimeIdentity("proteo-runtime", "host-tools"),
             invocation_id=request.invocation_id,
             session_id=request.session_id,
+            task_id=request.task_id,
             turn_id=request.turn_id,
             metadata={
                 "tool_name": definition.name if definition is not None else request.name,

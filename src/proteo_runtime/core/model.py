@@ -75,6 +75,7 @@ class RuntimeResult(Generic[T]):
     profile: str
     reasoning_effort: str | None = None
     session_id: str | None = None
+    task_id: str | None = None
     turn_id: str | None = None
     diagnostics: tuple[RuntimeDiagnostic, ...] = ()
     raw: object | None = None
@@ -89,6 +90,7 @@ class RuntimeResult(Generic[T]):
         profile: str = "brain",
         reasoning_effort: str | None = None,
         session_id: str | None = None,
+        task_id: str | None = None,
         turn_id: str | None = None,
         diagnostics: tuple[RuntimeDiagnostic, ...] = (),
         raw: object | None = None,
@@ -106,6 +108,7 @@ class RuntimeResult(Generic[T]):
         object.__setattr__(self, "profile", profile)
         object.__setattr__(self, "reasoning_effort", reasoning_effort)
         object.__setattr__(self, "session_id", session_id)
+        object.__setattr__(self, "task_id", task_id)
         object.__setattr__(self, "turn_id", turn_id)
         object.__setattr__(self, "diagnostics", tuple(diagnostics))
         object.__setattr__(self, "raw", raw)

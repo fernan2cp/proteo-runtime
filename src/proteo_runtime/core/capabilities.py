@@ -9,6 +9,7 @@ class RuntimeCapabilities:
 
     structured_output: bool = False
     ephemeral_sessions: bool = True
+    ephemeral_tasks: bool = False
     persistent_sessions: bool = False
     streaming: bool = True
     interruption: bool = False
