@@ -1031,6 +1031,24 @@ class Runtime(Protocol):
         security_policy: str,
     ) -> RuntimeSession:
         ...
+
+    async def task(
+        self,
+        profile: str = "controlled_agent",
+        *,
+        level: str = "medium",
+        instructions: str | None = None,
+        config: InvocationConfig | None = None,
+        registry: ToolRegistry | None = None,
+        executor: ToolExecutor | None = None,
+    ) -> RuntimeTask[Any]:
+        ...
+
+    def get_task(
+        self,
+        task_id: str,
+    ) -> RuntimeTask[Any]:
+        ...
 ```
 
 `runtime.capabilities()` exposes provider support. Security-filtered support is obtained from `RuntimeModel.effective_capabilities()`.
@@ -1119,7 +1137,75 @@ The 1.0 migration operation supports model, profile and security-policy changes 
 
 ---
 
-## 7.4 RuntimeInput and RuntimeResult
+## 7.4 RuntimeTask
+
+The task abstraction represents task-scoped ephemeral stateful context with an explicit lifecycle boundary (`TaskState`: `OPEN -> CLOSING -> CLOSED`).
+
+```python
+class RuntimeTask(Protocol, Generic[T]):
+
+    @property
+    def id(self) -> str:
+        """Provider-neutral, Proteo-generated opaque task identifier."""
+        ...
+
+    @property
+    def instructions(self) -> str | None:
+        """Initial task instructions frozen at task creation (read-only)."""
+        ...
+
+    @property
+    def state(self) -> TaskState:
+        """Current lifecycle state of the task (OPEN, CLOSING, CLOSED)."""
+        ...
+
+    async def ainvoke(
+        self,
+        input: str | RuntimeInput,
+        *,
+        config: InvocationConfig | None = None,
+        include_raw: bool | None = None,
+    ) -> RuntimeResult[T]:
+        ...
+
+    def astream(
+        self,
+        input: str | RuntimeInput,
+        *,
+        config: InvocationConfig | None = None,
+        include_raw: bool | None = None,
+    ) -> AsyncIterator[RuntimeEvent]:
+        ...
+
+    async def interrupt(self) -> None:
+        ...
+
+    async def close(self) -> None:
+        ...
+
+    async def __aenter__(self) -> RuntimeTask[T]:
+        ...
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: Any,
+    ) -> None:
+        ...
+```
+
+A `RuntimeTask` enforces:
+- **Task boundary:** Explicit lifecycle creation via `runtime.task(profile="controlled_agent", ...)` and teardown via `task.close()` or `async with`.
+- **Tool authority:** Mandatory host-tool registry snapshot and executor binding frozen at task creation.
+- **Single-turn concurrency lock:** Only one turn may execute at a time per task; concurrent calls raise `SessionBusyError`.
+- **Context replay protection:** Under `ContextPolicy.RUNTIME`, task turns accept only `user` role messages; replaying `assistant`, `tool`, or injecting `system` messages raises `ContextPolicyError`.
+- **Non-resumability:** Ephemeral tasks cannot be resumed as durable sessions via `resume_session()`.
+- **Race prevention & Idempotency:** Calling `ainvoke()` or `astream()` during `CLOSING` or `CLOSED` state raises `SessionNotFoundError`. Teardown is idempotent and emits `TASK_CLOSED` exactly once.
+
+---
+
+## 7.5 RuntimeInput and RuntimeResult
 
 Proteo Runtime 1.0 supports text content only, represented through a small provider-neutral model:
 
