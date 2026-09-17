@@ -2,7 +2,7 @@
 
 **Project Charter, Architecture and Implementation Guide**
 
-**Status:** Draft v0.3\
+**Status:** Draft v0.4\
 **License:** MIT\
 **Primary language:** Python\
 **Initial runtime:** OpenAI Codex\
@@ -304,9 +304,14 @@ Initial target profiles:
 brain
 structured
 session
+controlled_turn
 controlled_agent
 native
 ```
+
+`controlled_turn` provides isolated, externally contextualized tool-enabled invocations.
+`controlled_agent` provides an explicitly bounded, task-scoped ephemeral runtime context that may
+span multiple turns while remaining non-resumable after the task ends.
 
 Users MUST be able to define advanced custom profiles.
 
@@ -364,7 +369,14 @@ hybrid
 
 The selected policy MUST determine who owns conversational history.
 
-The library MUST reject obvious attempts to duplicate persistent runtime context through host-supplied history under `runtime` or `hybrid`. It MUST raise `ContextPolicyError` unless explicit, observable context replay is enabled.
+Lifecycle and context ownership are independent dimensions. `ephemeral` MUST mean that runtime
+context is not durable after its explicit owner ends; it MUST NOT imply single-turn execution or
+`external` context ownership.
+
+Whenever the runtime owns conversational history under `runtime` or `hybrid`, whether the context
+is task-scoped ephemeral or persistent, the library MUST reject obvious attempts to duplicate that
+history through host-supplied assistant/tool replay. It MUST raise `ContextPolicyError` unless
+explicit, observable context replay is enabled.
 
 ---
 
@@ -565,6 +577,14 @@ interruptions
 
 Resource leaks caused by forgotten Codex processes or threads must be actively prevented.
 
+Task-scoped ephemeral runtime context MUST have an explicit lifecycle boundary. It may span
+multiple turns, but closing the task MUST release its provider/runtime context and MUST NOT create a
+resumable persistent-session descriptor. A reusable generic `RuntimeModel` MUST NOT silently retain
+agent history across unrelated tasks.
+
+Only one turn may be active at a time within the same runtime-owned conversational context.
+Concurrent invocation on that context MUST fail explicitly rather than interleave history.
+
 Closing a persistent session MUST release resources without deleting history. Archiving and deletion MUST be explicit operations. Only one turn may be active per session; concurrent invocation MUST raise `SessionBusyError`.
 
 Persistent sessions MUST expose a versioned, self-contained and opaque Proteo session identifier. Proteo Runtime 1.0 MUST NOT require an internal alias database to resume a session. Session identifiers MUST contain no credentials or access tokens and MUST be treated as untrusted input rather than as a security boundary.
@@ -746,6 +766,7 @@ The complete initial project through 1.0 includes:
 - brain profile;
 - structured profile;
 - session profile;
+- controlled-turn profile;
 - controlled-agent profile;
 - advanced custom profiles;
 - structured output;
@@ -1051,7 +1072,12 @@ class RuntimeModel(Protocol, Generic[T]):
 
 ## 7.3 RuntimeSession
 
-The session abstraction represents stateful runtime context.
+The session abstraction represents durable, resumable stateful runtime context.
+
+Task-scoped ephemeral stateful context is a distinct lifecycle from `RuntimeSession`: it must have
+an explicit owner/boundary, may span multiple turns, is discarded when that owner closes, and is
+not resumable through a persistent `SessionDescriptor`. The public API must represent this boundary
+explicitly rather than hiding sticky conversational state inside a reusable `RuntimeModel`.
 
 ```python
 class RuntimeSession(Protocol):
@@ -1212,13 +1238,19 @@ The default profile matrix is:
 
 | Execution profile | Lifecycle | Context policy | Security policy | Host tools |
 |---|---|---|---|---|
-| `brain` | ephemeral | `external` | `isolated` | disabled |
-| `structured` | ephemeral | `external` | `isolated` | disabled |
+| `brain` | ephemeral invocation | `external` | `isolated` | disabled |
+| `structured` | ephemeral invocation | `external` | `isolated` | disabled |
 | `session` | persistent | `runtime` | `isolated` | disabled |
-| `controlled_agent` | ephemeral | `external` | `controlled_tools` | explicit registry only |
+| `controlled_turn` | ephemeral invocation | `external` | `controlled_tools` | explicit registry only |
+| `controlled_agent` | ephemeral task | `runtime` | `controlled_tools` | explicit registry only |
 | `native` | explicit | explicit | `native` | provider-defined |
 
-Persistent or hybrid controlled-agent behavior requires creating an explicit session.
+`ephemeral` describes durability, not turn count. `controlled_turn` intentionally starts from a
+clean runtime context for each host invocation. `controlled_agent` keeps one runtime-owned local
+context for the explicitly bounded task and discards it when that task ends.
+
+Durable/resumable controlled execution remains an explicit persistent-session/custom-profile use
+case; `controlled_agent` itself is not resumable after its task closes.
 
 ## 9.1 Brain
 
@@ -1299,6 +1331,7 @@ Purpose:
 
 ```text
 complex multi-step task
+multi-turn runtime-local conversation
 runtime chooses tools
 host controls tool execution
 ```
@@ -1306,8 +1339,11 @@ host controls tool execution
 Defaults:
 
 ```text
-ephemeral
-external context ownership
+ephemeral task-scoped runtime context
+runtime context ownership
+same runtime task context reused across turns
+explicit task lifecycle boundary
+non-resumable after task completion
 controlled_tools security policy
 host-managed tools from an explicit registry
 native unrestricted tools denied
@@ -1315,11 +1351,46 @@ tool schemas enforced
 tool execution traced
 ```
 
-Persistent or hybrid execution requires an explicit session.
+The host/framework still owns business and global workflow state. Proteo owns only the local
+runtime conversation for the active task. The caller sends only the new turn; it does not replay
+the previous runtime-owned conversation.
+
+The task boundary must be explicit. Proteo MUST NOT obtain this behavior by making a reusable
+generic `RuntimeModel` silently sticky across unrelated tasks.
+
+Durable/resumable controlled execution requires an explicit persistent session/custom profile.
 
 ---
 
-## 9.5 Native
+## 9.5 Controlled Turn
+
+Purpose:
+
+```text
+one controlled tool-enabled host invocation
+host supplies all relevant conversational context
+clean runtime context for every invocation
+```
+
+Defaults:
+
+```text
+ephemeral invocation
+external context ownership
+no runtime history reused across host invocations
+controlled_tools security policy
+host-managed tools from an explicit registry
+native unrestricted tools denied
+tool schemas enforced
+tool execution traced
+```
+
+This profile preserves the previous single-invocation `controlled_agent` behavior for callers that
+want tool control without runtime-owned conversational state.
+
+---
+
+## 9.6 Native
 
 Purpose:
 
@@ -1342,9 +1413,9 @@ Runtime history is not reused.
 Typical implementation:
 
 ```text
-new ephemeral thread
+new ephemeral runtime context
         ↓
-one or few turns
+one host invocation
         ↓
 discard
 ```
@@ -1354,6 +1425,7 @@ Recommended for:
 ```text
 brain
 structured
+controlled_turn
 ```
 
 ---
@@ -1365,7 +1437,7 @@ The runtime owns task-local conversational context.
 The host stores:
 
 ```text
-session_id
+runtime context handle or persistent session_id when applicable
 business state
 artifacts
 ```
@@ -1375,6 +1447,7 @@ but does not replay previous runtime conversation.
 Recommended for:
 
 ```text
+controlled_agent task
 long worker task
 debugging
 research
@@ -1409,7 +1482,10 @@ technical investigation
 
 This is expected to be the preferred policy for complex agents.
 
-When `runtime` or `hybrid` is used with a persistent session, replayed assistant or tool history is rejected with `ContextPolicyError`. Explicit replay is reserved for documented recovery or migration and must be traced.
+When `runtime` or `hybrid` owns the active conversational context, including task-scoped
+`controlled_agent` execution and persistent sessions, replayed assistant or tool history is
+rejected with `ContextPolicyError`. Explicit replay is reserved for documented recovery or
+migration and must be traced.
 
 ---
 
@@ -1634,7 +1710,7 @@ host performs execution
 
 Codex may receive wider native capabilities.
 
-This profile must be explicit and clearly visible in diagnostics and traces. It requires the double opt-in defined in Section 9.5.
+This profile must be explicit and clearly visible in diagnostics and traces. It requires the double opt-in defined in Section 9.6.
 
 If any policy cannot be enforced on the active runtime or platform, inference fails before starting with `SecurityPolicyError`. Silent degradation is forbidden.
 
@@ -1913,8 +1989,13 @@ structured profile requires:
     structured_output
     ephemeral_sessions
 
+controlled_turn requires:
+    host_tools
+    ephemeral_sessions
+
 controlled_agent requires:
     host_tools
+    ephemeral_sessions capable of task-local multi-turn context
 ```
 
 Attempting an incompatible profile must fail before inference starts.
@@ -2190,8 +2271,13 @@ Required contract scenarios include:
 - concurrent use of one session raises `SessionBusyError`;
 - closing and resuming a session preserves provider history;
 - incompatible resume requires explicit migration;
+- `controlled_turn` starts from a clean runtime context for each invocation;
+- `controlled_agent` reuses one runtime-owned ephemeral context across turns within one explicit task;
+- closing a `controlled_agent` task discards that context and a later task starts clean;
+- a `controlled_agent` task is not resumable through a persistent-session descriptor;
+- concurrent turns on the same runtime-owned context fail explicitly;
 - cancelling a stream interrupts the provider turn or invalidates the provider connection before reuse;
-- replayed persistent history raises `ContextPolicyError`;
+- replayed runtime-owned history raises `ContextPolicyError`;
 - secure profiles expose no implicit filesystem roots;
 - normal overrides cannot expand effective permissions;
 - `native` requires both explicit opt-ins;
@@ -2384,6 +2470,9 @@ examples/
 ```
 
 At least one complete example application should be added before 1.0.
+
+The controlled-tools example should contrast `controlled_turn` (clean external context per
+invocation) with `controlled_agent` (explicitly bounded, task-scoped runtime context).
 
 It should demonstrate:
 
@@ -2874,7 +2963,8 @@ Version 1.0 requires all of the following.
 
 - async runtime;
 - neutral text input and uniform `RuntimeResult[T]`;
-- profiles;
+- profiles including `controlled_turn` and task-scoped `controlled_agent`;
+- explicit ephemeral task-context lifecycle distinct from persistent sessions;
 - strict versioned configuration;
 - versioned model resolution;
 - versioned self-contained session descriptors and `SessionCodec`;
