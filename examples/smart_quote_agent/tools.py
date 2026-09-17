@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from auth import get_permission_policy_for_user
@@ -17,6 +18,7 @@ from database import (
 )
 from models import AuthenticatedUser, QuoteItemInput
 
+from proteo_runtime.core.events import RuntimeEvent
 from proteo_runtime.tools import (
     ApprovalHandler,
     ApprovalRequirement,
@@ -441,6 +443,7 @@ def create_tool_executor(
     registry: ToolRegistry,
     user: AuthenticatedUser | None,
     approval_handler: ApprovalHandler | None = None,
+    event_sink: Callable[[RuntimeEvent], Awaitable[Any]] | None = None,
 ) -> ToolExecutor:
     """Create a ToolExecutor bound with the user's role policy and approval handler.
 
@@ -448,6 +451,7 @@ def create_tool_executor(
         registry: Configured ToolRegistry.
         user: Authenticated user identity, or None if anonymous.
         approval_handler: Optional Phase 5 ApprovalHandler for write confirmation.
+        event_sink: Optional async callable receiving tool lifecycle events.
 
     Returns:
         Configured ToolExecutor.
@@ -457,4 +461,5 @@ def create_tool_executor(
         registry,
         permission_policy=policy,
         approval_handler=approval_handler,
+        event_sink=event_sink,
     )

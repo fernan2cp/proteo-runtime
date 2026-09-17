@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import sqlite3
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any, cast
 
 from auth import authenticate_user_interactive, get_permission_policy_for_user
@@ -33,6 +33,7 @@ from tools import (
     get_quote_write_registry,
 )
 
+from proteo_runtime.core.events import RuntimeEvent
 from proteo_runtime.core.input import RuntimeInput, RuntimeMessage, TextContent
 from proteo_runtime.core.model import RuntimeModel
 from proteo_runtime.tools import (
@@ -413,6 +414,7 @@ def create_demo_graph(
     discount_prompter: Callable[[int], int] | None = None,
     auth_interactive: Callable[[sqlite3.Connection], AuthenticatedUser | None] | None = None,
     quote_reviewer: Callable[[QuoteDraft], None] | None = None,
+    event_sink: Callable[[RuntimeEvent], Awaitable[Any]] | None = None,
 ) -> Any:
     """Assemble and compile the LangGraph StateGraph for Smart Quote Agent.
 
@@ -424,6 +426,7 @@ def create_demo_graph(
         discount_prompter: Optional callback for discount prompt (defaults to prompt_discount_interactive).
         auth_interactive: Optional callback for interactive login (defaults to authenticate_user_interactive).
         quote_reviewer: Optional callback to review quote before approval (defaults to default_quote_reviewer).
+        event_sink: Optional async callable for exporting tool lifecycle events to telemetry.
 
     Returns:
         Compiled LangGraph runnable graph.
@@ -434,6 +437,7 @@ def create_demo_graph(
     actual_discount_prompter = discount_prompter or prompt_discount_interactive
     actual_auth_interactive = auth_interactive or authenticate_user_interactive
     actual_quote_reviewer = quote_reviewer or default_quote_reviewer
+    actual_event_sink = event_sink
 
     async def intent_router_node(state: DemoState) -> dict[str, Any]:
         """Classify user intent via deterministic rules or low-level structured classifier."""
@@ -900,6 +904,7 @@ def create_demo_graph(
             write_registry,
             user,
             approval_handler=actual_approval_handler,
+            event_sink=actual_event_sink,
         )
 
         items_payload = [
@@ -950,6 +955,7 @@ def create_demo_graph(
             agent_registry,
             user,
             approval_handler=actual_approval_handler,
+            event_sink=actual_event_sink,
         )
 
         role_label = user.role if user is not None else "anonymous"

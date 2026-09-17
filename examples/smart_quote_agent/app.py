@@ -21,6 +21,7 @@ from database import get_connection, get_db_path, init_database, seed_database  
 from graph import create_demo_graph  # noqa: E402
 from hitl import ConsoleApprovalHandler, prompt_discount_interactive  # noqa: E402
 from models import AuthenticatedUser, DemoState  # noqa: E402
+from observability import create_observability_config, get_observability_bus  # noqa: E402
 
 from proteo_runtime.providers.codex import CodexRuntime  # noqa: E402
 
@@ -130,6 +131,9 @@ async def run_cli_loop(
         print("Type 'logout' to sign out.")
         print("Type 'exit' to quit.\n")
 
+    obs_config = create_observability_config()
+    bus = get_observability_bus(obs_config)
+
     try:
         if offline:
             app_graph = create_demo_graph(
@@ -139,11 +143,15 @@ async def run_cli_loop(
                 approval_handler=approval_handler,
                 discount_prompter=discount_prompter,
                 auth_interactive=auth_interactive,
+                event_sink=bus.emit,
             )
             await _run_repl_loop(app_graph, input_func=input_func, interactive=interactive)
         else:
             runtime_cm = (
-                CodexRuntime(experimental_dynamic_tools=True)
+                CodexRuntime(
+                    observability=obs_config,
+                    experimental_dynamic_tools=True,
+                )
                 if runtime_override is None
                 else runtime_override
             )
@@ -158,9 +166,11 @@ async def run_cli_loop(
                     approval_handler=approval_handler,
                     discount_prompter=discount_prompter,
                     auth_interactive=auth_interactive,
+                    event_sink=bus.emit,
                 )
                 await _run_repl_loop(app_graph, input_func=input_func, interactive=interactive)
     finally:
+        await bus.close()
         conn.close()
 
 

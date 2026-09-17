@@ -97,14 +97,16 @@ python examples/smart_quote_agent/init_observability.py --reset
 
 | Date | Task / Scenario | Command / Test Executed | Output / Evidence | Status |
 |---|---|---|---|---|
-| *Pending* | `SQAO-TASK-0001` / `SCEN-001` | `uv run pytest examples/smart_quote_agent/tests/test_sqlite_event_observer.py -k test_schema` | *Pending execution* | `pending` |
-| *Pending* | `SQAO-TASK-0002` / `SCEN-002` | `python examples/smart_quote_agent/init_observability.py --reset` | *Pending execution* | `pending` |
-| *Pending* | `SQAO-TASK-0003` / `SCEN-003` | `uv run pytest examples/smart_quote_agent/tests/test_sqlite_event_observer.py -k test_events` | *Pending execution* | `pending` |
-| *Pending* | `SQAO-TASK-0004` / `SCEN-004` | `uv run pytest examples/smart_quote_agent/tests/test_recording_langsmith_client.py` | *Pending execution* | `pending` |
-| *Pending* | `SQAO-TASK-0005` / `SCEN-005` | `uv run pytest examples/smart_quote_agent/tests/test_sqlite_otel_exporters.py` | *Pending execution* | `pending` |
-| *Pending* | `SQAO-TASK-0006` / `SCEN-006` | `uv run pytest examples/smart_quote_agent/tests/test_agent.py -k test_observability_wiring` | *Pending execution* | `pending` |
-| *Pending* | `SQAO-TASK-0007` / `SCEN-008` | `uv run pytest examples/smart_quote_agent/tests/test_inspector_queries.py` | *Pending execution* | `pending` |
-| *Pending* | `SQAO-TASK-0008` / `SCEN-009` | `uv run pytest examples/smart_quote_agent/tests/test_sqlite_event_observer.py -k test_concurrency` | *Pending execution* | `pending` |
-| *Pending* | `SQAO-TASK-0008` / `SCEN-010` | `uv run pytest examples/smart_quote_agent/tests/test_observability_redaction.py` | *Pending execution* | `pending` |
-| *Pending* | `SQAO-TASK-0010` / `SCEN-013` | `uv run mypy examples/smart_quote_agent --strict` | *Pending execution* | `pending` |
-| *Pending* | `SQAO-TASK-0010` / `SCEN-014` | `git status --short` | *Pending execution* | `pending` |
+| 2026-09-16 | `SQAO-TASK-0001` / `SCEN-001` | `uv run pytest examples/smart_quote_agent/tests/test_telemetry_db.py -k test_schema` | `1 passed in 0.05s`: 5 tables and 10 indexes verified | Pass |
+| 2026-09-16 | `SQAO-TASK-0002` / `SCEN-002` | `python examples/smart_quote_agent/init_observability.py --reset` | CLI reset completed, tables created, exit code 0 without starting Codex | Pass |
+| 2026-09-16 | `SQAO-TASK-0003` / `SCEN-003` | `uv run pytest examples/smart_quote_agent/tests/test_sqlite_event_observer.py -k test_events` | `1 passed in 0.05s`: 3 events persisted, scalar fields extracted, order verified | Pass |
+| 2026-09-16 | `SQAO-TASK-0004` / `SCEN-004` | `uv run pytest examples/smart_quote_agent/tests/test_recording_langsmith_client.py` | `2 passed in 0.29s`: create/update verified; runtime -> turn -> tool hierarchy reconstructed | Pass |
+| 2026-09-16 | `SQAO-TASK-0005` / `SCEN-005` | `uv run pytest examples/smart_quote_agent/tests/test_sqlite_otel_exporters.py` | `2 passed in 0.40s`: direct provider exports and OpenTelemetryObserver spans/metrics verified | Pass |
+| 2026-09-16 | `SQAO-TASK-0006` / `SCEN-006`, `SCEN-007`, `SCEN-011` | `uv run pytest examples/smart_quote_agent/tests/test_observability_wiring.py` | `3 passed in 1.23s`: factory modes (off/local/local+ls), quote creation host event_sink wiring, and failure isolation under strict=False | Pass |
+| 2026-09-16 | `SQAO-TASK-0007` / `SCEN-008` | `uv run pytest examples/smart_quote_agent/tests/test_inspector_queries.py` | `5 passed in 0.35s`: summary tabular view, --last view, tree reconstruction, CLI flags, host-only disclaimers | Pass |
+| 2026-09-16 | `SQAO-TASK-0001` / `SCEN-009` | `uv run pytest examples/smart_quote_agent/tests/test_telemetry_db.py -k test_concurrent_writes` | `1 passed in 0.35s`: 20 threads concurrent inserts with WAL mode, 0 errors | Pass |
+| 2026-09-16 | `SQAO-TASK-0008` / `SCEN-010` | `uv run pytest examples/smart_quote_agent/tests/test_observability_redaction.py` | `3 passed in 2.98s`: zero credential/canary leakage across all 5 tables and 20-worker concurrent emission | Pass |
+| 2026-09-16 | `SQAO-TASK-0009` / `SCEN-012` | Documentation Inspection | `examples/smart_quote_agent/README.md` verified with architecture narrative, database layout, setup instructions, and step-by-step dual-terminal transcripts | Pass |
+| 2026-09-16 | `SQAO-TASK-0010` / `SCEN-013` | `uv run mypy examples/smart_quote_agent --strict`, `ruff check`, `ruff format --check` | 0 mypy errors across 23 source files, 0 lint warnings, 24 files formatted cleanly | Pass |
+| 2026-09-16 | `SQAO-TASK-0010` / `SCEN-014` | `git status --short` | Zero files modified or created outside `examples/smart_quote_agent/*` and `docs/plans/active/example-smart-quote-agent-observability/` | Pass |
+

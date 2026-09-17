@@ -49,17 +49,17 @@
 
 | Criteria ID | Primary Evidence / Verification Location |
 |---|---|
-| `AC-SQAO-001` | `examples/smart_quote_agent/tests/test_sqlite_event_observer.py::test_telemetry_schema_creation` |
-| `AC-SQAO-002` | `examples/smart_quote_agent/tests/test_sqlite_event_observer.py::test_init_observability_cli` |
-| `AC-SQAO-003` | `examples/smart_quote_agent/tests/test_sqlite_event_observer.py::test_event_ingestion_and_ordering` |
-| `AC-SQAO-004` | `examples/smart_quote_agent/tests/test_recording_langsmith_client.py::test_langsmith_run_hierarchy` |
-| `AC-SQAO-005` | `examples/smart_quote_agent/tests/test_sqlite_otel_exporters.py::test_otel_spans_and_metrics_persistence` |
-| `AC-SQAO-006` | `examples/smart_quote_agent/tests/test_sqlite_event_observer.py::test_create_observability_config_modes` |
-| `AC-SQAO-007` | `examples/smart_quote_agent/tests/test_agent.py::test_direct_create_quote_tool_event_sink` |
-| `AC-SQAO-008` | `examples/smart_quote_agent/tests/test_inspector_queries.py::test_inspector_cli_views_and_filters` |
-| `AC-SQAO-009` | `examples/smart_quote_agent/tests/test_sqlite_event_observer.py::test_concurrent_telemetry_writes` |
-| `AC-SQAO-010` | `examples/smart_quote_agent/tests/test_observability_redaction.py::test_password_and_canary_redaction` |
-| `AC-SQAO-011` | `examples/smart_quote_agent/tests/test_sqlite_event_observer.py::test_observer_failure_isolation` |
+| `AC-SQAO-001` | `examples/smart_quote_agent/tests/test_telemetry_db.py::test_init_telemetry_database_creates_all_tables_and_indexes` |
+| `AC-SQAO-002` | Subprocess execution of `python examples/smart_quote_agent/init_observability.py --reset` |
+| `AC-SQAO-003` | `examples/smart_quote_agent/tests/test_sqlite_event_observer.py::test_sqlite_event_observer_records_projected_events` |
+| `AC-SQAO-004` | `examples/smart_quote_agent/tests/test_recording_langsmith_client.py::test_langsmith_client_reconstructs_parent_child_hierarchy` |
+| `AC-SQAO-005` | `examples/smart_quote_agent/tests/test_sqlite_otel_exporters.py::test_span_exporter_records_spans_and_events`, `test_metric_exporter_records_metrics` |
+| `AC-SQAO-006` | `examples/smart_quote_agent/tests/test_observability_wiring.py::test_create_observability_config_modes` |
+| `AC-SQAO-007` | `examples/smart_quote_agent/tests/test_observability_wiring.py::test_create_quote_emits_tool_events_to_event_sink` |
+| `AC-SQAO-008` | `examples/smart_quote_agent/tests/test_inspector_queries.py` (all 5 test cases) |
+| `AC-SQAO-009` | `examples/smart_quote_agent/tests/test_telemetry_db.py::test_concurrent_writes_thread_safety_20_threads`, `test_observability_redaction.py::test_concurrent_event_bus_emission_thread_safety` |
+| `AC-SQAO-010` | `examples/smart_quote_agent/tests/test_observability_redaction.py::test_zero_credential_leakage_in_all_telemetry_tables`, `test_zero_raw_prompt_leakage_in_all_telemetry_tables` |
+| `AC-SQAO-011` | `examples/smart_quote_agent/tests/test_observability_wiring.py::test_event_bus_lifecycle_and_observer_isolation` |
 | `AC-SQAO-012` | Review and inspection of `examples/smart_quote_agent/README.md` |
-| `AC-SQAO-013` | Clean outputs from `uv run mypy`, `uv run ruff check`, `uv run ruff format --check` |
+| `AC-SQAO-013` | Clean outputs from `uv run mypy examples/smart_quote_agent --strict`, `uv run ruff check examples/smart_quote_agent`, `uv run ruff format --check examples/smart_quote_agent` |
 | `AC-SQAO-014` | Clean output from `git status --short` matching allowed paths |

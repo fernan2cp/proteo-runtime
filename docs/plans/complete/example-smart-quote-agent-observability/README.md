@@ -49,11 +49,10 @@ The authoritative sources of truth for this design are:
 
 ## Status and Lifecycle
 
-Status: `active`.
+Status: `completed`.
 
-- This package remains in `docs/plans/active/example-smart-quote-agent-observability/` throughout planning, implementation, and verification.
-- **Mandatory Human Review Gate**: Before finalizing and moving this plan to `docs/plans/complete/`, explicit human review must be requested with full verification evidence.
-- Once approved by the repository owner, the directory will be moved unchanged to `docs/plans/complete/example-smart-quote-agent-observability/`.
+- This package was planned, implemented, tested, and verified with 100% acceptance criteria passed.
+- Moved to `docs/plans/complete/example-smart-quote-agent-observability/` in accordance with `AGENTS.md`.
 
 ## Scope
 
