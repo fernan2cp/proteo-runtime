@@ -152,13 +152,23 @@ class CodexToolBridge:
         loop: asyncio.AbstractEventLoop | None = None,
         *,
         invocation_id: str | None = None,
+        session_id: str | None = None,
         task_id: str | None = None,
     ) -> None:
-        """Capture the host loop used to await tool calls."""
+        """Capture the host loop used to await tool calls.
+
+        Args:
+            executor: Host tool execution engine.
+            loop: Host event loop.
+            invocation_id: Optional invocation correlation identifier.
+            session_id: Optional neutral persistent session identifier.
+            task_id: Optional neutral ephemeral task identifier.
+        """
 
         self.executor = executor
         self.loop = loop or asyncio.get_running_loop()
         self.invocation_id = invocation_id
+        self.session_id = session_id
         self.task_id = task_id
         self.thread_id: str | None = None
         self.turn_id: str | None = None
@@ -170,13 +180,24 @@ class CodexToolBridge:
         thread_id: str,
         turn_id: str,
         invocation_id: str | None = None,
+        session_id: str | None = None,
         task_id: str | None = None,
     ) -> None:
-        """Bind this bridge to one provider thread and turn."""
+        """Bind this bridge to one provider thread and turn.
+
+        Args:
+            thread_id: Internal provider thread identifier used for mux routing.
+            turn_id: Provider turn identifier used for mux routing.
+            invocation_id: Optional invocation correlation identifier.
+            session_id: Optional neutral persistent session identifier.
+            task_id: Optional neutral ephemeral task identifier.
+        """
 
         self.thread_id, self.turn_id = thread_id, turn_id
         if invocation_id is not None:
             self.invocation_id = invocation_id
+        if session_id is not None:
+            self.session_id = session_id
         if task_id is not None:
             self.task_id = task_id
 
@@ -186,9 +207,7 @@ class CodexToolBridge:
         for future in tuple(self._pending):
             future.cancel()
         self._pending.clear()
-        if self.invocation_id:
-            self.executor.end_invocation(self.invocation_id)
-        self.thread_id = self.turn_id = self.task_id = None
+        self.thread_id = self.turn_id = self.session_id = self.task_id = self.invocation_id = None
 
     def matches(self, params: Mapping[str, Any]) -> bool:
         """Return whether a protocol request belongs to this bridge."""
@@ -232,17 +251,12 @@ class CodexToolBridge:
         if not invocation_id or not call_id or not name or not isinstance(arguments, Mapping):
             return _dynamic_response(False, "tool_execution_error", "invalid tool request")
         try:
-            session_id = (
-                None
-                if self.task_id is not None
-                else _optional_string(params.get("threadId", params.get("thread_id")))
-            )
             request = ToolRequest(
                 invocation_id,
                 call_id,
                 name,
                 arguments,
-                session_id=session_id,
+                session_id=self.session_id,
                 turn_id=_optional_string(params.get("turnId", params.get("turn_id"))),
                 task_id=self.task_id,
             )
@@ -282,14 +296,25 @@ class CodexToolMux:
         turn_id: str,
         invocation_id: str | None = None,
         task_id: str | None = None,
+        session_id: str | None = None,
     ) -> None:
-        """Register one active provider route."""
+        """Register one active provider route.
+
+        Args:
+            bridge: Tool bridge handling incoming tool requests.
+            thread_id: Internal provider thread identifier used for routing.
+            turn_id: Provider turn identifier used for routing.
+            invocation_id: Optional invocation correlation identifier.
+            task_id: Optional neutral ephemeral task identifier.
+            session_id: Optional neutral persistent session identifier.
+        """
 
         bridge.bind(
             thread_id=thread_id,
             turn_id=turn_id,
             invocation_id=invocation_id,
             task_id=task_id,
+            session_id=session_id,
         )
         self._routes[(thread_id, turn_id)] = bridge
 
@@ -331,6 +356,8 @@ class CodexToolMux:
         """Cancel and remove all routes during runtime shutdown."""
 
         for bridge in tuple(self._routes.values()):
+            if bridge.invocation_id:
+                bridge.executor.end_invocation(bridge.invocation_id)
             self.unregister(bridge)
 
 
