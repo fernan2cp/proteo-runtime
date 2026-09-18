@@ -130,6 +130,11 @@ class RuntimeConfigV1(BaseModel):
                     "explicit lifecycle is reserved for the native profile",
                     path=f"profile_specs.{profile}.lifecycle",
                 )
+            if spec.context_policy is ContextPolicy.EXPLICIT:
+                raise ConfigurationError(
+                    "explicit context is reserved for the native profile",
+                    path=f"profile_specs.{profile}.context_policy",
+                )
 
     def lookup(self, profile: str, level: LogicalLevel | str) -> ModelMapping:
         """Return a mapping or raise a path-aware configuration error."""
