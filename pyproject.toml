@@ -109,7 +109,7 @@ packages = ["proteo_runtime"]
 warn_unreachable = true
 
 [[tool.mypy.overrides]]
-module = ["jsonschema"]
+module = ["jsonschema", "models"]
 ignore_missing_imports = true
 
 [tool.coverage.run]

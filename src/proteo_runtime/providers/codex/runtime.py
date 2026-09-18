@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from proteo_runtime.config import RuntimeConfigV1, load_runtime_config
 from proteo_runtime.core.capabilities import RuntimeCapabilities
+from proteo_runtime.core.diagnostics import DiagnosticSeverity, RuntimeDiagnostic
 from proteo_runtime.core.errors import (
     AgentRuntimeError,
     AuthenticationError,
@@ -37,7 +38,12 @@ from proteo_runtime.core.model import (
     StructuredOutputPolicy,
 )
 from proteo_runtime.core.observability import ObservabilityStatus
-from proteo_runtime.core.profiles import profile_spec
+from proteo_runtime.core.profiles import (
+    profile_spec,
+    validate_model_profile,
+    validate_session_profile,
+    validate_task_profile,
+)
 from proteo_runtime.core.session_codec import SessionCodec
 from proteo_runtime.core.task import RuntimeTask, TaskState, validate_task_input
 from proteo_runtime.observability import ObservabilityConfig, RuntimeEventBus
@@ -230,11 +236,27 @@ class CodexRuntime:
         self._selected_model: str | None = None
         self._started = False
         self._closed = False
+        self._close_lock = asyncio.Lock()
         self._sessions: dict[str, _SessionState] = {}
         self._tasks: dict[str, RuntimeTask[Any]] = {}
         self._active_runs: dict[str, TurnRun] = {}
         self._sequence = 0
         self.events: list[RuntimeEvent] = []
+        self._diagnostics: list[RuntimeDiagnostic] = []
+
+    @property
+    def diagnostics(self) -> tuple[RuntimeDiagnostic, ...]:
+        """Return a snapshot of runtime diagnostics recorded during operations."""
+        return tuple(self._diagnostics)
+
+    def _record_diagnostic(self, diagnostic: RuntimeDiagnostic) -> None:
+        """Record one runtime diagnostic on the runtime and the event bus.
+
+        Args:
+            diagnostic: The runtime diagnostic to record.
+        """
+        self._diagnostics.append(diagnostic)
+        self._observability.record_diagnostic(diagnostic)
 
     def observability_status(self) -> ObservabilityStatus:
         """Return the aggregate health of configured observers."""
@@ -353,47 +375,73 @@ class CodexRuntime:
             await close()
 
     async def close(self) -> None:
-        """Close the SDK and interrupt active work idempotently."""
+        """Close the SDK and interrupt active work idempotently in dependency order."""
 
-        if self._closed and self._sdk is None:
-            return
-        self._closed = True
-        active = list(self._active_runs.values())
-        for run in active:
+        async with self._close_lock:
+            if self._closed and self._sdk is None:
+                return
+            self._closed = True
+
+            # 1. Close active tasks while SDK and mux are still available for thread deletion and cleanup
+            tasks = list(self._tasks.values())
+            for task in tasks:
+                with suppress(Exception):
+                    await task.close()
+            self._tasks.clear()
+
+            # 2. Interrupt and await non-task active runs
+            active = list(self._active_runs.values())
+            for run in active:
+                try:
+                    await asyncio.wait_for(run.interrupt(), timeout=5.0)
+                    await asyncio.wait_for(run.wait_finished(), timeout=5.0)
+                except Exception:
+                    # A transport that cannot confirm interruption is never reused.
+                    self._active_runs.pop(run.invocation_id, None)
+            self._active_runs.clear()
+
+            # 3. Clean up persistent session active runs and local workspaces
+            for state in list(self._sessions.values()):
+                with suppress(Exception):
+                    if state.active is not None:
+                        await state.active.interrupt()
+                        with suppress(asyncio.TimeoutError):
+                            await asyncio.wait_for(state.active.wait_finished(), timeout=5.0)
+                    remove_workspace(state.workspace)
+            self._sessions.clear()
+
+            # 4. Clean tool mux routes
+            if self._sdk is not None:
+                sync_client = getattr(getattr(self._sdk, "_client", None), "_sync", None)
+                mux = getattr(sync_client, "_approval_handler", None)
+                if isinstance(mux, CodexToolMux):
+                    mux.close()
+
+            # 5. Close SDK transport
+            if self._sdk is not None:
+                await self._close_sdk(self._sdk)
+                self._sdk = None
+
+            # 6. Reset runtime catalog and active flags
+            self._catalog.clear()
+            was_started = self._started
+            self._started = False
+
+            # 7. Dispatch RUNTIME_STOPPED
+            observability_error: AgentRuntimeError | None = None
+            if was_started:
+                try:
+                    await self._dispatch(self._emit(RuntimeEventKind.RUNTIME_STOPPED))
+                except AgentRuntimeError as exc:
+                    observability_error = exc
+
+            # 8. Close observability bus
             try:
-                await asyncio.wait_for(run.interrupt(), timeout=5.0)
-                await asyncio.wait_for(run.wait_finished(), timeout=5.0)
-            except Exception:
-                # A transport that cannot confirm interruption is never reused.
-                self._active_runs.pop(run.invocation_id, None)
-        if self._sdk is not None:
-            sync_client = getattr(getattr(self._sdk, "_client", None), "_sync", None)
-            mux = getattr(sync_client, "_approval_handler", None)
-            if isinstance(mux, CodexToolMux):
-                mux.close()
-            await self._close_sdk(self._sdk)
-        for task in list(self._tasks.values()):
-            with suppress(Exception):
-                await task.close()
-        self._tasks.clear()
-        for state in self._sessions.values():
-            remove_workspace(state.workspace)
-        self._active_runs.clear()
-        self._sdk = None
-        was_started = self._started
-        self._started = False
-        observability_error: AgentRuntimeError | None = None
-        if was_started:
-            try:
-                await self._dispatch(self._emit(RuntimeEventKind.RUNTIME_STOPPED))
+                await self._observability.close()
             except AgentRuntimeError as exc:
-                observability_error = exc
-        try:
-            await self._observability.close()
-        except AgentRuntimeError as exc:
-            observability_error = observability_error or exc
-        if observability_error is not None:
-            raise observability_error
+                observability_error = observability_error or exc
+            if observability_error is not None:
+                raise observability_error
 
     async def __aenter__(self) -> CodexRuntime:
         """Start the runtime for an async context manager."""
@@ -461,15 +509,7 @@ class CodexRuntime:
         """Create a model view for a provider-neutral profile."""
 
         spec = self._profile_spec(profile)
-        if spec.context.value == "runtime" and spec.lifecycle.value == "ephemeral":
-            raise CapabilityError(
-                f"Profile '{profile}' has runtime context and requires an explicit task lifecycle "
-                f"via runtime.task(); use 'controlled_turn' for invocation-scoped model execution."
-            )
-        if spec.persistent or spec.lifecycle.value in {"explicit", "persistent"}:
-            raise CapabilityError(
-                f"Profile '{profile}' is persistent; use runtime.session() for durable sessions."
-            )
+        validate_model_profile(spec, profile)
         return _CodexModel(self, profile, level, InvocationConfig())
 
     async def brain(
@@ -494,16 +534,7 @@ class CodexRuntime:
 
         self._require_started()
         spec = self._profile_spec(profile)
-        if spec.lifecycle.value == "ephemeral":
-            if spec.context.value == "runtime":
-                raise CapabilityError(
-                    f"Profile '{profile}' is ephemeral; use runtime.task() for ephemeral task execution"
-                )
-            raise CapabilityError(
-                f"Profile '{profile}' is ephemeral and external; use runtime.model() for invocation-scoped execution"
-            )
-        if not spec.persistent:
-            raise CapabilityError("Codex persistent sessions require a persistent profile")
+        validate_session_profile(spec, profile)
         tool_snapshot, tool_executor = self._tool_binding(spec, registry, executor)
         self._ensure_profile_executable(spec, tool_snapshot is not None)
         binding = self._resolve_binding(profile, level, config)
@@ -760,14 +791,7 @@ class CodexRuntime:
                 f"Runtime '{self.name}' does not support ephemeral multi-turn tasks."
             )
         spec = self._profile_spec(profile)
-        if spec.context.value == "external":
-            raise CapabilityError(
-                f"Profile '{profile}' has external context; use runtime.model() for invocation-scoped execution"
-            )
-        if spec.persistent or spec.lifecycle.value == "persistent":
-            raise CapabilityError(
-                f"Profile '{profile}' is persistent; use runtime.session() for durable sessions"
-            )
+        validate_task_profile(spec, profile)
         if registry is None:
             raise CapabilityError("A host-tool registry is required for this profile")
         tool_snapshot, tool_executor = self._tool_binding(spec, registry, executor)
@@ -1035,10 +1059,12 @@ class CodexRuntime:
         if not snapshot.definitions():
             raise CapabilityError("A host-tool registry must contain at least one tool")
         if executor is None:
-            executor = ToolExecutor(snapshot)
+            bound_executor = ToolExecutor(snapshot, frozen=True)
         elif executor.snapshot.provider_definitions() != snapshot.provider_definitions():
             raise CapabilityError("Tool executor does not match the registry snapshot")
-        return snapshot, executor
+        else:
+            bound_executor = executor.clone(snapshot=snapshot, freeze=True)
+        return snapshot, bound_executor
 
     def _register_run(self, run: TurnRun) -> None:
         """Register one active turn for coordinated cleanup."""
@@ -1234,6 +1260,9 @@ class _CodexModel:
         except Exception as exc:
             if bridge is not None:
                 bridge.unbind()
+            if mux is not None and bridge is not None:
+                with suppress(Exception):
+                    mux.unregister(bridge)
             remove_workspace(workspace)
             raise _map_sdk_error(exc, "brain invocation") from exc
         invocation_id = str(getattr(handle, "id", "")) or uuid4().hex
@@ -1243,6 +1272,7 @@ class _CodexModel:
                 bridge,
                 thread_id=str(getattr(thread, "id", "")),
                 turn_id=invocation_id,
+                invocation_id=invocation_id,
             )
         run = TurnRun(
             runtime_name="codex",
@@ -1260,8 +1290,22 @@ class _CodexModel:
             structured_output=output_schema is not None,
         )
         run.provider_thread = thread
-        if bridge is not None and mux is not None:
-            run.cleanup = lambda: mux.unregister(bridge)
+        cleaned_up = False
+
+        def _cleanup_turn() -> None:
+            """Clean up turn-scoped resources idempotently."""
+            nonlocal cleaned_up
+            if cleaned_up:
+                return
+            cleaned_up = True
+            if bridge is not None and mux is not None:
+                with suppress(Exception):
+                    mux.unregister(bridge)
+            if self._tool_executor is not None:
+                with suppress(Exception):
+                    self._tool_executor.end_invocation(invocation_id)
+
+        run.cleanup = _cleanup_turn
         self.runtime._register_run(run)
         return run, workspace
 
@@ -1300,6 +1344,10 @@ class _CodexModel:
                 raise
             raise _map_sdk_error(exc, "brain invocation") from exc
         finally:
+            if run.cleanup is not None:
+                with suppress(Exception):
+                    run.cleanup()
+                run.cleanup = None
             if run.terminal_status is None:
                 await self._interrupt_or_invalidate(run)
             self.runtime._unregister_run(run)
@@ -1345,6 +1393,10 @@ class _CodexModel:
                 raise
             raise _map_sdk_error(exc, "brain streaming") from exc
         finally:
+            if run.cleanup is not None:
+                with suppress(Exception):
+                    run.cleanup()
+                run.cleanup = None
             if run.terminal_status is None:
                 await self._interrupt_or_invalidate(run)
             self.runtime._unregister_run(run)
@@ -1411,6 +1463,10 @@ class _CodexSession:
                 await self._interrupt_or_invalidate(run)
                 raise CancellationError("Codex session turn was cancelled") from exc
             finally:
+                if run is not None and run.cleanup is not None:
+                    with suppress(Exception):
+                        run.cleanup()
+                    run.cleanup = None
                 self._state.active = None
                 self._state.runtime._unregister_run(run)
 
@@ -1431,13 +1487,18 @@ class _CodexSession:
         mux: CodexToolMux | None = None
         invocation_id = str(getattr(handle, "id", "")) or uuid4().hex
         if self._state.tool_executor is not None:
-            bridge = CodexToolBridge(self._state.tool_executor)
+            bridge = CodexToolBridge(
+                self._state.tool_executor,
+                invocation_id=invocation_id,
+                session_id=self.id,
+            )
             mux = install_bridge(self._state.runtime._require_started(), bridge)
-            bridge.invocation_id = invocation_id
             mux.register(
                 bridge,
                 thread_id=str(getattr(self._state.thread, "id", "")),
                 turn_id=invocation_id,
+                invocation_id=invocation_id,
+                session_id=self.id,
             )
         run = TurnRun(
             runtime_name="codex",
@@ -1456,7 +1517,22 @@ class _CodexSession:
             ephemeral=False,
         )
         if bridge is not None and mux is not None:
-            run.cleanup = lambda: mux.unregister(bridge)
+            cleaned_up = False
+
+            def _cleanup_session_turn() -> None:
+                """Clean up session turn-scoped resources idempotently."""
+                nonlocal cleaned_up
+                if cleaned_up:
+                    return
+                cleaned_up = True
+                if bridge is not None and mux is not None:
+                    with suppress(Exception):
+                        mux.unregister(bridge)
+                if self._state.tool_executor is not None:
+                    with suppress(Exception):
+                        self._state.tool_executor.end_invocation(invocation_id)
+
+            run.cleanup = _cleanup_session_turn
         self._state.active = run
         self._state.runtime._register_run(run)
         return run
@@ -1498,6 +1574,10 @@ class _CodexSession:
             raise CancellationError("Codex session stream was cancelled") from exc
         finally:
             if run is not None:
+                if run.cleanup is not None:
+                    with suppress(Exception):
+                        run.cleanup()
+                    run.cleanup = None
                 if run.terminal_status is None:
                     await self._interrupt_or_invalidate(run)
                 self._state.runtime._unregister_run(run)
@@ -1676,6 +1756,7 @@ class _CodexTask(RuntimeTask[str]):
         self._close_event = asyncio.Event()
         self._active_run: TurnRun | None = None
         self._active_invocation_id: str | None = None
+        self._diagnostics: list[RuntimeDiagnostic] = []
 
     @property
     def id(self) -> str:
@@ -1691,6 +1772,41 @@ class _CodexTask(RuntimeTask[str]):
     def state(self) -> TaskState:
         """Return the current lifecycle state of the task."""
         return self._state
+
+    @property
+    def diagnostics(self) -> tuple[RuntimeDiagnostic, ...]:
+        """Return a snapshot of diagnostics recorded during task operations."""
+        return tuple(self._diagnostics)
+
+    def _record_diagnostic(
+        self,
+        *,
+        code: str,
+        message: str,
+        exc: Exception,
+    ) -> RuntimeDiagnostic:
+        """Record a sanitized diagnostic for a task cleanup failure.
+
+        Args:
+            code: Stable low-cardinality diagnostic code.
+            message: Safe human-readable summary without exception text.
+            exc: Underlying exception used only for type classification.
+
+        Returns:
+            The created and recorded RuntimeDiagnostic.
+        """
+        diagnostic = RuntimeDiagnostic(
+            code=code,
+            message=message,
+            severity=DiagnosticSeverity.WARNING,
+            details={
+                "exception_type": type(exc).__name__,
+                "task_id": self._id,
+            },
+        )
+        self._diagnostics.append(diagnostic)
+        self.runtime._record_diagnostic(diagnostic)
+        return diagnostic
 
     def _ensure_open(self) -> None:
         """Raise SessionNotFoundError if the task is closing or closed."""
@@ -1761,6 +1877,7 @@ class _CodexTask(RuntimeTask[str]):
         validated_input = validate_task_input(input)
 
         async with self._lock:
+            self._ensure_open()
             prompt, _ = serialize_input(validated_input)
             run = await self._start_turn(prompt, effective)
             try:
@@ -1820,6 +1937,7 @@ class _CodexTask(RuntimeTask[str]):
         await self._lock.acquire()
         run: TurnRun | None = None
         try:
+            self._ensure_open()
             prompt, _ = serialize_input(validated_input)
             run = await self._start_turn(prompt, effective)
             timeout = effective.timeout_seconds
@@ -1858,6 +1976,9 @@ class _CodexTask(RuntimeTask[str]):
 
         Returns:
             An active TurnRun handle.
+
+        Raises:
+            SessionNotFoundError: If the task is closing or closed.
         """
         handle = await self._thread.turn(
             prompt,
@@ -1866,54 +1987,67 @@ class _CodexTask(RuntimeTask[str]):
             approval_mode=_enum("ApprovalMode", "deny_all"),
             sandbox=_enum("Sandbox", "read_only"),
         )
-        bridge: CodexToolBridge | None = None
-        mux: CodexToolMux | None = None
-        invocation_id = str(getattr(handle, "id", "")) or uuid4().hex
-        self._active_invocation_id = invocation_id
-        if self._tool_executor is not None:
-            bridge = CodexToolBridge(
-                self._tool_executor,
+        try:
+            if self._state in (TaskState.CLOSING, TaskState.CLOSED):
+                raise SessionNotFoundError(f"Task '{self.id}' not found or already closed")
+            bridge: CodexToolBridge | None = None
+            mux: CodexToolMux | None = None
+            invocation_id = str(getattr(handle, "id", "")) or uuid4().hex
+            self._active_invocation_id = invocation_id
+            if self._tool_executor is not None:
+                bridge = CodexToolBridge(
+                    self._tool_executor,
+                    invocation_id=invocation_id,
+                    task_id=self.id,
+                )
+                mux = install_bridge(self.runtime._require_started(), bridge)
+                mux.register(
+                    bridge,
+                    thread_id=str(getattr(self._thread, "id", "")),
+                    turn_id=invocation_id,
+                    invocation_id=invocation_id,
+                    task_id=self.id,
+                )
+            run = TurnRun(
+                runtime_name="codex",
+                identity=self.runtime.identity,
+                handle=handle,
                 invocation_id=invocation_id,
+                model=self._model,
+                profile=self._profile,
+                effort=self._effort,
+                session_id=None,
                 task_id=self.id,
+                include_raw=bool(effective.include_raw),
+                event_sink=self.runtime._dispatch,
+                context_policy=self._spec.context.value,
+                security_policy=self._spec.security_policy.value,
+                invocation_metadata=effective.metadata,
+                ephemeral=True,
             )
-            mux = install_bridge(self.runtime._require_started(), bridge)
-            mux.register(
-                bridge,
-                thread_id=str(getattr(self._thread, "id", "")),
-                turn_id=invocation_id,
-                invocation_id=invocation_id,
-                task_id=self.id,
-            )
-        run = TurnRun(
-            runtime_name="codex",
-            identity=self.runtime.identity,
-            handle=handle,
-            invocation_id=invocation_id,
-            model=self._model,
-            profile=self._profile,
-            effort=self._effort,
-            session_id=None,
-            task_id=self.id,
-            include_raw=bool(effective.include_raw),
-            event_sink=self.runtime._dispatch,
-            context_policy=self._spec.context.value,
-            security_policy=self._spec.security_policy.value,
-            invocation_metadata=effective.metadata,
-            ephemeral=True,
-        )
-        run.provider_thread = self._thread
-        if bridge is not None and mux is not None:
+            run.provider_thread = self._thread
+            if bridge is not None and mux is not None:
+                cleaned_up = False
 
-            def _cleanup_turn() -> None:
-                assert mux is not None and bridge is not None
-                mux.unregister(bridge)
-                assert self._tool_executor is not None
-                self._tool_executor.end_invocation(invocation_id)
+                def _cleanup_turn() -> None:
+                    """Clean up task turn-scoped resources idempotently."""
+                    nonlocal cleaned_up
+                    if cleaned_up:
+                        return
+                    cleaned_up = True
+                    assert mux is not None and bridge is not None
+                    mux.unregister(bridge)
+                    assert self._tool_executor is not None
+                    self._tool_executor.end_invocation(invocation_id)
 
-            run.cleanup = _cleanup_turn
-        self._active_run = run
-        self.runtime._register_run(run)
-        return run
+                run.cleanup = _cleanup_turn
+            self._active_run = run
+            self.runtime._register_run(run)
+            return run
+        except BaseException:
+            with suppress(Exception):
+                await handle.interrupt()
+            raise
 
     async def _interrupt_active_run(self, run: TurnRun) -> None:
         """Interrupt an active turn without closing the task."""
@@ -1946,31 +2080,79 @@ class _CodexTask(RuntimeTask[str]):
         try:
             # 1. Cancel active turn directly via internal cancellation primitive
             if self._active_run is not None:
-                await self._interrupt_active_run(self._active_run)
-            # 2. Cleanup turn-level resources (mux route unregistration, end_invocation)
-            if self._active_run is not None and self._active_run.cleanup is not None:
-                with suppress(Exception):
-                    self._active_run.cleanup()
-            elif self._tool_executor is not None and self._active_invocation_id is not None:
-                with suppress(Exception):
-                    self._tool_executor.end_invocation(self._active_invocation_id)
-            # 3. Release/destroy provider task context if supported
-            with suppress(Exception):
-                sdk = getattr(self.runtime, "_sdk", None)
-                if sdk is not None:
-                    thread_id = str(getattr(self._thread, "id", ""))
-                    if thread_id:
-                        await delete_thread(sdk, thread_id)
-            # 4. Remove temporary workspace
-            with suppress(Exception):
-                remove_workspace(self._workspace)
-            # 5. Remove task from runtime active registry
-            self.runtime._tasks.pop(self.id, None)
+                try:
+                    await asyncio.wait_for(self._active_run.interrupt(), timeout=5.0)
+                    await asyncio.wait_for(self._active_run.wait_finished(), timeout=5.0)
+                except Exception as exc:  # noqa: BLE001
+                    self._record_diagnostic(
+                        code="task.cleanup.interrupt_failed",
+                        message="Failed to interrupt active turn during task teardown",
+                        exc=exc,
+                    )
+
+            # 2. Wait for any in-flight startup or active turn to complete before destroying resources
+            async with self._lock:
+                # 3. Cleanup turn-level resources (mux route unregistration, end_invocation)
+                if self._active_run is not None and self._active_run.cleanup is not None:
+                    try:
+                        self._active_run.cleanup()
+                    except Exception as exc:  # noqa: BLE001
+                        self._record_diagnostic(
+                            code="task.cleanup.tool_state_failed",
+                            message="Failed to clean up tool state during task teardown",
+                            exc=exc,
+                        )
+                elif self._tool_executor is not None and self._active_invocation_id is not None:
+                    try:
+                        self._tool_executor.end_invocation(self._active_invocation_id)
+                    except Exception as exc:  # noqa: BLE001
+                        self._record_diagnostic(
+                            code="task.cleanup.tool_state_failed",
+                            message="Failed to clean up tool state during task teardown",
+                            exc=exc,
+                        )
+                # 4. Release/destroy provider task context if supported
+                try:
+                    sdk = getattr(self.runtime, "_sdk", None)
+                    if sdk is not None:
+                        thread_id = str(getattr(self._thread, "id", ""))
+                        if thread_id:
+                            await delete_thread(sdk, thread_id)
+                except Exception as exc:  # noqa: BLE001
+                    self._record_diagnostic(
+                        code="task.cleanup.provider_delete_failed",
+                        message="Failed to delete provider context during task teardown",
+                        exc=exc,
+                    )
+                # 5. Remove temporary workspace
+                try:
+                    remove_workspace(self._workspace)
+                except Exception as exc:  # noqa: BLE001
+                    self._record_diagnostic(
+                        code="task.cleanup.workspace_failed",
+                        message="Failed to remove task workspace directory during task teardown",
+                        exc=exc,
+                    )
+                # 6. Remove task from runtime active registry
+                self.runtime._tasks.pop(self.id, None)
         finally:
             self._state = TaskState.CLOSED
             self._close_event.set()
+            diagnostics_meta = [
+                {
+                    "code": d.code,
+                    "message": d.message,
+                    "severity": d.severity.value,
+                    "details": dict(d.details),
+                }
+                for d in self._diagnostics
+            ]
             await self.runtime._dispatch(
-                self.runtime._emit(RuntimeEventKind.TASK_CLOSED, task_id=self.id)
+                self.runtime._emit(
+                    RuntimeEventKind.TASK_CLOSED,
+                    task_id=self.id,
+                    metadata={"diagnostics": diagnostics_meta} if diagnostics_meta else {},
+                )
             )
 
     async def __aenter__(self) -> _CodexTask:

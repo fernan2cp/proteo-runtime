@@ -18,7 +18,7 @@ from pydantic import BaseModel, ValidationError
 
 from proteo_runtime.config import RuntimeConfigV1
 from proteo_runtime.core.capabilities import RuntimeCapabilities
-from proteo_runtime.core.diagnostics import RuntimeDiagnostic
+from proteo_runtime.core.diagnostics import DiagnosticSeverity, RuntimeDiagnostic
 from proteo_runtime.core.errors import (
     AgentRuntimeError,
     CancellationError,
@@ -39,7 +39,13 @@ from proteo_runtime.core.input import RuntimeInput
 from proteo_runtime.core.model import InvocationConfig, RuntimeResult, StructuredOutputPolicy
 from proteo_runtime.core.model_info import ModelInfo
 from proteo_runtime.core.observability import ObservabilityStatus
-from proteo_runtime.core.profiles import profile_spec
+from proteo_runtime.core.profiles import (
+    ProfileSpec,
+    profile_spec,
+    validate_model_profile,
+    validate_session_profile,
+    validate_task_profile,
+)
 from proteo_runtime.core.session_codec import SessionCodec
 from proteo_runtime.core.task import RuntimeTask, TaskState, validate_task_input
 from proteo_runtime.core.usage import RuntimeUsage
@@ -94,6 +100,7 @@ class FakeRuntime:
         identity: RuntimeIdentity | None = None,
         observability: ObservabilityConfig | None = None,
         config: RuntimeConfigV1 | None = None,
+        custom_profiles: Mapping[str, ProfileSpec] | None = None,
     ) -> None:
         """Initialize scripted turns and injectable deterministic dependencies."""
 
@@ -103,6 +110,7 @@ class FakeRuntime:
         self._id_factory = id_factory or self._default_id
         self._identity = identity or RuntimeIdentity("fake", "fake-identity", "Fake Runtime")
         self._config = config
+        self._custom_profiles = dict(custom_profiles) if custom_profiles else {}
         self._capabilities = capabilities or RuntimeCapabilities(
             structured_output=True,
             ephemeral_sessions=True,
@@ -122,7 +130,22 @@ class FakeRuntime:
         self._started = False
         self._closed = False
         self.events: list[RuntimeEvent] = []
+        self._diagnostics: list[RuntimeDiagnostic] = []
         self._observability = RuntimeEventBus(observability)
+
+    @property
+    def diagnostics(self) -> tuple[RuntimeDiagnostic, ...]:
+        """Return a snapshot of runtime diagnostics recorded during operations."""
+        return tuple(self._diagnostics)
+
+    def _record_diagnostic(self, diagnostic: RuntimeDiagnostic) -> None:
+        """Record one runtime diagnostic on the runtime and the event bus.
+
+        Args:
+            diagnostic: The runtime diagnostic to record.
+        """
+        self._diagnostics.append(diagnostic)
+        self._observability.record_diagnostic(diagnostic)
 
     def observability_status(self) -> ObservabilityStatus:
         """Return the aggregate health of configured observers."""
@@ -243,15 +266,7 @@ class FakeRuntime:
         """Create a fake model view for a profile and level."""
 
         spec = self._profile_spec(profile)
-        if spec.context.value == "runtime" and spec.lifecycle.value == "ephemeral":
-            raise CapabilityError(
-                f"Profile '{profile}' has runtime context and requires an explicit task lifecycle "
-                f"via runtime.task(); use 'controlled_turn' for invocation-scoped model execution."
-            )
-        if spec.persistent or spec.lifecycle.value in {"explicit", "persistent"}:
-            raise CapabilityError(
-                f"Profile '{profile}' is persistent; use runtime.session() for durable sessions."
-            )
+        validate_model_profile(spec, profile)
         if level not in {"low", "medium", "high", "ultra"}:
             raise CapabilityError(f"Unknown reasoning level: {level}")
         return FakeRuntimeModel(self, profile, level)
@@ -268,16 +283,7 @@ class FakeRuntime:
         """Create and retain a resumable fake session."""
 
         spec = self._profile_spec(profile)
-        if spec.lifecycle.value == "ephemeral":
-            if spec.context.value == "runtime":
-                raise CapabilityError(
-                    f"Profile '{profile}' is ephemeral; use runtime.task() for ephemeral task execution"
-                )
-            raise CapabilityError(
-                f"Profile '{profile}' is ephemeral and external; use runtime.model() for invocation-scoped execution"
-            )
-        if not spec.persistent:
-            raise CapabilityError("Fake persistent sessions require a persistent profile")
+        validate_session_profile(spec, profile)
         if level not in {"low", "medium", "high", "ultra"}:
             raise CapabilityError(f"Unknown reasoning level: {level}")
         tool_snapshot, tool_executor = self._tool_binding(spec, registry, executor)
@@ -392,14 +398,7 @@ class FakeRuntime:
                 f"Runtime '{self.name}' does not support ephemeral multi-turn tasks."
             )
         spec = self._profile_spec(profile)
-        if spec.context.value == "external":
-            raise CapabilityError(
-                f"Profile '{profile}' has external context; use runtime.model() for invocation-scoped execution"
-            )
-        if spec.persistent or spec.lifecycle.value == "persistent":
-            raise CapabilityError(
-                f"Profile '{profile}' is persistent; use runtime.session() for durable sessions"
-            )
+        validate_task_profile(spec, profile)
         if registry is None:
             raise CapabilityError("A host-tool registry is required for this profile")
         tool_snapshot, tool_executor = self._tool_binding(spec, registry, executor)
@@ -457,16 +456,20 @@ class FakeRuntime:
             assert executor is not None
             snapshot = executor.snapshot
         if executor is None:
-            executor = ToolExecutor(snapshot)
+            bound_executor = ToolExecutor(snapshot, frozen=True)
         elif executor.snapshot.provider_definitions() != snapshot.provider_definitions():
             raise CapabilityError("Tool executor does not match the registry snapshot")
+        else:
+            bound_executor = executor.clone(snapshot=snapshot, freeze=True)
         if not snapshot.definitions():
             raise CapabilityError("A host-tool registry must contain at least one tool")
-        return snapshot, executor
+        return snapshot, bound_executor
 
-    def _profile_spec(self, profile: str) -> Any:
+    def _profile_spec(self, profile: str) -> ProfileSpec:
         """Resolve built-in or configured custom profile semantics."""
 
+        if self._custom_profiles and profile in self._custom_profiles:
+            return self._custom_profiles[profile]
         if self._config is not None:
             return self._config.profile_spec(profile)
         return profile_spec(profile)
@@ -1491,6 +1494,7 @@ class FakeTask(RuntimeTask[Any]):
         self._active = False
         self._interrupted = False
         self._active_invocation_id: str | None = None
+        self._diagnostics: list[RuntimeDiagnostic] = []
         self._lock = asyncio.Lock()
         self._close_lock = asyncio.Lock()
         self._close_event = asyncio.Event()
@@ -1509,6 +1513,41 @@ class FakeTask(RuntimeTask[Any]):
     def state(self) -> TaskState:
         """Return the current lifecycle state of the task."""
         return self._state
+
+    @property
+    def diagnostics(self) -> tuple[RuntimeDiagnostic, ...]:
+        """Return a snapshot of diagnostics recorded during task operations."""
+        return tuple(self._diagnostics)
+
+    def _record_diagnostic(
+        self,
+        *,
+        code: str,
+        message: str,
+        exc: Exception,
+    ) -> RuntimeDiagnostic:
+        """Record a sanitized diagnostic for a task cleanup failure.
+
+        Args:
+            code: Stable low-cardinality diagnostic code.
+            message: Safe human-readable summary without exception text.
+            exc: Underlying exception used only for type classification.
+
+        Returns:
+            The created and recorded RuntimeDiagnostic.
+        """
+        diagnostic = RuntimeDiagnostic(
+            code=code,
+            message=message,
+            severity=DiagnosticSeverity.WARNING,
+            details={
+                "exception_type": type(exc).__name__,
+                "task_id": self._id,
+            },
+        )
+        self._diagnostics.append(diagnostic)
+        self._runtime._record_diagnostic(diagnostic)
+        return diagnostic
 
     def _ensure_open(self) -> None:
         """Raise SessionNotFoundError if the task is closing or closed."""
@@ -1565,15 +1604,25 @@ class FakeTask(RuntimeTask[Any]):
         validated_input = validate_task_input(input)
 
         async with self._lock:
+            self._ensure_open()
             self._active = True
             try:
-                result, _, _ = await self._runtime._execute_task_turn(
-                    self,
-                    validated_input,
-                    config=config,
-                    include_raw=include_raw,
-                    stream=False,
-                )
+                try:
+                    result, _, _ = await self._runtime._execute_task_turn(
+                        self,
+                        validated_input,
+                        config=config,
+                        include_raw=include_raw,
+                        stream=False,
+                    )
+                except BaseException as exc:
+                    if self._state in (TaskState.CLOSING, TaskState.CLOSED):
+                        raise SessionNotFoundError(
+                            f"Task '{self._id}' not found or already closed"
+                        ) from exc
+                    raise
+                if self._state in (TaskState.CLOSING, TaskState.CLOSED):
+                    raise SessionNotFoundError(f"Task '{self._id}' not found or already closed")
                 return result
             finally:
                 self._active = False
@@ -1609,14 +1658,24 @@ class FakeTask(RuntimeTask[Any]):
 
         await self._lock.acquire()
         try:
+            self._ensure_open()
             self._active = True
-            result, generated, turn = await self._runtime._execute_task_turn(
-                self,
-                validated_input,
-                config=config,
-                include_raw=include_raw,
-                stream=True,
-            )
+            try:
+                result, generated, turn = await self._runtime._execute_task_turn(
+                    self,
+                    validated_input,
+                    config=config,
+                    include_raw=include_raw,
+                    stream=True,
+                )
+            except BaseException as exc:
+                if self._state in (TaskState.CLOSING, TaskState.CLOSED):
+                    raise SessionNotFoundError(
+                        f"Task '{self._id}' not found or already closed"
+                    ) from exc
+                raise
+            if self._state in (TaskState.CLOSING, TaskState.CLOSED):
+                raise SessionNotFoundError(f"Task '{self._id}' not found or already closed")
             invocation_id = generated[0].invocation_id or ""
             turn_id = generated[0].turn_id or ""
             streamed = list(generated)
@@ -1675,14 +1734,37 @@ class FakeTask(RuntimeTask[Any]):
             self._state = TaskState.CLOSING
 
         try:
-            if self._active and self._active_invocation_id and self._tool_executor is not None:
-                self._tool_executor.end_invocation(self._active_invocation_id)
-            self._runtime._tasks.pop(self._id, None)
+            if self._active:
+                self._interrupted = True
+            async with self._lock:
+                if self._active_invocation_id and self._tool_executor is not None:
+                    try:
+                        self._tool_executor.end_invocation(self._active_invocation_id)
+                    except Exception as exc:  # noqa: BLE001
+                        self._record_diagnostic(
+                            code="task.cleanup.tool_state_failed",
+                            message="Failed to clean up tool state during task teardown",
+                            exc=exc,
+                        )
+                self._runtime._tasks.pop(self._id, None)
         finally:
             self._state = TaskState.CLOSED
             self._close_event.set()
+            diagnostics_meta = [
+                {
+                    "code": d.code,
+                    "message": d.message,
+                    "severity": d.severity.value,
+                    "details": dict(d.details),
+                }
+                for d in self._diagnostics
+            ]
             await self._runtime._dispatch(
-                self._runtime._emit(RuntimeEventKind.TASK_CLOSED, task_id=self._id)
+                self._runtime._emit(
+                    RuntimeEventKind.TASK_CLOSED,
+                    task_id=self._id,
+                    metadata={"diagnostics": diagnostics_meta} if diagnostics_meta else {},
+                )
             )
 
     async def __aenter__(self) -> FakeTask:

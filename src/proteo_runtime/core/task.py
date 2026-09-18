@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator
 from enum import StrEnum
 from typing import Any, Generic, Protocol, TypeVar
 
+from .diagnostics import RuntimeDiagnostic
 from .errors import ContextPolicyError
 from .events import RuntimeEvent
 from .input import RuntimeInput
@@ -60,7 +61,6 @@ class RuntimeTask(Protocol, Generic[T]):
         Returns:
             The unique task identifier string.
         """
-        ...
 
     @property
     def instructions(self) -> str | None:
@@ -69,7 +69,6 @@ class RuntimeTask(Protocol, Generic[T]):
         Returns:
             The frozen instruction string or None if none were provided.
         """
-        ...
 
     @property
     def state(self) -> TaskState:
@@ -78,7 +77,14 @@ class RuntimeTask(Protocol, Generic[T]):
         Returns:
             The TaskState enum value (OPEN, CLOSING, or CLOSED).
         """
-        ...
+
+    @property
+    def diagnostics(self) -> tuple[RuntimeDiagnostic, ...]:
+        """Snapshot of diagnostics recorded during task operations.
+
+        Returns:
+            A tuple of runtime diagnostics recorded on this task.
+        """
 
     async def ainvoke(
         self,
@@ -103,7 +109,6 @@ class RuntimeTask(Protocol, Generic[T]):
             ContextPolicyError: If the input attempts to replay non-user history.
             ConfigurationError: If the invocation config attempts forbidden overrides.
         """
-        ...
 
     def astream(
         self,
@@ -128,15 +133,12 @@ class RuntimeTask(Protocol, Generic[T]):
             ContextPolicyError: If the input attempts to replay non-user history.
             ConfigurationError: If the invocation config attempts forbidden overrides.
         """
-        ...
 
     async def interrupt(self) -> None:
         """Interrupt the currently active turn in this task."""
-        ...
 
     async def close(self) -> None:
         """Idempotently discard runtime context and release provider resources."""
-        ...
 
     async def __aenter__(self) -> RuntimeTask[T]:
         """Enter the task context manager.
@@ -144,7 +146,6 @@ class RuntimeTask(Protocol, Generic[T]):
         Returns:
             The task instance.
         """
-        ...
 
     async def __aexit__(
         self,
@@ -159,4 +160,3 @@ class RuntimeTask(Protocol, Generic[T]):
             exc_val: The exception value if raised.
             exc_tb: The traceback if raised.
         """
-        ...
