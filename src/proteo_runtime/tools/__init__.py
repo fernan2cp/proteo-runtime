@@ -491,6 +491,8 @@ def runtime_tool(
 class ToolExecutor:
     """Execute registered tools through the fixed Phase 5 safety pipeline."""
 
+    _frozen: bool = False
+
     def __init__(
         self,
         registry: ToolRegistry | ToolSnapshot,
@@ -502,8 +504,23 @@ class ToolExecutor:
         timeout_seconds: float = 30.0,
         approval_timeout_seconds: float = 60.0,
         event_sink: Callable[[RuntimeEvent], Awaitable[Any]] | None = None,
+        frozen: bool = False,
+        events: list[RuntimeEvent] | None = None,
     ) -> None:
-        """Configure an in-memory executor with fail-closed defaults."""
+        """Configure an in-memory executor with fail-closed defaults.
+
+        Args:
+            registry: ToolRegistry or ToolSnapshot providing tool definitions.
+            permission_policy: Allowed permissions policy.
+            approval_handler: Optional human/policy approval callback.
+            retry_policy: Optional execution retry policy.
+            failure_policy: Error reporting strategy.
+            timeout_seconds: Per-tool execution timeout.
+            approval_timeout_seconds: Approval response timeout.
+            event_sink: Event notification callback.
+            frozen: Whether to freeze authority attributes against mutation.
+            events: Optional shared event list for observation across clones.
+        """
 
         if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be finite and positive")
@@ -517,10 +534,74 @@ class ToolExecutor:
         self.timeout_seconds = timeout_seconds
         self.approval_timeout_seconds = approval_timeout_seconds
         self.event_sink = event_sink
-        self.events: list[RuntimeEvent] = []
+        self.events: list[RuntimeEvent] = events if events is not None else []
         self._calls: dict[tuple[str, str], asyncio.Future[ToolResult]] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self._sequence = 0
+        self._frozen = frozen
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        """Prevent modifying authority configuration on a frozen executor."""
+        if getattr(self, "_frozen", False) and name in {
+            "snapshot",
+            "permission_policy",
+            "approval_handler",
+            "retry_policy",
+            "failure_policy",
+            "timeout_seconds",
+            "approval_timeout_seconds",
+        }:
+            raise AttributeError(
+                f"Cannot mutate authority attribute '{name}' on a frozen ToolExecutor"
+            )
+        super().__setattr__(name, value)
+
+    @property
+    def is_frozen(self) -> bool:
+        """Return True if this executor is frozen against authority mutation."""
+        return self._frozen
+
+    def clone(
+        self,
+        *,
+        snapshot: ToolSnapshot | None = None,
+        permission_policy: ToolPermissionPolicy | None = None,
+        freeze: bool = True,
+        share_events: bool = True,
+    ) -> ToolExecutor:
+        """Create an independent copy of this executor with frozen policies.
+
+        Args:
+            snapshot: Optional ToolSnapshot override.
+            permission_policy: Optional ToolPermissionPolicy override.
+            freeze: Whether to freeze the cloned executor against future attribute mutation.
+            share_events: Whether to record events in the original executor's event log.
+
+        Returns:
+            An isolated ToolExecutor instance.
+        """
+        target_snapshot = snapshot if snapshot is not None else self.snapshot
+        target_permission = (
+            permission_policy
+            if permission_policy is not None
+            else ToolPermissionPolicy(self.permission_policy.allowed_permissions)
+        )
+        return self.__class__(
+            target_snapshot,
+            permission_policy=target_permission,
+            approval_handler=self.approval_handler,
+            retry_policy=ToolRetryPolicy(max_attempts=self.retry_policy.max_attempts),
+            failure_policy=self.failure_policy,
+            timeout_seconds=self.timeout_seconds,
+            approval_timeout_seconds=self.approval_timeout_seconds,
+            event_sink=self.event_sink,
+            frozen=freeze,
+            events=self.events if share_events else None,
+        )
+
+    def freeze(self) -> ToolExecutor:
+        """Return a frozen copy of this executor."""
+        return self.clone(freeze=True)
 
     def end_invocation(self, invocation_id: str) -> None:
         """Release deduplication state after a provider invocation ends."""
