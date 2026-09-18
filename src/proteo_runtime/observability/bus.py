@@ -117,6 +117,9 @@ _ALWAYS_EXCLUDE_KEYS = frozenset(
         "raw",
         "exception",
         "cause",
+        "thread_id",
+        "provider_thread_id",
+        "provider_thread",
     }
 )
 _SECRET_ASSIGNMENT = re.compile(
@@ -165,6 +168,14 @@ class RuntimeEventBus:
         """Return a stable snapshot of observability diagnostics."""
 
         return tuple(self._diagnostics)
+
+    def record_diagnostic(self, diagnostic: RuntimeDiagnostic) -> None:
+        """Record one runtime diagnostic on the event bus.
+
+        Args:
+            diagnostic: The runtime diagnostic to record.
+        """
+        self._diagnostics.append(diagnostic)
 
     async def emit(self, event: RuntimeEvent) -> RuntimeEvent:
         """Dispatch one event and return a terminal result enriched with diagnostics."""

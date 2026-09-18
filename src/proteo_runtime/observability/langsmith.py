@@ -10,6 +10,14 @@ from uuid import UUID
 
 from proteo_runtime.core.events import RuntimeEvent, RuntimeEventKind
 
+_DISALLOWED_METADATA_KEYS = frozenset(
+    {
+        "thread_id",
+        "provider_thread_id",
+        "provider_thread",
+    }
+)
+
 
 class LangSmithObserver:
     """Export Proteo events as nested LangSmith runs when installed."""
@@ -126,7 +134,11 @@ class LangSmithObserver:
 
         if key in self._runs:
             return
-        metadata = dict(event.metadata)
+        metadata = {
+            key: value
+            for key, value in event.metadata.items()
+            if str(key).casefold().replace("-", "_") not in _DISALLOWED_METADATA_KEYS
+        }
         if event.task_id:
             metadata["proteo_task_id"] = event.task_id
         parent_candidate = metadata.get("langgraph_run_id") or metadata.get("parent_run_id")

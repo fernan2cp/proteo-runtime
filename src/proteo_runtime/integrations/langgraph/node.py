@@ -34,6 +34,13 @@ _SECRET_VALUE_PATTERN = re.compile(
     r"(?i)(bearer\s+)[A-Za-z0-9._-]+|"
     r"((?:api[_-]?key|token|secret|password|authorization)\s*[:=]\s*)[^,}\s]+"
 )
+_DISALLOWED_PROJECTED_KEYS = frozenset(
+    {
+        "thread_id",
+        "provider_thread_id",
+        "provider_thread",
+    }
+)
 
 
 def _looks_like_model(value: object) -> bool:
@@ -343,6 +350,7 @@ def _project_json(value: object) -> object:
             str(key): _project_json(item)
             for key, item in value.items()
             if not is_secret_key(str(key))
+            and str(key).casefold().replace("-", "_") not in _DISALLOWED_PROJECTED_KEYS
         }
     if isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
         return [_project_json(item) for item in value]

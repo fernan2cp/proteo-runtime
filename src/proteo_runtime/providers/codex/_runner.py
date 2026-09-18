@@ -189,7 +189,6 @@ class TurnRun:
                         "security_policy": self.security_policy,
                         "ephemeral": self.ephemeral,
                         "structured_output": self.structured_output,
-                        "thread_id": getattr(self.provider_thread, "id", None),
                     },
                 )
             )
