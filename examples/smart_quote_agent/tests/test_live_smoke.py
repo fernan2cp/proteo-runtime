@@ -78,3 +78,59 @@ async def test_live_codex_observability_smoke(clean_smoke_obs_db: Path) -> None:
     assert "Status:     completed" in inspection
     assert "Runtime Events" in inspection
     assert "OpenTelemetry Spans" in inspection
+
+
+@pytest.mark.asyncio
+async def test_live_codex_controlled_agent_multiturn_memory(tmp_path: Path) -> None:
+    """Execute real multi-turn turns on controlled_agent RuntimeTask and verify context memory.
+
+    Args:
+        tmp_path: Temporary directory fixture.
+    """
+    import sqlite3
+
+    from database import init_database, seed_database
+    from session import AGENT_INSTRUCTIONS
+    from tools import get_agent_tool_registry
+
+    from proteo_runtime.providers.codex import CodexRuntime
+
+    db_path = tmp_path / "smoke_demo.sqlite3"
+    init_database(db_path, reset=True)
+    seed_database(db_path)
+    conn = sqlite3.connect(str(db_path))
+
+    try:
+        async with CodexRuntime(experimental_dynamic_tools=True) as runtime:
+            registry1 = get_agent_tool_registry(conn, None)
+            task1 = await runtime.task(
+                profile="controlled_agent",
+                level="low",
+                instructions=AGENT_INSTRUCTIONS,
+                registry=registry1,
+            )
+            try:
+                res1 = await task1.ainvoke("My code word is ORBIT. Please acknowledge.")
+                assert res1.value is not None
+
+                res2 = await task1.ainvoke("What was my code word? Reply with only the code word.")
+                assert "ORBIT" in str(res2.value).upper()
+            finally:
+                await task1.close()
+
+            # Task 2: Fresh task without previous thread context
+            registry2 = get_agent_tool_registry(conn, None)
+            task2 = await runtime.task(
+                profile="controlled_agent",
+                level="low",
+                instructions=AGENT_INSTRUCTIONS,
+                registry=registry2,
+            )
+            try:
+                res3 = await task2.ainvoke("What was my code word?")
+                out3 = str(res3.value).upper()
+                assert "ORBIT" not in out3 or "DON'T KNOW" in out3 or "NO CODE WORD" in out3
+            finally:
+                await task2.close()
+    finally:
+        conn.close()

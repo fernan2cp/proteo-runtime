@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import getpass
 import sqlite3
 import sys
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -18,10 +20,11 @@ if _DEMO_DIR not in sys.path:
 
 from auth import authenticate_user_interactive  # noqa: E402
 from database import get_connection, get_db_path, init_database, seed_database  # noqa: E402
-from graph import create_demo_graph  # noqa: E402
+from graph import create_demo_graph, resolve_language  # noqa: E402
 from hitl import ConsoleApprovalHandler, prompt_discount_interactive  # noqa: E402
 from models import AuthenticatedUser, DemoState  # noqa: E402
 from observability import ObservabilityManager  # noqa: E402
+from session import AgentSessionManager  # noqa: E402
 
 from proteo_runtime.providers.codex import CodexRuntime  # noqa: E402
 
@@ -45,6 +48,8 @@ async def _run_repl_loop(
     *,
     input_func: Callable[[str], str],
     interactive: bool,
+    host_error_sink: Callable[..., None] | None = None,
+    task_id_provider: Callable[[], str | None] | None = None,
 ) -> None:
     """Execute the unified turn-by-turn interactive REPL loop.
 
@@ -52,8 +57,21 @@ async def _run_repl_loop(
         app_graph: Compiled LangGraph state graph.
         input_func: Callable for reading user input.
         interactive: Whether to print prompts and outputs.
+        host_error_sink: Optional best-effort sink for sanitized host errors.
+        task_id_provider: Optional provider for the active runtime task ID.
     """
     current_user: AuthenticatedUser | None = None
+    state: DemoState = {
+        "input": "",
+        "authenticated_user": None,
+        "pending_action": None,
+        "pending_quote_request": None,
+        "quote_workflow": None,
+        "quote_request": None,
+        "quote_draft": None,
+        "quote_patch": None,
+        "language": "en",
+    }
 
     while True:
         prompt_str = get_cli_prompt(current_user)
@@ -72,19 +90,62 @@ async def _run_repl_loop(
                 print("Goodbye.")
             break
 
-        initial_state: DemoState = {
-            "input": user_input,
-            "authenticated_user": current_user,
-        }
+        state["input"] = user_input
+        state["authenticated_user"] = current_user
+        interaction_id = uuid.uuid4().hex
+        state["interaction_id"] = interaction_id
 
         try:
-            result = await app_graph.ainvoke(initial_state)
+            result = await app_graph.ainvoke(state)
             current_user = result.get("authenticated_user")
+            state["authenticated_user"] = current_user
+            state["pending_action"] = result.get("pending_action")
+            state["pending_quote_request"] = result.get("pending_quote_request")
+            state["quote_workflow"] = result.get("quote_workflow")
+            state["quote_request"] = result.get("quote_request")
+            state["quote_draft"] = result.get("quote_draft")
+            state["quote_patch"] = result.get("quote_patch")
+            state["language"] = result.get("language", state.get("language", "en"))
+
+            if current_user is None:
+                state["pending_action"] = None
+                state["pending_quote_request"] = None
+                state["quote_workflow"] = None
+                state["quote_request"] = None
+                state["quote_draft"] = None
+                state["quote_patch"] = None
+
             output_text = result.get("output", "")
             if output_text and interactive:
                 print(f"\n{output_text}\n")
-        except Exception as err:
-            print(f"\n[ERROR] Request failed: {err}\n")
+        except Exception as error:
+            if host_error_sink is not None:
+                stage = getattr(error, "_smart_quote_stage", "graph.invoke")
+                if not isinstance(stage, str):
+                    stage = "graph.invoke"
+                try:
+                    task_id = task_id_provider() if task_id_provider is not None else None
+                except Exception:
+                    task_id = None
+                workflow = state.get("quote_workflow")
+                workflow_id = getattr(workflow, "workflow_id", None)
+                with contextlib.suppress(Exception):
+                    host_error_sink(
+                        error,
+                        stage=stage,
+                        interaction_id=interaction_id,
+                        task_id=task_id,
+                        workflow_id=workflow_id if isinstance(workflow_id, str) else None,
+                    )
+                # Diagnostics are best effort and must not block the REPL.
+            lang = resolve_language(user_input, state.get("language"))
+            state["language"] = lang
+            message = (
+                "No se pudo procesar la solicitud. Inténtalo de nuevo."
+                if lang == "es"
+                else "The request could not be processed. Please try again."
+            )
+            print(f"\n[ERROR] {message}\n")
 
 
 async def run_cli_loop(
@@ -113,13 +174,20 @@ async def run_cli_loop(
 
     conn = get_connection(db_path)
 
-    def auth_interactive(c: sqlite3.Connection) -> AuthenticatedUser | None:
-        return authenticate_user_interactive(c, input_func=input_func, getpass_func=getpass_func)
+    def auth_interactive(
+        c: sqlite3.Connection, *, language: str = "en"
+    ) -> AuthenticatedUser | None:
+        return authenticate_user_interactive(
+            c,
+            input_func=input_func,
+            getpass_func=getpass_func,
+            language=language,
+        )
 
     approval_handler = ConsoleApprovalHandler(input_func=input_func)
 
-    def discount_prompter(cents: int) -> int:
-        return prompt_discount_interactive(cents, input_func=input_func)
+    def discount_prompter(cents: int, *, language: str = "en") -> int:
+        return prompt_discount_interactive(cents, input_func=input_func, language=language)
 
     if interactive:
         mode_label = "anonymous (offline)" if offline else "anonymous"
@@ -138,13 +206,21 @@ async def run_cli_loop(
             app_graph = create_demo_graph(
                 conn,
                 structured_model=None,
-                controlled_agent_model=None,
+                context_agent=None,
+                session_manager=None,
                 approval_handler=approval_handler,
                 discount_prompter=discount_prompter,
                 auth_interactive=auth_interactive,
                 event_sink=obs_mgr.bus.emit,
+                host_event_sink=obs_mgr.record_host_event,
+                host_error_sink=obs_mgr.record_host_error,
             )
-            await _run_repl_loop(app_graph, input_func=input_func, interactive=interactive)
+            await _run_repl_loop(
+                app_graph,
+                input_func=input_func,
+                interactive=interactive,
+                host_error_sink=obs_mgr.record_host_error,
+            )
         else:
             runtime_cm = (
                 CodexRuntime(
@@ -156,18 +232,41 @@ async def run_cli_loop(
             )
             async with runtime_cm as runtime:
                 structured_model = runtime.model(profile="structured", level="low")
-                controlled_agent_model = runtime.model(profile="controlled_turn", level="low")
+                session_mgr = AgentSessionManager(
+                    runtime,
+                    conn,
+                    approval_handler=approval_handler,
+                    event_sink=obs_mgr.bus.emit,
+                    host_event_sink=obs_mgr.record_host_event,
+                )
+                await session_mgr.get_or_create_task(None)
 
                 app_graph = create_demo_graph(
                     conn,
                     structured_model=structured_model,
-                    controlled_agent_model=controlled_agent_model,
+                    context_agent=session_mgr.get_active_task,
+                    session_manager=session_mgr,
                     approval_handler=approval_handler,
                     discount_prompter=discount_prompter,
                     auth_interactive=auth_interactive,
                     event_sink=obs_mgr.bus.emit,
+                    host_event_sink=obs_mgr.record_host_event,
+                    host_error_sink=obs_mgr.record_host_error,
                 )
-                await _run_repl_loop(app_graph, input_func=input_func, interactive=interactive)
+                try:
+                    await _run_repl_loop(
+                        app_graph,
+                        input_func=input_func,
+                        interactive=interactive,
+                        host_error_sink=obs_mgr.record_host_error,
+                        task_id_provider=lambda: (
+                            session_mgr.active_task.id
+                            if session_mgr.active_task is not None
+                            else None
+                        ),
+                    )
+                finally:
+                    await session_mgr.close()
     finally:
         await obs_mgr.close()
         conn.close()

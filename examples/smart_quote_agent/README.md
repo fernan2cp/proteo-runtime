@@ -9,7 +9,7 @@ A complete, self-contained demonstration of **Proteo Runtime** showcasing LangGr
 > **"The model may decide what it wants to do. The host decides what it is allowed to do and what is actually executed."**
 
 The application enforces a clear **three-level separation of concerns**:
-1. **Model / Intent Classification**: Identifies what action the user is attempting (including recognizing forbidden operations or unsupported requests) using a 9-action schema.
+1. **Model / Intent Classification**: Identifies what action the user is attempting (including recognizing forbidden operations or unsupported requests) using a 10-action schema.
 2. **Host Action Authorization Policy (`allowed_actions`)**: The host authoritatively evaluates whether that recognized action is valid and allowed for the current access level (anonymous, client, or staff). If denied, out of scope, a help request, or an acknowledgement, the host responds deterministically without invoking the controlled LLM.
 3. **Host Tool Permission Policy (`ToolPermissionPolicy`)**: The host authoritatively mediates all tool execution via `ToolExecutor`. The conversational agent never has write tools in its registry.
 
@@ -21,6 +21,7 @@ The application enforces a clear **three-level separation of concerns**:
 - `catalog_query`: Product, catalog, or price availability questions.
 - `quote_preview`: Non-persistent calculations or preliminary quote previews.
 - `quote_history`: List or inspect persisted quotes (staff only).
+- `customer_query`: List or search customers (staff only).
 - `quote_create`: Create or persist a new quote for a customer (staff only).
 - `out_of_scope`: Any request unrelated to Smart Quote Agent capabilities.
 
@@ -42,7 +43,7 @@ flowchart TD
 
     ScopeGate -->|login allowed| LoginHITL[Masked Login Prompt]
     ScopeGate -->|logout allowed| Logout[Clear Auth State]
-    ScopeGate -->|catalog_query / quote_preview / allowed quote_history| ControlledAgent[Controlled Agent: controlled_turn / low]
+    ScopeGate -->|catalog_query / quote_preview / allowed quote_history| ControlledAgent[Controlled Agent: controlled_agent / low (RuntimeTask)]
     ScopeGate -->|quote_create allowed| AuthGuard[Host Auth Guard]
 
     AuthGuard -->|Staff| QuotePlanner[Quote Planner: structured / low]
@@ -52,37 +53,44 @@ flowchart TD
     ResolveData -->|Resolved| DiscountHITL[Discount HITL Prompt 0-30%]
     DiscountHITL --> QuoteReview[Authoritative Host Quote Review Display]
     QuoteReview --> CreateQuoteTool[Direct ToolExecutor: create_quote]
-    CreateQuoteTool --> ApprovalHITL[Phase 5 Console Approval]
+    ApprovalHITL[Phase 5 Console Approval]
+    CreateQuoteTool --> ApprovalHITL
     ApprovalHITL -->|Approved| AtomicWrite[(SQLite: quotes & quote_lines)]
     ApprovalHITL -->|Denied| CancelledOutput[Quote Cancelled / Rollback]
 ```
 
 ---
 
-## 2. Dual Model Bindings & Runtime Capabilities
+## 2. Dual Execution Abstractions & Runtime Capabilities
 
-The demo requires and establishes two distinct model bindings, each configured explicitly at logical level `"low"`:
+The demo establishes two distinct execution abstractions, each configured explicitly at logical level `"low"`:
 
-1. **`structured_model`** (`profile="structured"`, `level="low"`):
+1. **`structured_model`** (`profile="structured"`, `level="low"`, `RuntimeModel`):
+   - Invocation-scoped ephemeral model under `ContextPolicy.EXTERNAL`.
    - Used for deterministic JSON schema outputs (`IntentDecision` and `QuoteRequest`).
    - Does not bind tools; operates with structured output policies and strict schema validation (`extra="forbid"`).
    - Injected with role context and recognized actions, classifying user intent even if forbidden for the current role.
    - Instructed to extract only information explicitly stated and never invent or guess missing customer names, products, or quantities.
-2. **`controlled_agent_model`** (`profile="controlled_turn"`, `level="low"`):
-   - Used for conversational tool use on allowed inquiries (`catalog_query`, `quote_preview`, `quote_history`).
-   - Bound with host-managed tools via `.with_tools(agent_registry, executor=executor)`.
-   - Never exposed to `create_quote`.
-   - **Defense-in-Depth System Instruction**: Injects dynamic role, bound conversational tools, explicit disclaimers of generic capabilities (browsing, file analysis, code execution/editing, image generation, external connected apps), and instructions to return a containment message if an out-of-scope query leaks through.
+2. **`context_agent`** (`profile="controlled_agent"`, `level="low"`, `RuntimeTask`):
+   - Task-scoped ephemeral multi-turn execution under `ContextPolicy.RUNTIME`.
+   - Managed by `AgentSessionManager`, binding the task lifecycle to the active identity.
+   - Provider-owned multi-turn conversational context: the provider thread maintains conversational history within the session, enabling follow-up turns (e.g., providing products in Turn 1 and customer in Turn 2) without re-asking.
+   - Frozen authority: tool definitions, permissions, and initial instructions (`format_agent_instructions`) are frozen at task creation (`runtime.task(...)`). Post-creation modifications to external registries cannot expand authority.
+   - User-only turns: task invocations accept user input directly (`task.ainvoke(user_input)`). Replaying messages or injecting per-turn system instructions is prohibited under `ContextPolicy.RUNTIME`.
+   - Never exposed to `create_quote` (write tool segregation).
+   - Identity lifecycle: on login or logout, previous tasks are cleanly closed (`task.close()`), tearing down provider threads and workspaces, and a fresh task is initialized with the new identity's tools.
 
 ### Experimental Dynamic Tools Flag
 When instantiating `CodexRuntime`, the runtime must be initialized with:
 ```python
 runtime = CodexRuntime(experimental_dynamic_tools=True)
 ```
-`experimental_dynamic_tools=True` is required when binding host-managed tools to the `controlled_turn` profile. If disabled, `CodexRuntime` fails closed with `CapabilityError`.
+`experimental_dynamic_tools=True` is required when binding host-managed tools to the `controlled_agent` profile. If disabled, `CodexRuntime` fails closed with `CapabilityError`.
 
-### Clean Model Parameters
-The legacy single `model` parameter has been completely removed from `create_demo_graph`. Both `structured_model` and `controlled_agent_model` are explicit, independent parameters (defaulting to `None` for offline deterministic execution).
+### Graph Factory Parameters
+The graph factory `create_demo_graph` accepts `context_agent` (either an active `RuntimeTask` or a callable returning the current `RuntimeTask`), along with optional `session_manager` (`AgentSessionManager`). For backward compatibility, `controlled_agent_model` is supported as an alias for `context_agent`. Both default to `None` for provider-free offline execution.
+
+For callers that persist or round-trip `DemoState`, `quote_workflow` is the authoritative pending transaction. `quote_request` and `pending_quote_request` are intentionally lossy compatibility projections; they preserve customer/product text and quantities, but not workflow identity, revision, line IDs, or disambiguation candidates. A consumer must retain `quote_workflow` across turns to preserve edit targeting and stale-draft protection.
 
 ### Strict Structured Output Normalization (`strict=True` Compatibility)
 When OpenAI/Codex evaluates structured output schemas in strict mode, it enforces three strict schema invariants:
@@ -97,9 +105,11 @@ To satisfy these invariants without sacrificing domain modeling flexibility (suc
 
 This ensures that models like `QuoteRequest` extract `null` for omitted fields without runtime schema validation failures or artificial sentinel values.
 
-### Silent Conversational Tool Execution & Stateless Single-Turn Architecture
-- **Silence Tool Narration**: Controlled LLMs are instructed never to narrate tool execution or progress (e.g. "Voy a consultar...", "Let me check..."). In addition, host-side processing cleans any leading narration before presenting the final response.
-- **Stateless Turns**: Interactions are strictly stateless between turns. The agent never asks open-ended conversational follow-up questions expecting multi-turn memory (e.g. "¿Cuál te interesa?"). When a request is broad or ambiguous, the agent lists all relevant catalog options and instructs the user to submit a complete standalone request specifying the exact product name and quantity.
+### Conversational Tool Execution & Multi-Turn Coordination
+- **Silence Tool Narration**: Controlled agents are instructed never to narrate tool execution or intermediate steps (e.g. "Voy a consultar...", "Let me check..."). Host-side processing additionally cleans any leading announcements before presenting responses.
+- **Provider-Owned Read-Only Memory vs Host Workflow State**: The Codex provider thread remembers only the read-only turns sent to that task. LangGraph owns `QuoteWorkflowState` (workflow ID/revision, customer, stable lines, resolution status, and candidates); it does not replay host history into the runtime task.
+- **Transactional Quote Workflow**: Pending quotes may be interrupted by product/customer/help/history queries, corrected, and resumed. A quote draft is tied to one workflow revision and cannot be reused after an edit or failed resolution.
+- **Contextual Edits**: Product replacement preserves its quantity and unrelated lines; quantity-only input is accepted only for one uniquely missing quantity. Ambiguous references such as “ese/that” request clarification without changing the quote.
 
 ---
 
@@ -110,7 +120,7 @@ The architecture enforces strict asymmetric tool distribution and dual-layer aut
 ### Tool Registries
 - **Conversational Agent Registry** (`get_agent_tool_registry`):
   - Anonymous & Client: `list_products`, `find_product`, `calculate_quote`.
-  - Staff: `list_products`, `find_product`, `calculate_quote`, `find_customer`, `list_quotes`, `get_quote`.
+  - Staff: `list_products`, `find_product`, `calculate_quote`, `find_customer`, `list_customers`, `list_quotes`, `get_quote`.
   - **Absolute Segregation**: `create_quote` is **never** registered in the conversational agent's registry. Persistent quote mutation is entirely unreachable from conversational turns.
 - **Dedicated Write Registry** (`get_quote_write_registry`):
   - Contains exclusively `create_quote`, bound specifically to the authenticated staff user.
@@ -140,6 +150,8 @@ If information is missing, the workflow halts immediately with clarification and
 ### Disambiguation & SQL Wildcard Escaping
 - In `database.py`, `_escape_like` escapes `%` and `_` characters in queries.
 - If a search query matches multiple customers or products, `find_customer_by_query` and `find_product_by_query` return an explicit `ambiguous: True` result with candidate matches, preventing arbitrary selection.
+- Customer and product search normalize accents/case and supported singular/plural variants. `mouse`, `mice`, and `mouses` may resolve to Wireless Mouse; `desk` never silently becomes `dock`.
+- `list_customers` is staff-only, permission-gated by `customer.read`, capped at 50 rows, and returns only `id`, `code`, and `name`.
 
 ### Authoritative Price & Math Integrity
 - The model is **never** trusted for pricing numbers or arithmetic calculations.
@@ -182,7 +194,7 @@ All demo accounts use the trivial password `1234` for ease of local testing:
 
 | Role | Customer Associated | Allowed Actions (`allowed_actions`) | Permissions (`ToolPermissionPolicy`) | Conversational Tools Available |
 |---|---|---|---|---|
-| `staff` | *None* | `logout`, `help`, `acknowledgement`, `catalog_query`, `quote_preview`, `quote_history`, `quote_create` | `catalog.read`, `quote.calculate`, `customer.read`, `quote.create`, `quote.read` | `list_products`, `find_product`, `calculate_quote`, `find_customer`, `list_quotes`, `get_quote` |
+| `staff` | *None* | `logout`, `help`, `acknowledgement`, `catalog_query`, `quote_preview`, `quote_history`, `customer_query`, `quote_create` | `catalog.read`, `quote.calculate`, `customer.read`, `quote.create`, `quote.read` | `list_products`, `find_product`, `calculate_quote`, `find_customer`, `list_customers`, `list_quotes`, `get_quote` |
 | `client1` (`client`) | Acme Corp. (`1`) | `logout`, `help`, `acknowledgement`, `catalog_query`, `quote_preview` | `catalog.read`, `quote.calculate` | `list_products`, `find_product`, `calculate_quote` |
 | `client2` (`client`) | Globex LLC (`2`) | `logout`, `help`, `acknowledgement`, `catalog_query`, `quote_preview` | `catalog.read`, `quote.calculate` | `list_products`, `find_product`, `calculate_quote` |
 | `client3` (`client`) | Initech (`3`) | `logout`, `help`, `acknowledgement`, `catalog_query`, `quote_preview` | `catalog.read`, `quote.calculate` | `list_products`, `find_product`, `calculate_quote` |
@@ -245,9 +257,10 @@ For automated verification, testing, or environments without live API credential
 ```bash
 uv run python examples/smart_quote_agent/app.py --offline
 ```
+Offline mode can also calculate a non-persistent preview for explicit active-catalog items, for example `calcular presupuesto preliminar de 2 Notebook Pro y 3 mouses`. It uses the host's `calculate_quote` tool and SQLite prices; generic product names such as `notebook` prompt for disambiguation instead of choosing a model. No quote is saved.
 
 ### Running the Test Suite
-The complete 44-point audit, containment, and hardening test suite runs deterministically with zero quota consumption:
+The complete provider-free test suite, including audit, containment, and conversational hardening regressions, runs with zero model quota consumption:
 ```bash
 uv run pytest examples/smart_quote_agent/tests
 ```
@@ -700,7 +713,18 @@ python inspect_observability.py --last --langsmith
 
 # Inspect only OpenTelemetry spans and metrics
 python inspect_observability.py --last --otel
+
+# Reconstruct all RuntimeTask turns plus host transitions for a task
+python inspect_observability.py --task <task-id>
+
+# Inspect transitions for one pending/persisted quote workflow
+python inspect_observability.py --workflow <workflow-id>
+
+# Inspect runtime events and sanitized host diagnostics for one CLI interaction
+python inspect_observability.py --interaction <interaction-id>
 ```
+
+Task, workflow, and interaction timelines are metadata-only. The interaction view can show an incomplete runtime call as failed when a correlated `host.turn_error` exists, including sanitized stage, exception type/code, causal types, and traceback locations; it never displays exception messages or local variables. The task view also surfaces provider cleanup diagnostics such as `task.cleanup.provider_delete_failed`. OpenTelemetry metrics shown with an invocation remain cumulative for the local telemetry database and are labeled accordingly; they are not invocation-scoped.
 
 ---
 
@@ -771,3 +795,44 @@ The test suite in `examples/smart_quote_agent/tests/test_agent.py` validates 44 
 - **Transactional Atomicity**: Quotes are persisted under `BEGIN IMMEDIATE TRANSACTION;` with automatic rollback on error or approval denial.
 - **Sandboxed Tool Scope**: Host-managed tools have **no access** to the OS shell, filesystem, or browser. Network transport connects exclusively to the configured model provider.
 - **Transparent Error Propagation**: Live model exceptions surface cleanly without silent fallback swallowing.
+
+---
+
+## 14. Conversational Continuity and Workflow Inspection
+
+Quote creation is a host-owned transaction that remains available while the user asks read-only questions. The model may propose an edit, but the host validates its target, resolves canonical entities, reads prices from SQLite, and guards the draft by workflow ID and revision.
+
+Example continuation:
+
+```text
+[staff] > Quisiera armar un presupuesto por un desk y 2 mouses
+Se requiere el cliente y el producto desk no existe; la cotización queda pendiente.
+
+[staff] > Muéstrame la lista de clientes
+Clientes: ...
+La cotización sigue pendiente. El próximo dato pendiente es el cliente.
+
+[staff] > ¿Qué productos activos hay?
+Productos activos: ... USB-C Dock (DOCK-USBC) ...
+La cotización sigue pendiente. El producto desk necesita una referencia válida.
+
+[staff] > Para Globex, quiero un dock en vez de un desk
+El USB-C Dock reemplaza solo la línea desk; las otras líneas se conservan.
+
+[staff] > Cantidad 1
+La cantidad se aplica al único producto pendiente.
+
+[staff] > Sí, agrega ese
+Si “ese” no coincide con una única referencia guardada, el agente pregunta cuál producto y no cambia la cotización.
+```
+
+An explicit full quote request may replace the current line set; an edit such as “dock en vez de desk” may not. Multiple unresolved quantity targets or candidate references are clarified without changing quote data or revision. Cancel, logout, approval denial, successful persistence, and terminal persistence failure discard the pending workflow and all draft references.
+
+`RuntimeTask` memory is limited to read-only turns that were actually sent to the active identity's task. Quote workflow state is never stored in that task or replayed as host-side history. The local inspector can reconstruct task and workflow timelines without user content:
+
+```powershell
+python examples/smart_quote_agent/inspect_observability.py --task <task-id>
+python examples/smart_quote_agent/inspect_observability.py --workflow <workflow-id>
+```
+
+The telemetry migration adds nullable `task_id` and `interaction_id` to the local observability database only. It does not change or reset `demo.sqlite3`; provider cleanup behavior remains outside the example, though diagnostics such as `task.cleanup.provider_delete_failed` are surfaced by the inspector.
