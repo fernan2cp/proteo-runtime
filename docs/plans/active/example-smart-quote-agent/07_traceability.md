@@ -4,8 +4,9 @@
 
 | Source Section / Reference | Requirements | Topic / Scope |
 |---|---|---|
-| User Request / Repository Rules | `SQA-REQ-001` | Strict directory isolation and zero project code modification |
+| User Request / Repository Rules | `SQA-REQ-001` | Bounded change isolation with four allowlisted Codex provider/runtime test paths |
 | Project Guide §2.4, §14–§15; User Request | `SQA-REQ-019` | Failure observability, metadata-only diagnostics, and host-owned interaction correlation |
+| User-Approved Provider Hardening Plan | `SQA-REQ-020` | Codex structured schema compatibility and safe, exactly-once terminal failure events |
 | Guide §6, §21, §22 | `SQA-REQ-002`, `SQA-REQ-006` | SQLite domain model, constraints, seeds, and transactional atomicity |
 | Guide §12, §13, §14 | `SQA-REQ-003` | Pydantic router/planner schemas, sanitized identity, and graph state |
 | Guide §4, §9.1, §10 | `SQA-REQ-004` | Masked login, getpass, sanitized state, and logout routing |
@@ -24,7 +25,7 @@
 
 | Requirement | Tasks | Criteria | Validation Strategy |
 |---|---|---|---|
-| `SQA-REQ-001` (Isolation) | `SQA-TASK-0001`, `SQA-TASK-0010` | `AC-SQA-001` | `git status --short` inspection |
+| `SQA-REQ-001` (Bounded isolation) | `SQA-TASK-0001`, `SQA-TASK-0010`, `SQA-TASK-0018` | `AC-SQA-001` | Baseline-aware `git status --short` and allowlist diff review |
 | `SQA-REQ-002` (SQLite & Seeds) | `SQA-TASK-0002` | `AC-SQA-002`, `AC-SQA-008` | `python examples/smart_quote_agent/init_demo.py --reset` & headless smoke test |
 | `SQA-REQ-003` (Models & Schemas) | `SQA-TASK-0003` | `AC-SQA-003`, `AC-SQA-011` | `uv run mypy examples/smart_quote_agent --strict` |
 | `SQA-REQ-004` (Auth & Masking) | `SQA-TASK-0004` | `AC-SQA-003`, `AC-SQA-004`, `AC-SQA-005` | Interactive CLI login testing & graph state inspection |
@@ -44,7 +45,7 @@
 
 | Criteria ID | Topic / Scope | Primary Verification Command / Inspection Location |
 |---|---|---|
-| `AC-SQA-001` | Strict Directory Isolation | `git status --short` |
+| `AC-SQA-001` | Bounded Change Isolation | Baseline-aware `git status --short` and review of the four-path runtime/test allowlist |
 | `AC-SQA-002` | SQLite Provisioning & Seeds | `python examples/smart_quote_agent/init_demo.py --reset` |
 | `AC-SQA-003` | Masked Login & Sanitized State | Interactive CLI execution & `auth.py` inspection |
 | `AC-SQA-004` | Anonymous / Client Permissions | Interactive CLI scenarios 4 & 6 |
@@ -60,13 +61,13 @@
 
 ## Conversational Hardening Traceability (Incremental)
 
-The user-reported CLI transcript is the regression source for this addendum. The scope exception is limited to updating this active SDD package; code changes remain in `examples/smart_quote_agent/`.
+The user-reported CLI transcript is the regression source for this addendum. The provider fix adds only the four paths permitted by `SQA-REQ-001`; remaining code and test changes stay within `examples/smart_quote_agent/`, and documentation updates stay within this active SDD package.
 
 ### Hardening Requirements to Tasks, Criteria, and Validation
 
 | Requirement | Tasks | Criteria | Validation |
 |---|---|---|---|
-| `SQA-REQ-001` (Bounded isolation) | `SQA-TASK-0011`, `SQA-TASK-0016` | `AC-SQA-001`, `AC-SQA-011` | Baseline-aware diff review; preserve pre-existing worktree changes |
+| `SQA-REQ-001` (Bounded isolation) | `SQA-TASK-0011`, `SQA-TASK-0016`, `SQA-TASK-0018` | `AC-SQA-001` | Baseline-aware diff review; only the four allowlisted runtime/test paths may be outside the example/SDD |
 | `SQA-REQ-005` (Staff customer directory tool) | `SQA-TASK-0014` | `AC-SQA-015` | Staff/client/anonymous registry tests and customer list output |
 | `SQA-REQ-006` (Authoritative calculations and atomicity) | `SQA-TASK-0013`, `SQA-TASK-0016` | `AC-SQA-018` | Offline multi-line preview uses `calculate_quote`; exact SKU resolution; unknown/ambiguous lines abort without persistence |
 | `SQA-REQ-014` (Workflow state and revision-bound draft) | `SQA-TASK-0012` | `AC-SQA-012`, `AC-SQA-014` | End-to-end workflow, stale draft, cleanup, and persistence assertions |
@@ -74,7 +75,8 @@ The user-reported CLI transcript is the regression source for this addendum. The
 | `SQA-REQ-016` (Canonical customer/product resolution) | `SQA-TASK-0014` | `AC-SQA-015`, `AC-SQA-018` | Accent/plural/alias, SKU, ambiguity, `desk` negative lookup, and permission tests |
 | `SQA-REQ-017` (Stable language and task continuity) | `SQA-TASK-0013` | `AC-SQA-016` | Language follow-up and turn-only RuntimeTask input assertions |
 | `SQA-REQ-018` (Task/workflow observability) | `SQA-TASK-0015` | `AC-SQA-017` | Legacy DB migration, metadata whitelist, `--task`, `--workflow`, and cleanup diagnostics |
-| `SQA-REQ-019` (Correlated, redacted turn errors) | `SQA-TASK-0017`, `SQA-TASK-0016` | `AC-SQA-019` | Exception redaction/logger isolation, `InvocationConfig.metadata`, idempotent interaction migration, `--interaction` failed/success status, and live evidence |
+| `SQA-REQ-019` (Correlated, redacted turn errors) | `SQA-TASK-0017`, `SQA-TASK-0016`, `SQA-TASK-0018` | `AC-SQA-019`, `AC-SQA-020` | Exception redaction/logger isolation, safe provider code/status propagation, interaction migration/inspector, and live evidence |
+| `SQA-REQ-020` (Codex schema and terminal events) | `SQA-TASK-0018`, `SQA-TASK-0016` | `AC-SQA-020` | Actual `TurnDecision` schema regression, original host validation semantics, failed/success event publication, redaction, and post-fix live transcript |
 
 ### Hardening Acceptance Evidence Map
 
@@ -88,5 +90,6 @@ The user-reported CLI transcript is the regression source for this addendum. The
 | `AC-SQA-017` | Additive migration and safe correlated timeline | `test_task_id_schema_migration_is_additive_and_idempotent`; task/workflow inspector and host-event tests |
 | `AC-SQA-018` | Complete, authoritative offline preview | Offline preview tests: multi-line total, ambiguous notebook, exact SKU, unknown line, and no persistence |
 | `AC-SQA-019` | Correlated, redacted live-turn diagnostics | `test_host_error_is_correlated_and_excludes_exception_messages`; REPL logger-failure and invocation-metadata regressions; interaction migration/inspector tests; live `--interaction` inspection in `05_validation_plan.md` |
+| `AC-SQA-020` | Provider schema compatibility and exactly-once failure events | 27 focused runtime tests; 143 passed / 2 skipped in the example suite; strict mypy/Ruff/diff checks; approved quote #8 and completed inspector event in `05_validation_plan.md` |
 
-**AC-SQA-001 interpretation:** historical evidence that the original example was initially isolated remains historical. For hardening, criterion 001 permits this active SDD update and judges only changes introduced by the current implementation against its task-start baseline.
+**AC-SQA-001 interpretation:** historical evidence that the original example was initially isolated remains historical. The current provider-hardening task also permits exactly the four paths named in `SQA-REQ-001`. Judge only changes introduced by the current implementation against its task-start baseline; report pre-existing user changes separately.

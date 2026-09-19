@@ -9,8 +9,13 @@
    examples/smart_quote_agent/
    ```
 2. The current implementation request explicitly permits updates only to the existing active SDD package at `docs/plans/active/example-smart-quote-agent/` in addition to the example directory.
-3. No implementation change may touch `src/*`, repository-level tests, configuration files, public runtime contracts, or the business database schema.
-4. Pre-existing worktree changes must be preserved and must not be represented as changes made by this implementation.
+3. The current approved provider-hardening scope additionally permits implementation changes only in these runtime files and their existing unit-test files:
+   - `src/proteo_runtime/providers/codex/_structured.py`
+   - `src/proteo_runtime/providers/codex/_runner.py`
+   - `tests/unit/test_codex_structured.py`
+   - `tests/unit/test_codex_provider.py`
+4. No other `src/*` or repository-level test file may be changed. No configuration files, public runtime contracts, or business database schema may be changed. Existing example inspector, tests, scripts, and documentation remain within `examples/smart_quote_agent/`.
+5. Pre-existing worktree changes must be preserved and must not be represented as changes made by this implementation.
 
 ### SQA-REQ-002 — SQLite Domain Schema and Deterministic Initialization
 
@@ -191,3 +196,11 @@
 4. The local `runtime_events` table adds nullable `interaction_id` and an index through an additive, idempotent migration. The business database and public Proteo Runtime APIs remain unchanged.
 5. `inspect_observability.py --interaction <id>` displays runtime and host events together. If a correlated `host.turn_error` exists, that interaction is shown as failed even when its runtime invocation lacks a terminal event; existing event rows are never rewritten. Completed runtime invocations remain reported as completed.
 6. A live test uses the original quote request and approved staff identity. It proceeds to persistence only after review confirms Globex, one USB-C Dock, two Wireless Mouse, zero discount, and USD 230; if the provider fails first, the interaction is inspected and the demo quote count must remain unchanged.
+
+### SQA-REQ-020 — Codex Structured-Schema Compatibility and Terminal Failure Events
+
+1. The Codex provider-facing schema is a deep, recursive adaptation of the original structured-output schema: replace each `oneOf` with `anyOf` and remove `discriminator` fields. The original Pydantic model/schema remains authoritative for host-side parsing and validation, including the original exactly-one-variant semantics.
+2. When the Codex app-server reports a failed terminal turn, preserve its bounded stable error code, HTTP status when available, and terminal status as safe diagnostic metadata. Provider messages, free-form reasons, and other text payloads MUST NOT be persisted or emitted in diagnostics.
+3. If the structured wrapper buffered runtime events while consuming a turn that fails, publish the buffered terminal turn and invocation failure events exactly once before re-raising the original mapped runtime error. Successful event publication behavior must remain unchanged.
+4. Provider diagnostics and terminal events remain correlated with the current invocation and interaction. No public Proteo Runtime API, business schema, or provider cleanup behavior is changed.
+5. Validation must cover the production `TurnDecision` schema, an exactly-one host validation failure/success pair, a failed terminal provider event with safe code/status and no message leakage, exactly-once failure event publication, and successful completion behavior.

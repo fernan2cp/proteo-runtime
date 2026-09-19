@@ -6,7 +6,7 @@ Task states are `pending`, `in_progress`, `done`, or `blocked`.
 All tasks start in `pending`. A task may only transition to `done` when concrete test or verification evidence is recorded in `05_validation_plan.md`.
 
 Strict Boundary Rule:
-Product code, tests, scripts, and example docs may change only inside `examples/smart_quote_agent/`. The explicit documentation exception is this existing active SDD package. Do not modify `src/*`, repository tests, configuration, public runtime APIs, or the business database schema. Pre-existing worktree changes must be preserved and must not be attributed to this plan.
+Product code, tests, scripts, and example docs may change inside `examples/smart_quote_agent/`. The explicit documentation exception is this existing active SDD package. For the approved Codex provider hardening only, the additional allowed implementation/test paths are `src/proteo_runtime/providers/codex/_structured.py`, `src/proteo_runtime/providers/codex/_runner.py`, `tests/unit/test_codex_structured.py`, and `tests/unit/test_codex_provider.py`. No other `src/*`, repository tests, configuration, public runtime APIs, or business database schema may change. Pre-existing worktree changes must be preserved and must not be attributed to this plan.
 
 ---
 
@@ -176,7 +176,7 @@ Product code, tests, scripts, and example docs may change only inside `examples/
 - Run `uv run mypy examples/smart_quote_agent --strict`.
 - Run `uv run ruff check examples/smart_quote_agent`.
 - Run `uv run ruff format --check examples/smart_quote_agent`.
-- Verify `git status` confirms zero modifications outside `examples/smart_quote_agent/`.
+- Perform a baseline-aware changed-path review under the current `SQA-REQ-001` allowlist; preserve and report pre-existing user modifications.
 - Record execution logs and evidence in `05_validation_plan.md`.
 - Historical evidence: `mypy --strict`, `ruff check`, `ruff format --check`, and approval denial/allow tests passed for the original example implementation. The old zero-worktree-change assertion is superseded by bounded isolation in `SQA-REQ-001`; pre-existing user changes are not attributed to this plan.
 
@@ -190,7 +190,7 @@ Product code, tests, scripts, and example docs may change only inside `examples/
 **Acceptance:** `AC-SQA-012`, `AC-SQA-013`
 
 - Add provider-free regressions for customer/catalog interruptions, product correction, isolated quantity, successful continuation, ambiguous reference, and stale draft.
-- Update this active SDD in place to allow its own requested documentation changes while preserving the code-only example boundary.
+- Update this active SDD in place to record its documentation exception and preserve the then-current code-only example boundary.
 - Record the initial transcript failure modes as concrete acceptance tests.
 - Evidence: targeted command `python -m pytest examples/smart_quote_agent/tests/test_agent.py -q` passed with 68 cases after transcript and ambiguity characterization; the active SDD boundary text now distinguishes authorized docs from pre-existing worktree changes.
 
@@ -258,16 +258,31 @@ Product code, tests, scripts, and example docs may change only inside `examples/
 ### SQA-TASK-0016 — User Guide, Final Verification, and Human Review Handoff
 
 **State:** `in_progress`
-**Depends on:** `SQA-TASK-0012`, `SQA-TASK-0013`, `SQA-TASK-0014`, `SQA-TASK-0015`, `SQA-TASK-0017`
-**Requirements:** `SQA-REQ-001`, `SQA-REQ-006`, `SQA-REQ-011`, `SQA-REQ-012`, `SQA-REQ-013`, `SQA-REQ-016`, `SQA-REQ-018`, `SQA-REQ-019`
-**Acceptance:** `AC-SQA-001`, `AC-SQA-011`, `AC-SQA-012`–`AC-SQA-019`
+**Depends on:** `SQA-TASK-0012`, `SQA-TASK-0013`, `SQA-TASK-0014`, `SQA-TASK-0015`, `SQA-TASK-0017`, `SQA-TASK-0018`
+**Requirements:** `SQA-REQ-001`, `SQA-REQ-006`, `SQA-REQ-011`, `SQA-REQ-012`, `SQA-REQ-013`, `SQA-REQ-016`, `SQA-REQ-018`, `SQA-REQ-019`, `SQA-REQ-020`
+**Acceptance:** `AC-SQA-001`, `AC-SQA-011`, `AC-SQA-012`–`AC-SQA-020`
 
 - Update the example README with workflow state, interruptions, corrections, customer listing, and task/workflow inspection usage.
-- Keep the active SDD open until the live quote workflow itself has been validated or its remaining provider blocker is reviewed by the repository owner.
+- Keep the active SDD open until the repository owner reviews the completed evidence and approves closure.
 - Run targeted and full example tests, strict mypy, Ruff lint/format, and bounded worktree review.
-- Run a live transcript only through the documented explicit integration opt-in and only when credentials are available; never reset the user's business database.
+- Re-run the original live transcript after the provider schema/error-event fix. Approve only after review confirms Globex, one USB-C Dock, two Wireless Mouse, zero discount, and USD 230; never reset the user's business database.
 - Keep this SDD active until evidence is complete and human review is requested; do not move it to `complete` automatically.
-- Evidence: full provider-free suite reports 142 passed / 2 opt-in live tests skipped; strict mypy and Ruff checks pass. Explicit live validation was attempted under the available local Codex state; the provider returned `RuntimeUnavailableError` before the quote workflow. `AC-SQA-019` has the correlated failure evidence; full quote-path validation and human review remain open.
+- Evidence: after the provider fix, 27 focused runtime provider/structured tests passed, the full example suite reported 143 passed / 2 skipped, and strict mypy, Ruff lint/format, and `git diff --check` passed. The live workflow created quote #8 for Globex with one USB-C Dock, two Wireless Mouse, zero discount, and USD 230; read-only database and completed-invocation evidence is in `05_validation_plan.md`. Human review and SDD closure remain pending, so this task stays `in_progress`.
+
+---
+
+### SQA-TASK-0018 — Codex Schema Adaptation and Terminal Failure Telemetry
+
+**State:** `done`
+**Depends on:** `SQA-TASK-0017`
+**Requirements:** `SQA-REQ-001`, `SQA-REQ-019`, `SQA-REQ-020`
+**Acceptance:** `AC-SQA-001`, `AC-SQA-019`, `AC-SQA-020`
+
+- Adapt provider-facing structured schemas recursively by converting `oneOf` to `anyOf` and removing `discriminator`, while keeping original host-side Pydantic validation semantics.
+- Preserve only safe Codex terminal error code/status metadata, and publish buffered terminal turn/invocation failure events exactly once before raising.
+- Add focused tests in the specifically authorized runtime unit-test files; add or update the example inspector/tests as needed to verify correlated failure status and metadata redaction.
+- Validate the full example suite, focused runtime suites, strict typing, Ruff, diff boundaries, and the requested live quote transcript. Do not approve a quote unless its review exactly matches the acceptance values.
+- Evidence: 27 focused runtime provider/structured tests and the 143-passed/2-skipped example suite pass; strict mypy, Ruff lint/format, and `git diff --check` pass. The live `staff/1234` transcript completed with the exact accepted Globex quote and created quote #8 only, as verified by read-only database inspection and a `completed` inspector invocation. Details are recorded in `05_validation_plan.md`.
 
 ---
 

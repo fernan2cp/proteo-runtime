@@ -7,9 +7,9 @@ All criteria start in state `pending`.
 - `AC-SQA-001`: **Bounded Change Isolation**
   **State:** `done`
   **Requirements:** `SQA-REQ-001`
-  **Tasks:** `SQA-TASK-0001`, `SQA-TASK-0010`
-  *Criterion:* Implementation changes are confined to `examples/smart_quote_agent/*` plus the explicitly authorized active SDD package. No implementation change touches `src/*`, repository tests, configuration, public runtime contracts, or the business database schema. Existing user changes are preserved and are not treated as implementation changes.
-  *Evidence:* Compare the implementation diff against the starting worktree state; report pre-existing changes separately. Do not use a clean-worktree assertion as evidence when unrelated user changes are present.
+  **Tasks:** `SQA-TASK-0001`, `SQA-TASK-0010`, `SQA-TASK-0018`
+  *Criterion:* Implementation changes are confined to `examples/smart_quote_agent/*` plus this explicitly authorized active SDD package, with the narrowly scoped provider exception `src/proteo_runtime/providers/codex/_structured.py`, `src/proteo_runtime/providers/codex/_runner.py`, `tests/unit/test_codex_structured.py`, and `tests/unit/test_codex_provider.py`. No other `src/*`, repository test, configuration, public runtime contract, or business database schema may change. Existing user changes are preserved and are not treated as implementation changes.
+  *Evidence:* Reviewed the implementation paths for this hardening: changes are confined to the example/active SDD and the four allowlisted Codex runtime/test files. `git diff --check` passes; no configuration, public contract, or business schema was modified. Pre-existing work is preserved.
 
 - `AC-SQA-002`: **Deterministic SQLite Provisioning & Seeding**
   **State:** `done`
@@ -135,4 +135,11 @@ All criteria start in state `pending`.
   **Requirements:** `SQA-REQ-018`, `SQA-REQ-019`
   **Tasks:** `SQA-TASK-0017`
   *Criterion:* Every graph turn has an interaction ID before entry; runtime metadata, host transitions, and host errors share it. Host errors expose only stage, exception module/type, bounded stable code, cause types, and sanitized frames; no exception message, locals, credentials, prompts, or responses are stored. Logger failure leaves the localized generic CLI response and session alive. The additive schema migration is idempotent, `--interaction` labels an incomplete invocation with a correlated host error as failed, and a terminal successful invocation remains completed. The live quote path either reaches and verifies the exact review before approving one write or leaves the quote count unchanged and reports the inspected failure.
-  *Evidence:* `test_host_error_is_correlated_and_excludes_exception_messages`, REPL logger-failure test, interaction inspector status test, migration test, and router metadata test pass. Live attempt 2026-09-19: after `staff` login, two submissions of the original phrase both failed at `intent_router` with `RuntimeUnavailableError` / `runtime_unavailable`; both `--interaction` reports contain an incomplete runtime invocation and sanitized frames. The demo quote count remained 7 before and after; no persistence prompt was reached.
+  *Evidence:* `test_host_error_is_correlated_and_excludes_exception_messages`, REPL logger-failure test, interaction inspector status test, migration test, and router metadata test pass. The two pre-fix live submissions recorded correlated `RuntimeUnavailableError` / `runtime_unavailable` failures at `intent_router`; after the schema and terminal-event fix, the repeated live flow completed and its runtime invocation is reported as `completed`. Full diagnostic history is in `05_validation_plan.md`.
+
+- `AC-SQA-020`: **Codex Structured Schema Compatibility and Exactly-Once Failure Events**
+  **State:** `done`
+  **Requirements:** `SQA-REQ-019`, `SQA-REQ-020`
+  **Tasks:** `SQA-TASK-0018`
+  *Criterion:* The provider-facing schema derived from production `TurnDecision` contains recursive `anyOf` variants and no `discriminator`, while host-side validation continues to enforce the original Pydantic `oneOf` exactly-one semantics. A failed Codex terminal turn surfaces its safe provider code, HTTP status when present, and terminal status in the correlated interaction inspector without persisting provider messages or free-form reasons. Buffered terminal turn and invocation failure events are persisted once each before the mapped error propagates; successful turns remain completed and are not duplicated.
+  *Evidence:* All 27 focused runtime provider/structured tests pass, covering the production schema, original host validation semantics, safe provider failure metadata, buffered terminal-event publication, and success behavior; the example suite reports 143 passed and 2 skipped. The post-fix live transcript reached the exact Globex review (1 USB-C Dock, 2 Wireless Mouse, 0% discount, USD 230) and approved quote #8. Read-only verification confirmed the business quote count increased from 7 to 8 and the inspector reported a completed invocation. See `05_validation_plan.md` for command and database evidence.

@@ -23,9 +23,10 @@
 ## Constraints & Boundary Conditions
 
 1. **Bounded Example Changes and SDD Exception**:
-   - Product code, tests, scripts, and example documentation may change only inside `examples/smart_quote_agent/`.
+   - Example product code, tests, scripts, local data, and documentation may change only inside `examples/smart_quote_agent/`.
    - The already-active SDD may be updated only inside `docs/plans/active/example-smart-quote-agent/` because the implementation request explicitly authorizes that documentation work.
-   - No changes are authorized in `src/`, repository tests, configuration files, public Proteo Runtime APIs, or the business database schema.
+   - The current approved provider-hardening expansion additionally permits only `src/proteo_runtime/providers/codex/_structured.py`, `src/proteo_runtime/providers/codex/_runner.py`, `tests/unit/test_codex_structured.py`, and `tests/unit/test_codex_provider.py` outside the example/SDD packages.
+   - No other changes are authorized in `src/` or repository tests; configuration files, public Proteo Runtime APIs, and the business database schema remain out of scope.
    - Pre-existing user modifications in the working tree are baseline state, not evidence of changes made by this implementation.
    - All code, scripts, local example data, and example documentation reside inside:
      ```text
@@ -42,6 +43,13 @@
 4. **Quota and Network Safety**:
    - Automated tests and verification scripts must not invoke external LLM network endpoints or consume API quota unless explicitly instructed with an opt-in environment flag.
    - Local validation scenarios may utilize fakes, direct module execution, or mock inputs.
+
+## Provider Failure Diagnostic Baseline (2026-09-19)
+
+- Codex login succeeded; startup resolved the requested model and returned the available model catalog. A minimal structured inference completed, and account usage was not at its limit.
+- A differential live schema probe failed with provider code `other` when given the production `TurnDecision` schema containing `oneOf`; the equivalent provider schema using `anyOf` with no `discriminator` completed.
+- The failure was therefore isolated to the provider-facing structured schema path. The previous runtime diagnostic did not retain the provider code/status, and the structured wrapper withheld buffered terminal failure events, leaving only a started invocation in the local event database.
+- These observations are the baseline for `SQA-REQ-020`; they do not establish a general Codex authentication, model-access, or quota outage.
 
 ## Closed Architectural Decisions
 

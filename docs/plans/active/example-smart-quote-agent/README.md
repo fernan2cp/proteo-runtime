@@ -66,7 +66,7 @@ Status: `active`.
 
 ### Included
 
-- All files and code strictly confined within `examples/smart_quote_agent/`:
+- Example product code, tests, scripts, data placeholders, and documentation confined within `examples/smart_quote_agent/`:
   - `README.md`: Setup, credentials, architecture, and example sessions.
   - `app.py`: CLI loop, runtime lifecycle, graph execution, and exit handling.
   - `init_demo.py`: Deterministic database reset and seeding script (`--reset`).
@@ -78,6 +78,7 @@ Status: `active`.
   - `hitl.py`: Interactive discount validation (0–30%) and Phase 5 `ApprovalHandler` implementation.
   - `data/.gitkeep`: Local directory placeholder for `demo.sqlite3`.
 - Incremental requirements, tasks, acceptance criteria, validation, and traceability updates in this active SDD package are explicitly included.
+- The approved provider-hardening exception also includes only the Codex provider schema/runner modules and their two existing runtime unit-test files, plus the example's own inspector/tests/docs.
 - Additive, idempotent evolution of the local observability SQLite schema is included; the business `demo.sqlite3` schema is unchanged.
 - Deterministic seeding: 1 staff user, 4 client users, 4 customer records, 6 product catalog records.
 - Trivial demo password (`1234`) with explicit non-production security disclaimer.
@@ -88,7 +89,7 @@ Status: `active`.
 
 ### Explicitly Excluded (Non-Scope & Strict Boundaries)
 
-- **Bounded Change Rule**: Product code, tests, scripts, and example documentation remain confined to `examples/smart_quote_agent/*`. The only permitted changes outside it are updates to this already-active SDD package, as explicitly requested. No changes to `src/*`, repository-level tests, `pyproject.toml`, `uv.lock`, public runtime contracts, or business database schema are in scope.
+- **Bounded Change Rule**: Product code, tests, scripts, and example documentation remain confined to `examples/smart_quote_agent/*`. In addition to this active SDD, the current provider-hardening work is narrowly permitted to edit `src/proteo_runtime/providers/codex/_structured.py`, `src/proteo_runtime/providers/codex/_runner.py`, `tests/unit/test_codex_structured.py`, and `tests/unit/test_codex_provider.py`. No other `src/*` or repository test, `pyproject.toml`, `uv.lock`, public runtime contract, or business database schema is in scope.
 - No customer CRUD or self-registration.
 - No product creation or price modification interfaces.
 - No shopping cart, checkout, payment processing, or inventory reservation.

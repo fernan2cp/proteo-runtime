@@ -19,7 +19,10 @@ uv run ruff format --check examples/smart_quote_agent
 
 ```powershell
 # Review implementation changes against the task-start worktree baseline.
-# Authorized changes: examples/smart_quote_agent/* and this active SDD package only.
+# Authorized changes: examples/smart_quote_agent/*, this active SDD package,
+# src/proteo_runtime/providers/codex/_structured.py,
+# src/proteo_runtime/providers/codex/_runner.py,
+# tests/unit/test_codex_structured.py, and tests/unit/test_codex_provider.py.
 # Preserve and separately report pre-existing user changes; do not require a clean tree.
 git status --short
 ```
@@ -80,7 +83,7 @@ print('SMOKE TESTS PASSED')
 
 | Scenario ID | Description | Covered Criteria | Expected Result |
 |---|---|---|---|
-| SCEN-001 | Repository boundary verification | `AC-SQA-001` | No files outside `examples/smart_quote_agent/` touched. |
+| SCEN-001 | Repository boundary verification | `AC-SQA-001` | Changes stay within the example, active SDD, and four explicitly allowlisted runtime/test paths; no other core, test, config, API, or business-schema changes. |
 | SCEN-002 | Database reset and seed | `AC-SQA-002` | SQLite initialized with 4 customers, 5 users, 6 products. |
 | SCEN-003 | Masked login with valid staff credentials | `AC-SQA-003` | Password hidden; state receives sanitized staff identity. |
 | SCEN-004 | Masked login with invalid password | `AC-SQA-003` | Login fails; state remains anonymous; password discarded. |
@@ -103,6 +106,7 @@ print('SMOKE TESTS PASSED')
 | SCEN-021 | Stable language and runtime memory boundary | `AC-SQA-016` | Brief follow-up preserves language; controlled task input contains only this user's current read-only turn. |
 | SCEN-022 | Task/workflow observability and migration | `AC-SQA-017` | Legacy DB migrates idempotently; inspector groups task/workflow transitions, excludes content, and surfaces cleanup diagnostics. |
 | SCEN-023 | Offline quote preview completeness and exact identifiers | `AC-SQA-018` | Exact active name/SKU requests use `calculate_quote`; unknown/ambiguous products and invalid, unassociated, or malformed quantities abort the entire preview; no quote is persisted. |
+| SCEN-024 | Codex provider schema adaptation and failure terminal events | `AC-SQA-020` | The `TurnDecision` request schema has recursive `anyOf` and no discriminator; original Pydantic validation still enforces exactly one variant; provider code/status survive without message text; buffered failed terminal events appear once; successful turns remain completed. |
 
 ---
 
@@ -116,6 +120,26 @@ uv run pytest examples/smart_quote_agent/tests/test_observability_*.py examples/
 ```
 
 For local telemetry migration and the full task/workflow view, use a temporary observability DB in tests. Never reset `examples/smart_quote_agent/data/demo.sqlite3` as part of acceptance verification.
+
+## Codex Provider Regression Commands
+
+Run the focused provider suites and full example suite:
+
+```powershell
+.venv\Scripts\python.exe -m pytest tests/unit/test_codex_structured.py tests/unit/test_codex_provider.py -q
+.venv\Scripts\python.exe -m pytest examples/smart_quote_agent/tests -q
+```
+
+Run strict typing, lint/format checks, and whitespace validation across the exact expanded code boundary:
+
+```powershell
+.venv\Scripts\python.exe -m mypy src/proteo_runtime/providers/codex/_structured.py src/proteo_runtime/providers/codex/_runner.py tests/unit/test_codex_structured.py tests/unit/test_codex_provider.py examples/smart_quote_agent --strict
+.venv\Scripts\ruff.exe check src/proteo_runtime/providers/codex/_structured.py src/proteo_runtime/providers/codex/_runner.py tests/unit/test_codex_structured.py tests/unit/test_codex_provider.py examples/smart_quote_agent
+.venv\Scripts\ruff.exe format --check src/proteo_runtime/providers/codex/_structured.py src/proteo_runtime/providers/codex/_runner.py tests/unit/test_codex_structured.py tests/unit/test_codex_provider.py examples/smart_quote_agent
+git diff --check
+```
+
+The focused tests must cover recursive provider-only schema conversion, strict host validation through the original Pydantic model, redaction of a sentinel provider error message, safe stable code/status propagation, exactly-once publication of buffered turn/invocation failure events, and normal successful completion. Then repeat the live transcript below with a read-only quote count before and after; never reset either database.
 
 ---
 
@@ -170,12 +194,20 @@ Execute `python examples/smart_quote_agent/app.py` and run through the following
 | 2026-09-19 | `SQA-TASK-0017` / `AC-SQA-019` | `.venv\Scripts\python.exe -m mypy examples\smart_quote_agent --strict` | Success: no issues found in 28 source files. | Pass |
 | 2026-09-19 | `SQA-TASK-0017` / `AC-SQA-019` | `.venv\Scripts\ruff.exe check examples\smart_quote_agent`; `.venv\Scripts\ruff.exe format --check examples\smart_quote_agent`; `git diff --check` | Ruff clean; 29 files already formatted; `git diff --check` returned no whitespace errors (Git printed a working-copy LF→CRLF advisory for the touched test file). | Pass |
 | 2026-09-19 | `SQA-TASK-0017` / Live diagnostic | `uv run python examples/smart_quote_agent/app.py` | Could not reach app startup: uv cache access denied. Retried with workspace `.venv` interpreter; sandbox then denied access to local Codex state. User-authorized elevated run started the app and allowed staff login. | Pass with documented environment constraints |
-| 2026-09-19 | `SQA-TASK-0017` / `AC-SQA-019` | Live REPL: `staff` login; submit original `quisira armar un presupuesto por un dock y 2 mouses` twice | Both turns returned the unchanged localized generic error. Each generated a distinct interaction ID and one `host.turn_error`; stage `intent_router`, type `proteo_runtime.core.errors.RuntimeUnavailableError`, code `runtime_unavailable`. Both runtime calls had `invocation_started` and no terminal event. No customer selection/review/approval prompt was reached. | Diagnosed; quote path blocked |
+| 2026-09-19 | `SQA-TASK-0017` / `AC-SQA-019` | Initial pre-fix live REPL: staff login; submit original `quisira armar un presupuesto por un dock y 2 mouses` twice | Both turns returned the generic localized error. Each generated a distinct interaction ID and `host.turn_error` at `intent_router`, type `RuntimeUnavailableError`, code `runtime_unavailable`; the buffered terminal events were absent. No customer selection/review/approval prompt was reached. | Pre-fix failure; superseded by successful post-fix run |
 | 2026-09-19 | `SQA-TASK-0017` / `AC-SQA-019` | `inspect_observability.py --interaction 9ea8b8c8ff09401985727caf65bc9c1c`; `--interaction 1c82c85d14dd4a9aa42868c0631269df` | Both views rendered `Status: failed`, task `task_493a14a331f948f6a26a2b6ac2a8c8a6`, stage/type/code above, and repository-relative frames through `src/proteo_runtime/providers/codex/_runner.py:events:287`. No cause type was present. No exception message or local values were displayed. | Pass |
 | 2026-09-19 | `SQA-TASK-0017` / Business DB safety | Read-only quote count before and after the live attempt | `(7, 7)` before and `(7, 7)` after. No quote was persisted; the DB was not reset. | Pass |
+| 2026-09-19 | `SQA-TASK-0018` / diagnostic baseline | Differential Codex structured-output probe | Login/account startup succeeded, the requested model remained discoverable, a minimal structured inference completed, and usage was not at its limit. The production `TurnDecision` schema containing `oneOf` failed with provider code `other`; the provider-only variant using `anyOf` and no `discriminator` completed. This isolated the observed failure to schema compatibility. | Confirmed diagnosis |
+| 2026-09-19 | `SQA-TASK-0018` / `AC-SQA-020` | `.venv\Scripts\python.exe -m pytest tests/unit/test_codex_structured.py tests/unit/test_codex_provider.py -q` | 27 runtime provider/structured tests passed, including schema adaptation, host validation, provider failure metadata redaction, terminal event flushing, and successful completion. | Pass |
+| 2026-09-19 | `SQA-TASK-0016`, `SQA-TASK-0018` / `AC-SQA-011`, `AC-SQA-020` | `.venv\Scripts\python.exe -m pytest examples/smart_quote_agent/tests -q` | 143 passed, 2 skipped. | Pass |
+| 2026-09-19 | `SQA-TASK-0016`, `SQA-TASK-0018` / `AC-SQA-001`, `AC-SQA-011`, `AC-SQA-020` | Strict mypy, Ruff check/format, `git diff --check` | All checks passed for the affected runtime modules/tests and example scope. | Pass |
+| 2026-09-19 | `SQA-TASK-0018` / Live CLI | Initial `.venv` attempt, then permitted run using existing local Codex state | The sandboxed attempt could not access `%USERPROFILE%\.codex`; the permitted run used the existing state. No login state was reset or re-created. | Pass with documented environment constraint |
+| 2026-09-19 | `SQA-TASK-0018` / `AC-SQA-019`, `AC-SQA-020` | Live REPL: staff login; original Spanish request; list customers; choose Globex; accept 0% discount; review and approve | Review matched Globex LLC, 1 USB-C Dock (`DOCK-USBC`), 2 Wireless Mouse (`MS-WL`), 0% discount, USD 230.00. Approved exactly once; created Quote #8. | Pass |
+| 2026-09-19 | `SQA-TASK-0018` / Business DB safety | Read-only business DB counts and quote/line lookup before and after live run | Quote count changed from 7 to 8. Quote #8 has `customer_id=2`, subtotal/total `23000` cents, discount 0; lines are product 6 × 1 at 15000 cents and product 3 × 2 at 4000 cents. No reset was performed. | Pass; exactly one quote added |
+| 2026-09-19 | `SQA-TASK-0018` / `AC-SQA-020` | `inspect_observability.py --last --events` | The invocation is `completed`; events include the `create_quote` approval and tool completion. | Pass |
 
 ### Diagnostic Interpretation (Facts vs. Hypothesis)
 
-Observed facts: each failed turn started a structured runtime invocation at `intent_router`; the REPL kept its generic Spanish response; the correlated host diagnostic recorded `RuntimeUnavailableError` with stable code `runtime_unavailable`; the interaction view correctly derived `failed` from the incomplete invocation plus `host.turn_error`. The exception had no causal exception in its chain, so the log reports no cause types. The inspected frames terminate in the runtime runner's event loop at `_runner.py:events:287`.
+Observed facts: the two pre-fix turns began at `intent_router` and were recorded as `RuntimeUnavailableError` / `runtime_unavailable`; the correlated inspector derived their incomplete interactions as failed. A differential probe confirmed that Codex login/startup, model discovery, minimal structured inference, and current usage were healthy; `TurnDecision` with `oneOf` failed with provider code `other`, while the `anyOf`/no-discriminator provider schema completed. After the fix, 27 runtime tests and the 143-passed/2-skipped example suite passed, and the live flow completed with the expected review and quote #8.
 
-Inference from the current implementation: `_runner.py` constructs `RuntimeUnavailableError` with the message `Codex turn failed` when the provider terminal status is not successful. The sanitized record intentionally excludes that message and does not retain the provider status value, so the exact provider-side status/reason is not established by this evidence. This points to a provider-turn failure after invocation start, not a quote extraction or catalog-resolution failure; the quote workflow was never reached.
+Implementation gap confirmed and corrected: `_runner.py` now preserves safe provider code/status metadata, and the structured wrapper publishes buffered terminal failure events exactly once before propagating the error. The original failure was caused by the provider rejecting the `oneOf` schema; host-side validation retains the original Pydantic semantics. The successful post-fix live run and read-only database check confirm the quote path is unblocked for the reported scenario.

@@ -277,7 +277,7 @@ Interactive CLI entrypoint:
 | Controlled Agent Sandboxing | Tools strictly bounded to catalog/read; no OS, shell, or raw SQL access. |
 | Observability Safety | `PayloadMode.METADATA_ONLY` prevents telemetry data leakage. |
 
-## Conversational Hardening Addendum (Authoritative for SQA-REQ-014–018)
+## Conversational Hardening Addendum (Authoritative for SQA-REQ-014–020)
 
 This addendum supersedes any earlier one-shot quote-state descriptions above. The model may propose an intent or patch; the host reducer and database remain authoritative.
 
@@ -305,7 +305,7 @@ The local neutral `runtime_events` table gains nullable `task_id` through an add
 
 ## Correlated Turn Error Diagnostics (Authoritative for SQA-REQ-019)
 
-`app.py::_run_repl_loop` creates a fresh random `interaction_id` before calling `app_graph.ainvoke`. `graph.py` preserves that ID for direct-test compatibility and passes it to each structured `RuntimeModel.ainvoke` and controlled `RuntimeTask.ainvoke` as `InvocationConfig.metadata`, alongside a fixed stage label and task/workflow IDs when available. The runtime API is consumed as-is; no `src/` change is allowed.
+`app.py::_run_repl_loop` creates a fresh random `interaction_id` before calling `app_graph.ainvoke`. `graph.py` preserves that ID for direct-test compatibility and passes it to each structured `RuntimeModel.ainvoke` and controlled `RuntimeTask.ainvoke` as `InvocationConfig.metadata`, alongside a fixed stage label and task/workflow IDs when available. The runtime API remains unchanged. The separately authorized provider-hardening exception is limited to the Codex structured-schema and runner modules plus their two specified unit-test files.
 
 The REPL error boundary records a best-effort `host.turn_error` via `ObservabilityManager.record_host_error`. Structured calls annotate a raised exception with a fixed stage label and re-raise it unchanged. Persistence errors that are intentionally converted to a host response are logged at `create_quote_tool` before the graph handles the terminal result. The diagnostic encoder reads no exception message or locals; it records exception module/type, a code only when it matches a bounded machine-code pattern, cause type names (maximum eight), and at most forty traceback frames. In-repository paths are repository-relative; external paths contain only a basename. Both the REPL and `record_host_error` isolate logger failures.
 
@@ -314,3 +314,11 @@ The telemetry schema adds nullable `interaction_id` to `runtime_events`, indexed
 The read-only `--interaction` inspector queries the new column and renders a merged chronological event timeline plus a curated error summary. A host error overrides only the derived interaction view to `failed`; it does not mutate the original runtime event stream or invocation status rows. Successful interactions with terminal runtime completion remain `completed`. The diagnostic view never renders arbitrary metadata fields.
 
 Live validation compares a read-only quote count immediately before and after execution. The quote write is approved only if customer, canonical SKUs, quantities, discount, and total match the acceptance condition. Provider failures are captured and reported without retrying persistence or resetting either database.
+
+## Codex Provider Schema and Failure Event Adaptation (Authoritative for SQA-REQ-020)
+
+The structured-output layer builds a provider-only copy of the schema recursively, replacing each `oneOf` with `anyOf` and removing `discriminator`. The original Pydantic model remains the host parser and validator, so the provider compatibility change does not weaken host-side exactly-one-variant validation. Do not alter the public runtime API or business schemas.
+
+When a Codex turn ends with a provider failure, the runner may expose only a bounded stable provider error code, numeric HTTP status when present, and terminal status as diagnostic metadata. It must discard error messages, free-form provider reasons, and arbitrary provider payload text. When the structured wrapper buffered turn events, it must publish the buffered terminal turn-failure and invocation-failure events exactly once before propagating the mapped runtime exception. Successful turns retain their normal terminal event path and must not be duplicated.
+
+Tests must assert recursive provider schema transformation, host validation using the original Pydantic semantics, redaction of sentinel provider text, correlation/status visibility in the interaction inspector, exactly-once terminal failure publication, and unchanged successful completion reporting.
