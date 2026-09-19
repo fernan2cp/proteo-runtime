@@ -25,8 +25,9 @@
 1. **Bounded Example Changes and SDD Exception**:
    - Example product code, tests, scripts, local data, and documentation may change only inside `examples/smart_quote_agent/`.
    - The already-active SDD may be updated only inside `docs/plans/active/example-smart-quote-agent/` because the implementation request explicitly authorizes that documentation work.
-   - The current approved provider-hardening expansion additionally permits only `src/proteo_runtime/providers/codex/_structured.py`, `src/proteo_runtime/providers/codex/_runner.py`, `tests/unit/test_codex_structured.py`, and `tests/unit/test_codex_provider.py` outside the example/SDD packages.
-   - No other changes are authorized in `src/` or repository tests; configuration files, public Proteo Runtime APIs, and the business database schema remain out of scope.
+   - The completed provider-hardening expansion permitted only `src/proteo_runtime/providers/codex/_structured.py`, `src/proteo_runtime/providers/codex/_runner.py`, `tests/unit/test_codex_structured.py`, and `tests/unit/test_codex_provider.py` outside the example/SDD packages.
+   - The current latency optimization is confined to the example and this active SDD. No `src/`, repository-level test, configuration, public Proteo Runtime API, provider/model configuration, or business database schema changes are in scope.
+   - Latency events reuse the existing `runtime_events` schema; no additional table or migration is authorized.
    - Pre-existing user modifications in the working tree are baseline state, not evidence of changes made by this implementation.
    - All code, scripts, local example data, and example documentation reside inside:
      ```text
@@ -83,6 +84,7 @@
 | GAP-004 | Accidental project root or library pollution during example development. | High | Enforce pre-commit verification and git status checks confirming all new files are strictly inside `examples/smart_quote_agent/`. |
 | GAP-005 | Earlier SDD text prohibits all documentation changes outside the example despite the current request to update this active SDD. | Medium | Permit only the active package update; leave all other docs and product/runtime sources unchanged and distinguish pre-existing worktree state from implementation changes. |
 | GAP-006 | The REPL hides provider exceptions from the user, but neither assigns correlation before graph entry nor records a redacted host error; runtime events cannot be joined to one CLI interaction. | High | Add `SQA-REQ-019`: correlate every turn before graph entry, persist a redacted `host.turn_error`, and expose an interaction inspector without changing runtime APIs or business data. |
+| GAP-007 | LangSmith/runtime inspection shows two sequential structured inferences for the initial quote turn, about 15.5–16.3K input tokens per invocation, and a final invocation wall time that can include human HITL wait. | High | Add `SQA-REQ-021`–`SQA-REQ-023`: separate model, tool, and HITL timing; stabilize structured prompt prefixes; and combine classification with quote extraction in one inference. Do not add keyword fast paths or change the runtime API. |
 
 ## Diagnostic Hardening Task Baseline (2026-09-19)
 
@@ -91,3 +93,18 @@
 - `runtime_events` has `task_id` but no dedicated `interaction_id` column/index; interaction identifiers exist only in selected host metadata.
 - `inspect_observability.py` supports `--last`, `--task`, and `--workflow`, but cannot combine an incomplete runtime invocation with its host-side exception.
 - Live provider startup and the business database were not changed as part of this baseline capture. The business database must not be reset for diagnostic validation.
+
+## LLM Latency Baseline (2026-09-19)
+
+The observed baseline is one live Smart Quote Agent session using `gpt-5.6-luna` at reasoning level `low`. It is a measurement of this session, not a latency guarantee:
+
+| Interaction | Recorded model work | Approximate elapsed model time | Observation |
+|---|---|---:|---|
+| Initial quote request (“Crea un presupuesto por una notebook pro y 2 mouse”) | `intent_router` 4.602 s, followed by `quote_planner` 3.512 s | 8.114 s | Two sequential structured inferences handle classification and extraction of the same turn. |
+| Customer-list interruption (“Muestrame los usuarios para poder elegir”) | `intent_router` 3.318 s, then `controlled_agent` 5.465 s | 8.783 s | `list_customers` execution took about 31 ms; the model/tool interaction dominates. |
+| Customer selection and quote continuation | `intent_router` 3.541 s | 3.541 s | The host quote reducer/resolver completed immediately after routing. |
+| Final `create_quote` invocation | No model call | — | The displayed 9.80 s invocation duration includes about 9.73 s waiting for human approval; the actual tool ran in about 14 ms. |
+
+The recorded final per-invocation usage snapshots total 80,390 input tokens and 231 output tokens across the five model invocations. The snapshots report 37,120 cached input tokens (about 46.2% of recorded input). Prompts sent to the model contained about 15.5–16.3K input tokens per invocation. These figures are reconstructed from the supplied 2026-09-19 LangSmith/runtime inspection and are retained as a session baseline only. They do not attribute all input tokens to application prompt text or prove a Codex transport bottleneck.
+
+The current inspector's `--last` view focuses on the final invocation and reports its wall duration, which can include a human approval pause. The latency work adds interaction-scoped breakdowns and invocation-level summaries while preserving the existing metadata-only observability boundary.

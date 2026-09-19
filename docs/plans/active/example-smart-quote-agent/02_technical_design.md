@@ -10,7 +10,7 @@ examples/smart_quote_agent/
 ├── app.py                  # CLI loop, runtime lifecycle, graph runner, exit handling
 ├── init_demo.py            # SQLite reset and seed script (--reset)
 ├── database.py             # Schema creation, queries, transactional quote persistence, currency
-├── models.py               # Pydantic schemas (router, planner) and graph state types
+├── models.py               # Pydantic turn decision, quote request/patch, and graph state types
 ├── auth.py                 # Masked login, credential validation, sanitized identity, policy map
 ├── tools.py                # Host tools (@runtime_tool), registry factory, executor factory
 ├── graph.py                # LangGraph StateGraph, router, quote workflow, controlled agent
@@ -244,11 +244,11 @@ flowchart TD
 ```
 
 #### Node Responsibilities:
-- `intent_router`: calls structured model with `IntentDecision` schema.
+- `intent_router`: calls the structured model with the stable `TurnDecision` schema, which returns intent, optional language, and the optional quote request/patch in the same inference.
 - `login_hitl`: executes `authenticate_user_interactive` and assigns `authenticated_user`.
 - `clear_auth`: clears `authenticated_user` to `None`.
 - `auth_guard`: checks `authenticated_user.role == "staff"`. If not, sets error output and routes to `final_output`.
-- `quote_planner`: calls structured model with `QuoteRequest` schema to extract customer name and items.
+- `quote_planner`: host-side initializes or reduces the quote workflow from the structured decision; it makes no model call.
 - `resolve_quote_data`: resolves customer ID, product IDs, and re-reads DB prices to build `QuoteDraft`.
 - `discount_hitl`: prompts user for discount (0–30%) and calculates `discount_amount_cents` and `total_cents`.
 - `create_quote_tool`: invokes `create_quote` tool via `ToolExecutor` (triggering `ConsoleApprovalHandler` for final confirmation).
@@ -322,3 +322,36 @@ The structured-output layer builds a provider-only copy of the schema recursivel
 When a Codex turn ends with a provider failure, the runner may expose only a bounded stable provider error code, numeric HTTP status when present, and terminal status as diagnostic metadata. It must discard error messages, free-form provider reasons, and arbitrary provider payload text. When the structured wrapper buffered turn events, it must publish the buffered terminal turn-failure and invocation-failure events exactly once before propagating the mapped runtime exception. Successful turns retain their normal terminal event path and must not be duplicated.
 
 Tests must assert recursive provider schema transformation, host validation using the original Pydantic semantics, redaction of sentinel provider text, correlation/status visibility in the interaction inspector, exactly-once terminal failure publication, and unchanged successful completion reporting.
+
+## Latency, Prompt Caching, and Single-Inference Turn Design (Authoritative for SQA-REQ-021–023)
+
+### Latency Event Model
+
+Use the existing neutral local `runtime_events` table and its existing metadata storage. Do not add a table, column, index, schema migration, or business-database change for latency instrumentation. Emit metadata-only `host.interaction_started/completed`, `host.model_call_started/completed`, and discount `host.hitl_started/resolved` records; keep quote-approval request/resolution events intact. Every structured `RuntimeModel.ainvoke` and controlled `RuntimeTask.ainvoke` receives a fresh `call_id` through existing `InvocationConfig.metadata`, together with the already available interaction, stage, task, and workflow IDs. A controlled-agent task call keeps one call ID across its tool round trips; each tool cycle is measured from its runtime events.
+
+The inspector derives durations from event timestamps rather than inferring them from an invocation's overall wall time:
+
+- Interaction duration: host interaction start to host interaction completion.
+- Provider preparation: host model-call start to runtime `invocation_started`.
+- Runtime invocation span: `invocation_started` to its terminal event. For direct structured calls this is the model-call duration; a controlled `RuntimeTask` span may include its internal tool cycles, which the inspector annotates and breaks out separately. Do not label this span as pure inference time or add component spans to it as if they were disjoint.
+- Time to first token: invocation start to the first `output_text_delta`; when a structured call has no deltas, show time to terminal result instead.
+- Tool cycle: model time before `tool_requested`, tool execution from `tool_started` to `tool_completed`, post-tool time from tool completion to the first following text delta or next tool request/terminal event.
+- HITL wait: request/start to resolution for approval and discount prompts, reported apart from actual tool execution.
+
+If an invocation has multiple token-usage snapshots, use only its latest snapshot. For a summary over multiple invocations, calculate the cache ratio as total latest cached-input tokens divided by total latest input tokens; display it as unavailable if the required usage counts are missing or the denominator is zero. `--last`, `--interaction`, and `--task` show applicable stages and visibly mark any wall duration containing a human wait. `--latency` is a summary view for the most recent `--limit N` runtime invocations (default 10), grouped by stage/model/profile, and reports invocation count, p50, p95, and cache ratio. Percentiles use nearest rank (`rank = ceil(percentile × sample_count)`); calls without a terminal timestamp are shown as incomplete and excluded from latency percentiles.
+
+Event records contain only stable event names, IDs, stage, model/profile, bounded result/status codes, timestamps/durations, and numeric token/cache counters. They never contain prompts, responses, tool arguments, credentials, or free-form provider/exception text. Logger failures remain best effort and cannot change interaction outcomes.
+
+### Cache-Eligible Prompt Layout
+
+All structured turn decisions use one constant system prompt and the same `TurnDecision` schema serialization, byte-for-byte, regardless of identity, language, workflow phase, or quote contents. The system prompt holds only static intent definitions, extraction/edit rules, and non-invention constraints. Role, previous language, workflow ID/revision, customer and line state, candidates, current field focus, and current user input are passed as compact deterministic UTF-8 JSON in the user message, using recursive lexicographic key sorting, `ensure_ascii=False`, compact separators `(',', ':')`, and preserved array order. The serialized dynamic JSON payload is capped at 16,384 bytes; an over-limit input is handled by a localized host clarification without silent truncation or a model call.
+
+`controlled_agent` instructions also have a stable prefix. The sanitized identity role is appended once as the final instruction suffix when the identity task is created. RuntimeTask history continues to follow `ContextPolicy.RUNTIME`; no host-side conversation replay is added. Prompt/schema equality is testable locally. A live cache hit is observed through reported usage where available but is not a pass/fail condition.
+
+### Combined Classification and Extraction
+
+Extend `TurnDecision` with optional `quote_request: QuoteRequest` while retaining `quote_patch`. A model decision may contain at most one of those quote payloads. For any intent other than `quote_create`, both are null. For `quote_create`, either payload or neither may be returned. Initial and fully reformulated quote requests use `quote_request`; a full reformulation during a pending workflow starts a fresh `workflow_id` and invalidates the old draft. Edits and continuations to a pending workflow use `quote_patch`; missing customer/product/quantity information remains absent so the host workflow can ask for it.
+
+The structured router call is the sole LLM inference for classification plus quote extraction/edit proposal. The `quote_planner` node becomes a pure host-side initializer/reducer consuming the returned payload, after the existing staff authorization guard. It rejects inconsistent model output through normal structured validation and routes missing data to the existing workflow clarification. It does not call `with_structured_output(QuoteRequest)`. Existing keyword heuristics are unchanged; in particular, the baseline ambiguous creation phrase remains an LLM-routed test case.
+
+The host continues to resolve customer and products against SQLite, calculate prices/totals, validate workflow/revision, enforce permissions, collect discount and approval, and persist only through the existing authorized tool path. No Proteo Runtime API or provider configuration changes are part of this design.

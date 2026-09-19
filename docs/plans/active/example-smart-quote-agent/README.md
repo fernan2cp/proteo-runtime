@@ -18,6 +18,8 @@ The application is a small, integrated CLI demonstration that showcases:
 - atomic SQLite persistence with quote and quote-line history;
 - metadata-only runtime and tool observability;
 - resumable host-owned quote workflows with safe interruptions, corrections, task/workflow observability, and redacted interaction-level error diagnostics;
+- latency breakdowns for model calls, tool rounds, interactive HITL waits, token usage, and cache usage;
+- stable structured prompts and a single classification/extraction inference for quote turns;
 - absolute boundary separation between model suggestions and host execution authority.
 
 ## Source of Truth
@@ -78,7 +80,8 @@ Status: `active`.
   - `hitl.py`: Interactive discount validation (0–30%) and Phase 5 `ApprovalHandler` implementation.
   - `data/.gitkeep`: Local directory placeholder for `demo.sqlite3`.
 - Incremental requirements, tasks, acceptance criteria, validation, and traceability updates in this active SDD package are explicitly included.
-- The approved provider-hardening exception also includes only the Codex provider schema/runner modules and their two existing runtime unit-test files, plus the example's own inspector/tests/docs.
+- The completed provider-hardening exception included only the Codex provider schema/runner modules and their two existing runtime unit-test files, plus the example's own inspector/tests/docs.
+- The approved latency optimization is confined to `examples/smart_quote_agent/*` and this active SDD. It does not change `src/*`, repository-level tests, public runtime APIs, provider/model configuration, or the business database schema.
 - Additive, idempotent evolution of the local observability SQLite schema is included; the business `demo.sqlite3` schema is unchanged.
 - Deterministic seeding: 1 staff user, 4 client users, 4 customer records, 6 product catalog records.
 - Trivial demo password (`1234`) with explicit non-production security disclaimer.
@@ -89,7 +92,7 @@ Status: `active`.
 
 ### Explicitly Excluded (Non-Scope & Strict Boundaries)
 
-- **Bounded Change Rule**: Product code, tests, scripts, and example documentation remain confined to `examples/smart_quote_agent/*`. In addition to this active SDD, the current provider-hardening work is narrowly permitted to edit `src/proteo_runtime/providers/codex/_structured.py`, `src/proteo_runtime/providers/codex/_runner.py`, `tests/unit/test_codex_structured.py`, and `tests/unit/test_codex_provider.py`. No other `src/*` or repository test, `pyproject.toml`, `uv.lock`, public runtime contract, or business database schema is in scope.
+- **Bounded Change Rule**: Product code, tests, scripts, and example documentation remain confined to `examples/smart_quote_agent/*`. In addition to this active SDD, the completed provider-hardening work was narrowly permitted to edit `src/proteo_runtime/providers/codex/_structured.py`, `src/proteo_runtime/providers/codex/_runner.py`, `tests/unit/test_codex_structured.py`, and `tests/unit/test_codex_provider.py`. The current latency optimization remains confined to the example and this SDD; it does not authorize changes to `src/*`, repository-level tests, `pyproject.toml`, `uv.lock`, public runtime contracts, provider/model configuration, or the business database schema.
 - No customer CRUD or self-registration.
 - No product creation or price modification interfaces.
 - No shopping cart, checkout, payment processing, or inventory reservation.

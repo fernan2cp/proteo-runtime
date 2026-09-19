@@ -38,8 +38,16 @@ The Smart Quote Agent implementation and conversational hardening progress throu
 - Verify safe provider code/status propagation and exactly-once terminal event flushing with focused runtime tests and the example inspector tests.
 - Repeat the live quote transcript and approve only the exact accepted Globex quote review; preserve the current business database if the provider still fails.
 
-### Stage 8: Documentation and Mandatory Human Review Gate
+### Stage 8: LLM Latency, Prompt Layout, and Single-Inference Optimization
+- Add interaction/model/HITL timing events to the existing metadata-only telemetry store and expose the derived breakdown and `--latency --limit N` summary in the inspector.
+- Move structured decision context into fixed-order bounded JSON while preserving a byte-stable system prompt/schema and a stable controlled-agent instruction prefix.
+- Combine intent classification and quote request/patch extraction into one structured inference; keep `quote_planner` host-side and preserve all host authorization, resolution, pricing, and persistence controls.
+- Run provider-free latency, serialization, schema, and graph invocation-count tests. Repeat the live ambiguous phrase and inspect its timeline; decline final approval after verifying the review so this performance validation does not add a business quote.
+- Confirm no new observability schema objects/migrations and no `src/*`, repository-level test, public runtime API, provider/model configuration, or business database changes.
+
+### Stage 9: Documentation and Mandatory Human Review Gate
 - Complete `examples/smart_quote_agent/README.md` and this active SDD's validation evidence.
+- Record latency measurements and cache usage as observed evidence only; do not claim a fixed latency guarantee or require a provider cache hit.
 - Present the verified implementation to the repository owner, including any live-provider blocker and sanitized diagnostics.
 - Keep the SDD active unless/until the owner explicitly approves closure; only then move it to `docs/plans/complete/example-smart-quote-agent/`.
 
@@ -52,8 +60,9 @@ The Smart Quote Agent implementation and conversational hardening progress throu
 | Codex Provider Core | **Narrow, Approved Impact** | Only `_structured.py` and `_runner.py` may change; public runtime contracts and other providers remain untouched. |
 | Existing Tests (`tests/`) | **Narrow, Approved Impact** | Only `tests/unit/test_codex_structured.py` and `tests/unit/test_codex_provider.py` may change; other repository tests remain untouched. |
 | Package Metadata (`pyproject.toml`, `uv.lock`) | **Zero Impact** | No new external dependencies are added; the example relies strictly on existing runtime dependencies (`langgraph`, `pydantic`, `sqlite3`). |
-| Working Tree | **Strictly Bounded** | Product/example changes stay within `examples/smart_quote_agent/*`; the active SDD and four explicitly allowlisted provider/test files are the only additional permitted paths. Pre-existing user modifications are preserved and reported separately. |
+| Working Tree | **Strictly Bounded** | For the current latency task, product/example changes stay within `examples/smart_quote_agent/*` and documentation changes stay within this active SDD. The four provider/test paths belong only to the completed prior provider task. Pre-existing user modifications are preserved and reported separately. |
 | Observability DB | **Additive Local Change** | Only the local observability DB schema may add nullable `task_id` and `interaction_id`; the business `demo.sqlite3` schema remains unchanged. |
+| Latency Instrumentation | **Existing Schema Only** | The current latency events reuse existing `runtime_events` metadata storage; no table, column, index, migration, or public telemetry API is added. |
 
 ---
 
@@ -67,9 +76,12 @@ Before presenting the work for final approval and moving the SDD to `complete`:
 - [ ] Password entry is confirmed masked and excluded from graph state.
 - [ ] Authorization boundaries between anonymous, client, and staff are verified.
 - [ ] Transactional atomicity of quote creation is verified.
-- [ ] Bounded diff is confirmed against the task-start baseline: only the example, this active SDD, and the four allowlisted provider/runtime-test paths changed as part of this work; pre-existing user changes are preserved and reported separately.
+- [ ] Bounded diff is confirmed against the task-start baseline: only the example and this active SDD changed for the latency task; the earlier provider paths are not changed again, and pre-existing user changes are preserved and reported separately.
 - [ ] The local observability migration is additive and idempotent; business `demo.sqlite3` has not been reset or migrated.
 - [ ] Redacted host error records and `--interaction` correlate incomplete runtime turns without rewriting runtime rows; successful interactions remain completed.
+- [ ] Latency lifecycle events and inspector metrics separate model preparation/inference, TTFT/structured terminal time, tool rounds, discount HITL, approval wait, and actual tool execution; latest usage snapshots and weighted cache ratios are correct.
+- [ ] Structured system prompt and schema are byte-identical across workflow contexts; dynamic JSON is fixed-order/escaped and bounded; no cache hit is required for acceptance.
+- [ ] The ambiguous initial quote request uses exactly one structured inference for classification and extraction; no keyword/regex fast path or planner model call was introduced, and all quote authority remains host-side.
 - [x] The provider schema adaptation maps nested `oneOf` to `anyOf` without `discriminator`, while host validation retains exactly-one semantics; provider failure events flush exactly once with only safe status/code metadata.
 - [x] Live quote persistence was approved only after exact customer/product/quantity/discount/total review; quote #8 was the only row added, and the completed invocation was inspected.
 - [ ] Mandatory Human Review Gate is satisfied by the user.

@@ -6,7 +6,7 @@ Task states are `pending`, `in_progress`, `done`, or `blocked`.
 All tasks start in `pending`. A task may only transition to `done` when concrete test or verification evidence is recorded in `05_validation_plan.md`.
 
 Strict Boundary Rule:
-Product code, tests, scripts, and example docs may change inside `examples/smart_quote_agent/`. The explicit documentation exception is this existing active SDD package. For the approved Codex provider hardening only, the additional allowed implementation/test paths are `src/proteo_runtime/providers/codex/_structured.py`, `src/proteo_runtime/providers/codex/_runner.py`, `tests/unit/test_codex_structured.py`, and `tests/unit/test_codex_provider.py`. No other `src/*`, repository tests, configuration, public runtime APIs, or business database schema may change. Pre-existing worktree changes must be preserved and must not be attributed to this plan.
+Product code, tests, scripts, and example docs may change inside `examples/smart_quote_agent/`. The explicit documentation exception is this existing active SDD package. The completed Codex provider hardening had a narrow additional implementation/test allowlist in `_structured.py`, `_runner.py`, `test_codex_structured.py`, and `test_codex_provider.py`; that prior exception does not expand the current latency task. The current latency implementation is limited to the example and this SDD. No `src/*`, repository tests, configuration, public runtime APIs, provider/model configuration, or business database schema may change. Pre-existing worktree changes must be preserved and must not be attributed to this plan.
 
 ---
 
@@ -258,14 +258,15 @@ Product code, tests, scripts, and example docs may change inside `examples/smart
 ### SQA-TASK-0016 — User Guide, Final Verification, and Human Review Handoff
 
 **State:** `in_progress`
-**Depends on:** `SQA-TASK-0012`, `SQA-TASK-0013`, `SQA-TASK-0014`, `SQA-TASK-0015`, `SQA-TASK-0017`, `SQA-TASK-0018`
-**Requirements:** `SQA-REQ-001`, `SQA-REQ-006`, `SQA-REQ-011`, `SQA-REQ-012`, `SQA-REQ-013`, `SQA-REQ-016`, `SQA-REQ-018`, `SQA-REQ-019`, `SQA-REQ-020`
-**Acceptance:** `AC-SQA-001`, `AC-SQA-011`, `AC-SQA-012`–`AC-SQA-020`
+**Depends on:** `SQA-TASK-0012`, `SQA-TASK-0013`, `SQA-TASK-0014`, `SQA-TASK-0015`, `SQA-TASK-0017`, `SQA-TASK-0018`, `SQA-TASK-0019`, `SQA-TASK-0020`, `SQA-TASK-0021`
+**Requirements:** `SQA-REQ-001`, `SQA-REQ-006`, `SQA-REQ-011`, `SQA-REQ-012`, `SQA-REQ-013`, `SQA-REQ-016`, `SQA-REQ-018`–`SQA-REQ-023`
+**Acceptance:** `AC-SQA-001`, `AC-SQA-011`, `AC-SQA-012`–`AC-SQA-023`
 
 - Update the example README with workflow state, interruptions, corrections, customer listing, and task/workflow inspection usage.
+- Document the new latency inspector, one-call quote decision behavior, and cache-eligible prompt layout in the example README.
 - Keep the active SDD open until the repository owner reviews the completed evidence and approves closure.
 - Run targeted and full example tests, strict mypy, Ruff lint/format, and bounded worktree review.
-- Re-run the original live transcript after the provider schema/error-event fix. Approve only after review confirms Globex, one USB-C Dock, two Wireless Mouse, zero discount, and USD 230; never reset the user's business database.
+- Preserve the completed post-fix Globex live evidence already recorded below; run the new latency session with the ambiguous Notebook Pro/Wireless Mouse request and inspect its review, but decline approval so no additional business quote is written. Never reset the user's business database.
 - Keep this SDD active until evidence is complete and human review is requested; do not move it to `complete` automatically.
 - Evidence: after the provider fix, 27 focused runtime provider/structured tests passed, the full example suite reported 143 passed / 2 skipped, and strict mypy, Ruff lint/format, and `git diff --check` passed. The live workflow created quote #8 for Globex with one USB-C Dock, two Wireless Mouse, zero discount, and USD 230; read-only database and completed-invocation evidence is in `05_validation_plan.md`. Human review and SDD closure remain pending, so this task stays `in_progress`.
 
@@ -299,3 +300,45 @@ Product code, tests, scripts, and example docs may change inside `examples/smart
 - Add tests for redaction, error codes/frames, invocation metadata, logger failure, migration idempotence, correlated failed/success inspector states, and REPL continuation.
 - Execute the original live request twice after staff login, inspect each failed interaction, and verify no business quote was added when review was not reached.
 - Evidence: all targeted tests and the full suite pass (142 passed, 2 skipped); strict mypy, Ruff, format, and diff checks pass. Both live attempts were recorded as `RuntimeUnavailableError` (`runtime_unavailable`) at `intent_router` with sanitized frames. Quote count remained 7; details are in `05_validation_plan.md`.
+
+---
+
+### SQA-TASK-0019 — Interaction Latency Events and Inspector Summary
+
+**State:** `done`
+**Depends on:** `SQA-TASK-0015`, `SQA-TASK-0017`, `SQA-TASK-0018`
+**Requirements:** `SQA-REQ-018`, `SQA-REQ-019`, `SQA-REQ-021`
+**Acceptance:** `AC-SQA-021`
+
+- Instrument interaction, model-call, and discount HITL start/completion using the existing local telemetry event store and metadata-only payload policy. Add a per-call `call_id` through existing invocation metadata.
+- Derive provider preparation, direct model-call or controlled-task invocation/terminal latency, TTFT, pre/post-tool intervals, actual tool duration, approval wait, discount wait, and token/cache summaries in the inspector. Mark tool-inclusive task spans rather than labeling them as pure inference time. Use only the latest usage snapshot for each invocation.
+- Add `--latency` summary over the latest `--limit N` invocations, grouped by stage/model/profile with count, nearest-rank p50/p95, and weighted cache ratio. Keep the default limit at 10 and label incomplete calls separately.
+- Do not add telemetry tables/columns/indexes/migrations or change public runtime APIs, provider code, or the business database schema.
+- Add provider-free tests with controlled timestamps for tool cycles, HITL pauses, missing streaming deltas, incomplete calls, cumulative usage snapshots, redaction, and logger-failure isolation.
+- Evidence: metadata-only interaction/model/discount events and call correlation are implemented. Tests cover exact timing derivation, 9.7-second approval versus 30-ms tool execution, TTFT/structured terminal, incomplete invocations, final usage snapshots, cache ratios, logger failure, interaction/task/workflow correlation, and exclusion of sibling model calls from per-invocation reports. The live task report separates 4.49-second controlled-agent runtime from its 13-ms tool, 3.54-second approval wait, and 3.90-second discount wait. See `05_validation_plan.md`.
+
+### SQA-TASK-0020 — Stable Structured Prompt Prefixes
+
+**State:** `done`
+**Depends on:** `SQA-TASK-0018`
+**Requirements:** `SQA-REQ-022`
+**Acceptance:** `AC-SQA-022`
+
+- Move structured decision rules into one constant system prompt with no dynamic identity, language, workflow, quote, candidate, or user-input values.
+- Serialize those values and the current user input into compact UTF-8 JSON with recursively lexicographically sorted object keys, preserved array order, `ensure_ascii=False`, and separators `(',', ':')`; enforce the 16,384-byte dynamic payload cap without silent truncation or an LLM call on overflow.
+- Keep controlled-agent task instructions stable at the prefix and append the sanitized identity role once as the final task-creation suffix. Preserve `ContextPolicy.RUNTIME` and do not replay host-side history.
+- Add tests comparing system prompt and schema serialization byte-for-byte across initial/pending/edit contexts, checking JSON escaping and the payload bound, and confirming no cache hit is required for correctness.
+- Evidence: the fixed system prompt and `TurnDecision` schema remain byte-identical across initial and pending contexts; dynamic JSON uses stable sorted compact UTF-8 serialization and rejects payloads above 16,384 bytes without truncation or model invocation. The live controlled-agent call reported 15,104/16,133 cached input tokens (94%); structured-router calls reported no cached input, which is acceptable because provider cache hits are not required. See `AC-SQA-022` and `05_validation_plan.md`.
+
+### SQA-TASK-0021 — Single-Inference Classification and Quote Extraction
+
+**State:** `done`
+**Depends on:** `SQA-TASK-0019`, `SQA-TASK-0020`
+**Requirements:** `SQA-REQ-003`, `SQA-REQ-015`, `SQA-REQ-023`
+**Acceptance:** `AC-SQA-023`
+
+- Extend `TurnDecision` with optional `quote_request` while retaining `quote_patch`, and validate the mutually exclusive payload/intention rules specified in `SQA-REQ-023`.
+- Have the sole structured router inference return intent, language, and an initial/reformulated `QuoteRequest`, pending-workflow `QuotePatch`, or neither when quote details are absent.
+- Convert `quote_planner` into a host-only workflow initializer/reducer and remove its separate `QuoteRequest` model invocation. Keep SQLite resolution, authorization, totals, discounts, approval, and persistence host-controlled.
+- Do not add keyword/regex fast paths. Confirm the ambiguous baseline phrase still calls Codex exactly once and produces Notebook Pro quantity 1 plus Wireless Mouse quantity 2. Verify a full reformulation replaces a pending workflow with a fresh ID and invalidates its draft.
+- Evidence: the ambiguous baseline phrase used one structured invocation (`5476ef0f7c314ec5baadf2e957190b14`, stage `intent_router`) and the host-only planner preserved Notebook Pro 1x and Wireless Mouse 2x. The first live attempt exposed a missing singular quantity; the fixed system prompt now explicitly maps singular articles to quantity 1, and the repeat reached the correct review without a quantity clarification. Persistence was declined. See `AC-SQA-023` and `05_validation_plan.md`.

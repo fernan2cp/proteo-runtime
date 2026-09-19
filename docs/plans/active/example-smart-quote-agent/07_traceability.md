@@ -7,6 +7,7 @@
 | User Request / Repository Rules | `SQA-REQ-001` | Bounded change isolation with four allowlisted Codex provider/runtime test paths |
 | Project Guide §2.4, §14–§15; User Request | `SQA-REQ-019` | Failure observability, metadata-only diagnostics, and host-owned interaction correlation |
 | User-Approved Provider Hardening Plan | `SQA-REQ-020` | Codex structured schema compatibility and safe, exactly-once terminal failure events |
+| User-Approved LLM Latency Optimization Plan; OpenAI latency-optimization and prompt-caching guidance | `SQA-REQ-021`, `SQA-REQ-022`, `SQA-REQ-023` | Latency attribution, stable cache-eligible prompt prefixes, and one-call quote classification/extraction |
 | Guide §6, §21, §22 | `SQA-REQ-002`, `SQA-REQ-006` | SQLite domain model, constraints, seeds, and transactional atomicity |
 | Guide §12, §13, §14 | `SQA-REQ-003` | Pydantic router/planner schemas, sanitized identity, and graph state |
 | Guide §4, §9.1, §10 | `SQA-REQ-004` | Masked login, getpass, sanitized state, and logout routing |
@@ -38,6 +39,9 @@
 | `SQA-REQ-011` (Documentation) | `SQA-TASK-0009` | `AC-SQA-011` | Review of `examples/smart_quote_agent/README.md` |
 | `SQA-REQ-012` (Strict Types) | `SQA-TASK-0003`, `SQA-TASK-0010` | `AC-SQA-011` | `uv run mypy examples/smart_quote_agent --strict` |
 | `SQA-REQ-013` (Linting & Style) | `SQA-TASK-0010` | `AC-SQA-011` | `uv run ruff check` and `uv run ruff format --check` |
+| `SQA-REQ-021` (Latency observability) | `SQA-TASK-0019`, `SQA-TASK-0016` | `AC-SQA-021` | Controlled-timestamp event/inspector tests; `--latency --limit N`; live `--interaction`/`--task` timeline |
+| `SQA-REQ-022` (Stable cache-eligible prompts) | `SQA-TASK-0020`, `SQA-TASK-0016` | `AC-SQA-022` | Byte-for-byte prompt/schema comparison, deterministic JSON/cap tests, and live usage inspection when available |
+| `SQA-REQ-023` (Single-call classification/extraction) | `SQA-TASK-0021`, `SQA-TASK-0016` | `AC-SQA-023` | Quote decision schema and graph tests asserting exactly one structured invocation for the ambiguous quote request |
 
 ---
 
@@ -56,12 +60,15 @@
 | `AC-SQA-009` | Controlled Agent Sandboxing | Interactive CLI scenario 2 & `tools.py` inspection |
 | `AC-SQA-010` | Metadata-Only Telemetry | Console telemetry log output inspection |
 | `AC-SQA-011` | Quality, Types & Docstrings | `uv run mypy examples/smart_quote_agent --strict` & `uv run ruff check` |
+| `AC-SQA-021` | Interaction, model, tool, and HITL latency | Fake timestamp fixtures, inspector views, `--latency --limit N`, and live task timeline in `05_validation_plan.md` |
+| `AC-SQA-022` | Byte-stable, bounded prompt prefix | Prompt/schema capture tests, deterministic JSON and overflow tests, task instruction-shape assertions |
+| `AC-SQA-023` | One inference for intent plus quote extraction | TurnDecision validation and graph regression proving one Codex structured invocation for the ambiguous baseline phrase |
 
 ---
 
 ## Conversational Hardening Traceability (Incremental)
 
-The user-reported CLI transcript is the regression source for this addendum. The provider fix adds only the four paths permitted by `SQA-REQ-001`; remaining code and test changes stay within `examples/smart_quote_agent/`, and documentation updates stay within this active SDD package.
+The user-reported CLI transcript is the regression source for this addendum. The completed provider fix used only the four paths permitted by `SQA-REQ-001`; the current latency changes and tests stay within `examples/smart_quote_agent/`, and documentation updates stay within this active SDD package.
 
 ### Hardening Requirements to Tasks, Criteria, and Validation
 
@@ -77,6 +84,9 @@ The user-reported CLI transcript is the regression source for this addendum. The
 | `SQA-REQ-018` (Task/workflow observability) | `SQA-TASK-0015` | `AC-SQA-017` | Legacy DB migration, metadata whitelist, `--task`, `--workflow`, and cleanup diagnostics |
 | `SQA-REQ-019` (Correlated, redacted turn errors) | `SQA-TASK-0017`, `SQA-TASK-0016`, `SQA-TASK-0018` | `AC-SQA-019`, `AC-SQA-020` | Exception redaction/logger isolation, safe provider code/status propagation, interaction migration/inspector, and live evidence |
 | `SQA-REQ-020` (Codex schema and terminal events) | `SQA-TASK-0018`, `SQA-TASK-0016` | `AC-SQA-020` | Actual `TurnDecision` schema regression, original host validation semantics, failed/success event publication, redaction, and post-fix live transcript |
+| `SQA-REQ-021` (Interaction latency observability) | `SQA-TASK-0019`, `SQA-TASK-0016` | `AC-SQA-021` | Controlled timestamps for preparation/model/TTFT/tool/HITL phases; latest-snapshot token aggregation; metadata redaction; grouped `--latency` statistics |
+| `SQA-REQ-022` (Stable prompt prefixes) | `SQA-TASK-0020`, `SQA-TASK-0016` | `AC-SQA-022` | Byte-identical prompt/schema capture across contexts; escaped fixed-order JSON and payload-cap tests; cache hit not required |
+| `SQA-REQ-023` (Combined classification/extraction) | `SQA-TASK-0021`, `SQA-TASK-0016` | `AC-SQA-023` | Model/schema tests, initial and pending graph paths, malformed payloads, and one structured call for the baseline phrase |
 
 ### Hardening Acceptance Evidence Map
 
@@ -91,5 +101,8 @@ The user-reported CLI transcript is the regression source for this addendum. The
 | `AC-SQA-018` | Complete, authoritative offline preview | Offline preview tests: multi-line total, ambiguous notebook, exact SKU, unknown line, and no persistence |
 | `AC-SQA-019` | Correlated, redacted live-turn diagnostics | `test_host_error_is_correlated_and_excludes_exception_messages`; REPL logger-failure and invocation-metadata regressions; interaction migration/inspector tests; live `--interaction` inspection in `05_validation_plan.md` |
 | `AC-SQA-020` | Provider schema compatibility and exactly-once failure events | 27 focused runtime tests; 143 passed / 2 skipped in the example suite; strict mypy/Ruff/diff checks; approved quote #8 and completed inspector event in `05_validation_plan.md` |
+| `AC-SQA-021` | Latency event correlation and stage breakdown | Controlled-clock tests, full suite/static checks, and live task timeline with model, 13-ms tool, 3.54-s approval, and 3.90-s discount waits in `05_validation_plan.md` |
+| `AC-SQA-022` | Stable cache-eligible prompts | Prompt/schema byte-equality, deterministic JSON and size-bound tests; live controlled-agent usage observed 94% cached input (router cache hits are optional); see `05_validation_plan.md` |
+| `AC-SQA-023` | Single structured inference for classification and extraction | `TurnDecision` validation and one-invocation graph regression; repeated live phrase reached correct review with one router call and no persisted quote; see `05_validation_plan.md` |
 
-**AC-SQA-001 interpretation:** historical evidence that the original example was initially isolated remains historical. The current provider-hardening task also permits exactly the four paths named in `SQA-REQ-001`. Judge only changes introduced by the current implementation against its task-start baseline; report pre-existing user changes separately.
+**AC-SQA-001 interpretation:** historical evidence that the original example was initially isolated remains historical. The completed provider-hardening task permitted exactly the four paths named in `SQA-REQ-001`; the current latency change is bounded to the example and this active SDD. Judge current changes against the task-start baseline and report pre-existing user changes separately.

@@ -143,6 +143,57 @@ The focused tests must cover recursive provider-only schema conversion, strict h
 
 ---
 
+## Latency, Prompt Cache, and Single-Inference Verification
+
+### Provider-Free Regression Commands
+
+All automated checks use fake runtimes/controlled timestamps and must not call Codex or consume model quota:
+
+```powershell
+uv run pytest examples/smart_quote_agent/tests -q
+uv run mypy examples/smart_quote_agent --strict
+uv run ruff check examples/smart_quote_agent
+uv run ruff format --check examples/smart_quote_agent
+git diff --check
+```
+
+The tests must verify the following evidence:
+
+- Latency events correlate `interaction_id`, `call_id`, stage, and available task/workflow IDs without storing content. A failing telemetry write does not affect the graph result.
+- Controlled timestamps separate provider preparation, direct structured model duration or a controlled-task invocation span, TTFT, structured time-to-terminal, each pre/post-tool interval, tool execution, quote-approval wait, discount prompt wait, and total interaction wall time. Tool-inclusive task spans are labeled accordingly, not presented as pure model inference. A simulated 9.7-second approval pause and 30-ms tool call must display as separate durations.
+- Repeated usage snapshots for one invocation contribute only their latest token/cache counts. Aggregate cache ratio is weighted by input token count. Missing terminal events remain incomplete and are not included in latency percentiles.
+- `--latency --limit N` selects at most the latest N invocations and groups by stage/model/profile. Count, nearest-rank p50/p95, and cache ratio match a fixture with known timestamps and usage. Default `--limit` remains 10.
+- `--last` labels a wall duration containing human approval or discount wait. `--interaction` and `--task` show correlated model/HITL/tool breakdowns without rendering prompt or response content.
+- Initial, pending, and edited structured-turn inputs produce byte-identical system prompt and `TurnDecision` schema. Variable context is deterministic fixed-key JSON with correct escaping. Payloads through 16,384 UTF-8 bytes are accepted; an over-limit payload yields a localized host response, preserves workflow state, and makes no model call.
+- Controlled-agent instructions have a shared stable prefix, append the sanitized identity role once at task creation, and contain no host-side history replay.
+- `TurnDecision` rejects simultaneous request+patch and quote payloads for non-quote intents. A new request, pending patch, full reformulation that replaces a pending workflow and invalidates its draft, incomplete quote, unrelated intent, and malformed result each follow the rules in `SQA-REQ-023`.
+- For the ambiguous initial quote phrase, the graph records exactly one structured decision invocation, emits no second structured `quote_planner` invocation, and retains Notebook Pro quantity 1 plus Wireless Mouse quantity 2. No new keyword or regex route is introduced.
+
+### Live Latency Session
+
+Run the live demonstration only with the existing local Codex state and without resetting either database. Capture a read-only quote count before starting. Log in as `staff` with the demo password and use the deliberately ambiguous initial phrase `Crea un presupuesto por una notebook pro y 2 mouse`; inspect that interaction and confirm one structured invocation. Then request the customer list, choose Initech, and accept the default zero discount. The host review must show Initech, Notebook Pro 1x, Wireless Mouse 2x, subtotal USD 1,280, discount USD 0, total USD 1,280. Decline final persistence after inspecting the review so this latency validation does not add a business quote. Capture the task/interaction inspector timelines, model/token/cache measurements, HITL timing, and read-only quote count after the session. Compare the first turn's invocation count against the baseline two structured calls; do not require an absolute wall-latency target or a live cache hit.
+
+#### Observed Live Evidence — 2026-09-19
+
+- The first run with the combined decision exposed one prompt gap: the LLM omitted the quantity implied by the singular article before Notebook Pro. The fixed, constant system prompt now states that singular articles such as `un/una` imply quantity 1 unless an explicit quantity is given. Repeating the same phrase reached review without asking for the quantity; the console showed Initech (ID 3), Notebook Pro 1x, Wireless Mouse 2x, subtotal USD 1,280, discount 0%, and total USD 1,280.
+- The repeated session used task `task_874639f3ca994eb68375a7f79c1cb9b2`; the initial quote interaction was `655a249d5045491387ab981479082614`, with structured invocation `5476ef0f7c314ec5baadf2e957190b14`. The initial quote turn made exactly one `intent_router` structured invocation; `quote_planner` performed host-side reduction only. The structured invocation took 4.35 s from `invocation_started` to terminal, with 137 ms host-to-invocation provider preparation, 16,643 input tokens, 55 output tokens, and 0 cached input tokens. The interaction wall time was 4.53 s.
+- The customer-list turn intentionally invoked the controlled agent after classification. Its runtime task span was 4.49 s, including a 13 ms customer-list tool call, with TTFT 3.75 s and 15,104/16,133 cached input tokens (94%). The interaction lasted 9.51 s. This is the separate conversational/tool-selection call permitted by the design, not a second quote extraction call.
+- The final interaction (`e19ae70c29dd4049b374765902a46cb4`) took 7.60 s. The inspector reports discount HITL wait of 3.90 s and approval wait of 3.54 s separately from model/tool work. Final quote approval was declined. A read-only business-database count was 9 both before and after the session; no quote was persisted.
+- `--latency --limit 10` selected 10 recent runtime invocations and reported 7 model calls. For `intent_router` / `gpt-5.6-luna` / `structured`, count 5, p50 4.35 s, p95 5.24 s, cached input 0%. For `controlled_agent` / `gpt-5.6-luna`, count 2, p50 4.49 s, p95 5.30 s, cached input 94%. These are observed samples, not absolute latency or cache-hit acceptance thresholds.
+- The task close emitted the known `task.cleanup.provider_delete_failed` diagnostic. Provider cleanup remediation remains outside this plan; it did not prevent the quote review or change the business database.
+
+Commands used for read-only review: `.venv\\Scripts\\python.exe examples/smart_quote_agent/inspect_observability.py --task task_874639f3ca994eb68375a7f79c1cb9b2` and `.venv\\Scripts\\python.exe examples/smart_quote_agent/inspect_observability.py --latency --limit 10`.
+
+Do not enter a password, prompt, model response, tool argument, or customer/product content into any telemetry event. If a latency event lacks a required timestamp/correlation ID or contains unapproved metadata, treat acceptance as failed and preserve the database.
+
+### Latency Scenario Matrix
+
+| Scenario ID | Description | Covered Criteria | Expected Result |
+|---|---|---|---|
+| SCEN-025 | Interaction/model/tool/HITL timeline | `AC-SQA-021` | Fake events derive correct durations; an invocation view excludes sibling model calls and labels invocation approval separately from interaction discount wait; tool execution is separate; final token snapshot and cache ratio are correct; content is redacted. |
+| SCEN-026 | Cache-eligible prompt serialization | `AC-SQA-022` | System prompt and schema are byte-identical across contexts; fixed-key escaped JSON is bounded; overflow does not call the model or mutate the workflow. |
+| SCEN-027 | Combined intent and quote extraction | `AC-SQA-023` | Ambiguous initial request uses exactly one structured inference and retains 1 Notebook Pro plus 2 Wireless Mouse; host planner makes no LLM call. |
+
 ## Interactive Demonstration Scenario (Live CLI)
 
 Execute `python examples/smart_quote_agent/app.py` and run through the following standard script:
@@ -205,6 +256,10 @@ Execute `python examples/smart_quote_agent/app.py` and run through the following
 | 2026-09-19 | `SQA-TASK-0018` / `AC-SQA-019`, `AC-SQA-020` | Live REPL: staff login; original Spanish request; list customers; choose Globex; accept 0% discount; review and approve | Review matched Globex LLC, 1 USB-C Dock (`DOCK-USBC`), 2 Wireless Mouse (`MS-WL`), 0% discount, USD 230.00. Approved exactly once; created Quote #8. | Pass |
 | 2026-09-19 | `SQA-TASK-0018` / Business DB safety | Read-only business DB counts and quote/line lookup before and after live run | Quote count changed from 7 to 8. Quote #8 has `customer_id=2`, subtotal/total `23000` cents, discount 0; lines are product 6 × 1 at 15000 cents and product 3 × 2 at 4000 cents. No reset was performed. | Pass; exactly one quote added |
 | 2026-09-19 | `SQA-TASK-0018` / `AC-SQA-020` | `inspect_observability.py --last --events` | The invocation is `completed`; events include the `create_quote` approval and tool completion. | Pass |
+| 2026-09-19 | `SQA-TASK-0019`–`SQA-TASK-0021` / `AC-SQA-021`–`AC-SQA-023` | `.venv\Scripts\python.exe -m pytest examples/smart_quote_agent/tests -q` | 159 passed, 2 skipped. LangSmith emitted a non-fatal network/compression warning because the environment proxy blocks its external telemetry connection. | Pass |
+| 2026-09-19 | `SQA-TASK-0019`–`SQA-TASK-0021` / `AC-SQA-011`, `AC-SQA-021`–`AC-SQA-023` | Strict mypy; Ruff check/format; `git diff --check` | Mypy: no issues in 28 source files; Ruff check passed; 29 files formatted; no diff whitespace errors. | Pass |
+| 2026-09-19 | `SQA-TASK-0019` / `AC-SQA-021` | `inspect_observability.py --task task_874639f3ca994eb68375a7f79c1cb9b2`; `--latency --limit 10`; final `--last --events` review | The task timeline separates the 13-ms customer tool, 3.54-s quote approval wait, 3.90-s discount wait, 4.35-s initial structured call, and 4.49-s controlled-agent runtime. Updated `--last` labels approval as invocation-scoped and discount as interaction-scoped, without sibling model spans. | Pass |
+| 2026-09-19 | `SQA-TASK-0021` / `AC-SQA-023` | Live CLI: staff login; ambiguous Notebook Pro/Wireless Mouse request; list customers; choose Initech; accept zero discount; decline approval | Reached review with 1 Notebook Pro, 2 Wireless Mouse, USD 1,280 subtotal/total and 0% discount. The initial quote turn had exactly one structured router invocation; quote persistence was declined. Read-only quote count remained 9 before and after. | Pass; no business write |
 
 ### Diagnostic Interpretation (Facts vs. Hypothesis)
 

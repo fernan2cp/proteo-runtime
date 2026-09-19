@@ -9,13 +9,14 @@
    examples/smart_quote_agent/
    ```
 2. The current implementation request explicitly permits updates only to the existing active SDD package at `docs/plans/active/example-smart-quote-agent/` in addition to the example directory.
-3. The current approved provider-hardening scope additionally permits implementation changes only in these runtime files and their existing unit-test files:
+3. The completed provider-hardening task had a narrow additional implementation/test scope in these runtime files; it does not expand the current latency task:
    - `src/proteo_runtime/providers/codex/_structured.py`
    - `src/proteo_runtime/providers/codex/_runner.py`
    - `tests/unit/test_codex_structured.py`
    - `tests/unit/test_codex_provider.py`
-4. No other `src/*` or repository-level test file may be changed. No configuration files, public runtime contracts, or business database schema may be changed. Existing example inspector, tests, scripts, and documentation remain within `examples/smart_quote_agent/`.
-5. Pre-existing worktree changes must be preserved and must not be represented as changes made by this implementation.
+4. The current latency implementation and tests remain within `examples/smart_quote_agent/`. No `src/*`, repository-level test file, configuration file, public runtime contract, provider/model configuration, or business database schema may be changed. Existing example inspector, tests, scripts, and documentation remain within `examples/smart_quote_agent/`.
+5. The latency work reuses the existing `runtime_events` schema; it adds no table, column, index, or migration.
+6. Pre-existing worktree changes must be preserved and must not be represented as changes made by this implementation.
 
 ### SQA-REQ-002 — SQLite Domain Schema and Deterministic Initialization
 
@@ -204,3 +205,26 @@
 3. If the structured wrapper buffered runtime events while consuming a turn that fails, publish the buffered terminal turn and invocation failure events exactly once before re-raising the original mapped runtime error. Successful event publication behavior must remain unchanged.
 4. Provider diagnostics and terminal events remain correlated with the current invocation and interaction. No public Proteo Runtime API, business schema, or provider cleanup behavior is changed.
 5. Validation must cover the production `TurnDecision` schema, an exactly-one host validation failure/success pair, a failed terminal provider event with safe code/status and no message leakage, exactly-once failure event publication, and successful completion behavior.
+
+### SQA-REQ-021 — Interaction and Model Latency Observability
+
+1. Record metadata-only `host.interaction_started/completed`, `host.model_call_started/completed`, and discount `host.hitl_started/resolved` events using the existing local `runtime_events` store. Preserve the existing quote-approval events. Do not add a table, column, index, migration, or business-database change for this requirement.
+2. Assign a unique `call_id` to every model call and propagate it through existing `InvocationConfig.metadata` with the interaction ID, stage, and available task/workflow IDs. Events may contain only correlation identifiers, stage, model/profile, bounded status/result code, durations, token counts, and cache counts; never prompts, responses, tool arguments, credentials, or free-form exception text.
+3. The inspector derives host preparation time (host call start to runtime invocation start), invocation time (runtime invocation start to terminal event), time to first text delta when available, and terminal latency for structured output when no deltas are emitted. For a direct `RuntimeModel` invocation, invocation time is model-call time; a controlled `RuntimeTask` span may contain internal tool cycles, which must be annotated and reported separately rather than described as pure model time. Report each tool round's pre-tool and post-tool time, tool execution time, and approval/HITL wait separately.
+4. Token usage uses the latest usage snapshot for each invocation rather than summing cumulative snapshots. Cache ratio is cached input tokens divided by input tokens for the selected invocation or aggregate.
+5. `--last`, `--interaction`, and `--task` expose applicable latency breakdowns and clearly identify wall durations that include HITL. `--latency` summarizes the latest `--limit N` invocations grouped by stage/model/profile with count, p50, p95, and cache ratio; `--limit` defaults to 10 and percentiles use nearest-rank calculation.
+
+### SQA-REQ-022 — Stable, Cache-Eligible Prompt Prefixes
+
+1. Structured turn decisions use one byte-stable system prompt and one unchanged `TurnDecision` schema across new, pending, and edited quote workflows. The system prompt contains only static intent, extraction, edit, and non-invention rules.
+2. Identity role, prior language, workflow/revision, customer/line state, candidates, and current user input are sent as deterministic compact JSON in the user message using recursive lexicographic key sorting, `ensure_ascii=False`, and separators `(',', ':')`; preserve array order and encode as UTF-8. Cap the serialized dynamic payload at 16,384 bytes. If the bound is exceeded, do not truncate silently or call the model; preserve the workflow and return a localized host clarification.
+3. `controlled_agent` task instructions keep a stable prefix; the identity role instruction is appended once as the final suffix when creating the task. Do not replay host-side history into the task.
+4. Validation proves byte-for-byte equality of the structured system prompt and schema across different interaction contexts. Live cache hits are measured when reported by the provider but are not required because cache availability is provider-controlled.
+
+### SQA-REQ-023 — Single-Inference Turn Classification and Quote Extraction
+
+1. The structured turn decision returns intent, optional detected language, and either an optional `QuoteRequest` or optional `QuotePatch` in the same model call. It must not return both request and patch.
+2. For intents other than `quote_create`, both quote payloads must be null. A `quote_create` response may contain a complete/partial `QuoteRequest`, a pending-workflow `QuotePatch`, or neither when the user supplied no quote details.
+3. A new or fully reformulated quote uses `QuoteRequest`; a fully reformulated request replaces any pending workflow with a fresh `workflow_id` and invalidates its draft. Edits/continuations to an existing quote workflow use `QuotePatch`. Missing fields remain explicitly missing for the host workflow to clarify.
+4. The existing `quote_planner` graph node becomes a host-side reducer/initializer that consumes the structured result; it makes no second model call. Host catalog/customer resolution, pricing, authorization, workflow revisions, HITL, approval, and persistence remain authoritative.
+5. Do not expand keyword rules, regexes, or deterministic fast paths to avoid LLM use. The ambiguous baseline phrase must continue through Codex, with exactly one structured inference for its classification and extraction.
