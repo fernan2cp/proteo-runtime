@@ -505,6 +505,15 @@ def render_interaction_details(
         invocation_id = str(event.get("invocation_id") or "-")
         stage = metadata.get("stage")
         suffix = f" stage={stage}" if isinstance(stage, str) else ""
+        provider_status = metadata.get("provider_status")
+        provider_code = metadata.get("provider_error_code")
+        provider_http = metadata.get("provider_http_status")
+        if isinstance(provider_status, str):
+            suffix += f" provider_status={_safe_display_value(provider_status, '-')}"
+        if isinstance(provider_code, str):
+            suffix += f" provider_error_code={_safe_display_value(provider_code, '-')}"
+        if isinstance(provider_http, int) and not isinstance(provider_http, bool):
+            suffix += f" provider_http_status={provider_http}"
         lines.append(
             f"{_format_time_hhmmss(event.get('occurred_at'))}  {kind:<24} {invocation_id}{suffix}"
         )
@@ -518,6 +527,19 @@ def render_interaction_details(
             exception_type = _safe_display_value(metadata.get("exception_type"), "unknown")
             code = _safe_display_value(metadata.get("code"), "-")
             lines.append(f"stage={stage} exception={module}.{exception_type} code={code}")
+            provider_status = _safe_display_value(metadata.get("provider_status"), "-")
+            provider_code = _safe_display_value(metadata.get("provider_error_code"), "-")
+            provider_http = metadata.get("provider_http_status")
+            if provider_status != "-" or provider_code != "-" or isinstance(provider_http, int):
+                safe_http = (
+                    str(provider_http)
+                    if isinstance(provider_http, int) and not isinstance(provider_http, bool)
+                    else "-"
+                )
+                lines.append(
+                    "provider: "
+                    f"status={provider_status} error={provider_code} http_status={safe_http}"
+                )
             causes = metadata.get("cause_types")
             if isinstance(causes, list):
                 safe_causes = [

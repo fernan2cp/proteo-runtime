@@ -514,6 +514,34 @@ def test_interaction_inspector_correlates_errors_and_preserves_success_status(
     )
     insert_runtime_event(
         clean_obs_db,
+        event_id="runtime-interaction-turn-failed",
+        event_kind="turn_failed",
+        occurred_at="2026-09-19T12:10:00.500Z",
+        invocation_id="inv-interaction-error",
+        interaction_id="interaction-error",
+        task_id="task-interaction-error",
+        metadata={
+            "provider_status": "failed",
+            "provider_error_code": "responseStreamDisconnected",
+            "provider_http_status": 400,
+        },
+    )
+    insert_runtime_event(
+        clean_obs_db,
+        event_id="runtime-interaction-invocation-failed",
+        event_kind="invocation_failed",
+        occurred_at="2026-09-19T12:10:00.750Z",
+        invocation_id="inv-interaction-error",
+        interaction_id="interaction-error",
+        task_id="task-interaction-error",
+        metadata={
+            "provider_status": "failed",
+            "provider_error_code": "responseStreamDisconnected",
+            "provider_http_status": 400,
+        },
+    )
+    insert_runtime_event(
+        clean_obs_db,
         event_id="host-interaction-error",
         event_kind="host.turn_error",
         occurred_at="2026-09-19T12:10:01.000Z",
@@ -525,6 +553,9 @@ def test_interaction_inspector_correlates_errors_and_preserves_success_status(
             "exception_module": "provider.errors",
             "exception_type": "TransportError",
             "code": "provider.transport_timeout",
+            "provider_status": "failed",
+            "provider_error_code": "responseStreamDisconnected",
+            "provider_http_status": 400,
             "cause_types": ["builtins.TimeoutError"],
             "frames": [
                 {
@@ -553,6 +584,10 @@ def test_interaction_inspector_correlates_errors_and_preserves_success_status(
     assert "stage=quote_planner" in failed_output
     assert "provider.errors.TransportError" in failed_output
     assert "provider.transport_timeout" in failed_output
+    assert "provider_status=failed" in failed_output
+    assert "provider_error_code=responseStreamDisconnected" in failed_output
+    assert "provider_http_status=400" in failed_output
+    assert "error=responseStreamDisconnected http_status=400" in failed_output
     assert "graph.py:quote_planner:40" in failed_output
     assert "must not be rendered" not in failed_output
     assert "Status:     completed" in success_output

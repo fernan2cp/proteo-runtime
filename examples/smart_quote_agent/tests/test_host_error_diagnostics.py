@@ -10,6 +10,8 @@ from error_diagnostics import sanitize_exception
 from observability import ObservabilityManager
 from telemetry_db import fetch_interaction_events
 
+from proteo_runtime.core.errors import RuntimeUnavailableError
+
 
 class SimulatedProviderError(RuntimeError):
     """Provider-shaped error carrying a machine-readable stable code."""
@@ -32,6 +34,32 @@ def test_external_traceback_path_is_reduced_to_its_basename(tmp_path: Path) -> N
     assert "<external>/transport.py" in summary_json
     assert "sensitive-user" not in summary_json
     assert "private exception content" not in summary_json
+
+
+def test_provider_failure_metadata_is_allowlisted_and_text_is_redacted(tmp_path: Path) -> None:
+    """Retain safe provider classification while excluding arbitrary error details."""
+    error = RuntimeUnavailableError(
+        "sensitive provider message",
+        details={
+            "provider_status": "failed",
+            "provider_error_code": "responseStreamDisconnected",
+            "provider_http_status": 400,
+            "message": "sensitive message field",
+            "additional_details": "sensitive additional details",
+            "unexpected": "must not be copied",
+        },
+    )
+
+    summary = sanitize_exception(error, repository_root=tmp_path)
+    summary_json = json.dumps(summary)
+
+    assert summary["provider_status"] == "failed"
+    assert summary["provider_error_code"] == "responseStreamDisconnected"
+    assert summary["provider_http_status"] == 400
+    assert "sensitive provider message" not in summary_json
+    assert "sensitive message field" not in summary_json
+    assert "sensitive additional details" not in summary_json
+    assert "must not be copied" not in summary_json
 
 
 @pytest.mark.asyncio

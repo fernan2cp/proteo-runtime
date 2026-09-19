@@ -43,6 +43,30 @@ def get_cli_prompt(user: AuthenticatedUser | None) -> str:
     return f"[{user.username}] > "
 
 
+def _print_startup_banner(*, offline: bool) -> None:
+    """Explain the demo, access modes, credentials, and basic commands."""
+    mode_label = "Anónimo (sin conexión)" if offline else "Anónimo"
+    print("=" * 60)
+    print("Proteo Runtime - Smart Quote Agent")
+    print("=" * 60)
+    print(f"\nModo actual: {mode_label}")
+    if offline:
+        print("Ejecución offline: el agente no se conecta a Codex.\n")
+    print("Este demo permite consultar el catálogo activo y preparar cotizaciones.")
+    print("Los precios se calculan desde el catálogo local de demostración.")
+    print("\nModos de acceso:")
+    print("- Anónimo: consulta productos y calcula vistas preliminares; no guarda cotizaciones.")
+    print("- Cliente: lo mismo, asociado a su empresa; no crea cotizaciones guardadas.")
+    print("- Staff: puede listar clientes, ver cotizaciones y crear con aprobación.")
+    print("\nPara iniciar sesión, escribí 'login' y completá usuario y contraseña.")
+    print("La contraseña se ingresa oculta. Credenciales de este demo (todas usan 1234):")
+    print("- Staff: staff")
+    print("- Clientes: client1 (Acme Corp.), client2 (Globex LLC),")
+    print("  client3 (Initech), client4 (Northwind Traders)")
+    print("Son cuentas de demostración; no las uses fuera de este ejemplo.")
+    print("\nEscribí 'logout' para volver al modo anónimo y 'exit' para salir.\n")
+
+
 async def _run_repl_loop(
     app_graph: Any,
     *,
@@ -190,14 +214,7 @@ async def run_cli_loop(
         return prompt_discount_interactive(cents, input_func=input_func, language=language)
 
     if interactive:
-        mode_label = "anonymous (offline)" if offline else "anonymous"
-        print("=" * 60)
-        print("Proteo Runtime - Smart Quote Agent")
-        print("=" * 60)
-        print(f"\nMode: {mode_label}")
-        print("Type 'login' to sign in.")
-        print("Type 'logout' to sign out.")
-        print("Type 'exit' to quit.\n")
+        _print_startup_banner(offline=offline)
 
     obs_mgr = ObservabilityManager()
 

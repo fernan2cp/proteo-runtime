@@ -42,7 +42,7 @@ _DEMO_DIR = Path(__file__).resolve().parent.parent
 if str(_DEMO_DIR) not in sys.path:
     sys.path.insert(0, str(_DEMO_DIR))
 
-from app import _run_repl_loop  # noqa: E402
+from app import _print_startup_banner, _run_repl_loop  # noqa: E402
 from auth import (  # noqa: E402
     authenticate_user_interactive,
 )
@@ -1601,6 +1601,32 @@ async def test_hardening_offline_quote_preview_rejects_unassociated_quantity(
     assert "cantidad 3" in output
     assert "no calculé el subtotal" in output
     assert "subtotal: $" not in output
+
+
+def test_startup_banner_explains_access_modes_and_demo_credentials(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Show how to use anonymous, client, and staff demo access at startup."""
+    _print_startup_banner(offline=False)
+    standard_output = capsys.readouterr().out
+
+    assert "Modo actual: Anónimo" in standard_output
+    assert "Anónimo: consulta productos" in standard_output
+    assert "Cliente: lo mismo, asociado a su empresa" in standard_output
+    assert "Staff: puede listar clientes" in standard_output
+    assert "escribí 'login'" in standard_output
+    assert "Credenciales de este demo (todas usan 1234)" in standard_output
+    assert "Staff: staff" in standard_output
+    assert "client1 (Acme Corp.)" in standard_output
+    assert "client2 (Globex LLC)" in standard_output
+    assert "client3 (Initech)" in standard_output
+    assert "client4 (Northwind Traders)" in standard_output
+    assert "volver al modo anónimo" in standard_output
+
+    _print_startup_banner(offline=True)
+    offline_output = capsys.readouterr().out
+    assert "Modo actual: Anónimo (sin conexión)" in offline_output
+    assert "el agente no se conecta a Codex" in offline_output
 
 
 @pytest.mark.asyncio

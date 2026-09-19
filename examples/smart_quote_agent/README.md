@@ -532,7 +532,7 @@ python init_observability.py --reset
 Output:
 ```text
 [OK] Initialized database schema at: data/demo.sqlite3
-[OK] Seeded 4 customers, 3 users, and 6 products.
+[OK] Seeded 4 customers, 5 users, and 6 products.
 [OK] Initialized telemetry database at: data/observability.sqlite3
 ```
 
@@ -551,12 +551,26 @@ python app.py
 Proteo Runtime - Smart Quote Agent
 ============================================================
 
-Mode: anonymous
-Type 'login' to sign in.
-Type 'logout' to sign out.
-Type 'exit' to quit.
+Modo actual: Anónimo
 
-> what products do you have?
+Este demo permite consultar el catálogo activo y preparar cotizaciones.
+Los precios se calculan desde el catálogo local de demostración.
+
+Modos de acceso:
+- Anónimo: consulta productos y calcula vistas preliminares; no guarda cotizaciones.
+- Cliente: lo mismo, asociado a su empresa; no crea cotizaciones guardadas.
+- Staff: puede listar clientes, ver cotizaciones y crear con aprobación.
+
+Para iniciar sesión, escribí 'login' y completá usuario y contraseña.
+La contraseña se ingresa oculta. Credenciales de este demo (todas usan 1234):
+- Staff: staff
+- Clientes: client1 (Acme Corp.), client2 (Globex LLC),
+  client3 (Initech), client4 (Northwind Traders)
+Son cuentas de demostración; no las uses fuera de este ejemplo.
+
+Escribí 'logout' para volver al modo anónimo y 'exit' para salir.
+
+> ¿Qué productos activos hay?
 ```
 
 The agent invokes the controlled agent model, queries the host catalog tool, and presents the available products.

@@ -4,11 +4,32 @@ from __future__ import annotations
 
 import re
 import traceback
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 _SAFE_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]{0,119}$")
 _SAFE_ERROR_CODE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$")
+_SAFE_PROVIDER_CODES = frozenset(
+    {
+        "contextWindowExceeded",
+        "sessionBudgetExceeded",
+        "usageLimitExceeded",
+        "serverOverloaded",
+        "cyberPolicy",
+        "internalServerError",
+        "unauthorized",
+        "badRequest",
+        "threadRollbackFailed",
+        "sandboxError",
+        "other",
+        "httpConnectionFailed",
+        "responseStreamConnectionFailed",
+        "responseStreamDisconnected",
+        "responseTooManyFailedAttempts",
+        "activeTurnNotSteerable",
+    }
+)
 
 
 def sanitize_exception(
@@ -38,6 +59,7 @@ def sanitize_exception(
     code = _stable_error_code(error)
     if code is not None:
         summary["code"] = code
+    summary.update(_safe_provider_diagnostics(error))
     return summary
 
 
@@ -56,6 +78,29 @@ def _stable_error_code(error: BaseException) -> str | None:
         if isinstance(value, str) and _SAFE_ERROR_CODE.fullmatch(value):
             return value
     return None
+
+
+def _safe_provider_diagnostics(error: BaseException) -> dict[str, str | int]:
+    """Copy only known-safe Codex status fields from runtime error details."""
+    details = getattr(error, "details", None)
+    if not isinstance(details, Mapping):
+        return {}
+
+    safe: dict[str, str | int] = {}
+    status = details.get("provider_status")
+    if isinstance(status, str) and status in {"failed", "interrupted"}:
+        safe["provider_status"] = status
+    provider_code = details.get("provider_error_code")
+    if isinstance(provider_code, str) and provider_code in _SAFE_PROVIDER_CODES:
+        safe["provider_error_code"] = provider_code
+    http_status = details.get("provider_http_status")
+    if (
+        isinstance(http_status, int)
+        and not isinstance(http_status, bool)
+        and 100 <= http_status <= 599
+    ):
+        safe["provider_http_status"] = http_status
+    return safe
 
 
 def _cause_types(error: BaseException) -> list[str]:
