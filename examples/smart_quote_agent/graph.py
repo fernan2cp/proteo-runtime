@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 import unicodedata
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import replace
 from inspect import signature
+from time import perf_counter
 from typing import Any, Literal, cast
 
 from auth import authenticate_user_interactive, get_permission_policy_for_user
@@ -97,6 +100,96 @@ _PREVIEW_QUANTITIES = {
     "five": 5,
     "cinco": 5,
 }
+
+_TURN_DECISION_SYSTEM_PROMPT = """You classify turns for the Smart Quote Agent and extract quote data in the same response.
+Return only the requested structured TurnDecision.
+
+Supported intents: login, logout, help, acknowledgement, catalog_query, quote_preview,
+quote_history, customer_query, quote_create, out_of_scope, clarification.
+
+Classify the requested action, even when the current role is not allowed to perform it.
+An explicit command to sign in is login; a question about how to sign in is help. Use
+catalog_query for product, availability, or price questions; quote_preview for a
+non-persistent calculation; quote_history to inspect saved quotes; customer_query to
+list or search customers; and out_of_scope only for requests unrelated to this application.
+Do not map programming, web research, files, image generation, or unrelated knowledge
+questions to a supported action.
+
+For quote_create, use quote_request for a new quote or an explicit complete restatement.
+Use quote_patch only when a pending quote is supplied and the turn makes a targeted edit.
+Never return both. A customer-only continuation uses set_customer. A partial new request
+uses quote_request with only the explicitly stated customer and items. Leave omitted values
+null or empty; never invent a customer, product, quantity, price, permission, or discount.
+When a singular article such as "a", "an", "un", or "una" directly specifies one product,
+extract quantity 1; an explicitly stated numeric quantity always takes precedence.
+
+For pending quote edits, target lines only by their supplied stable line_id. Replace only the
+named product line and preserve its quantity. A short quantity applies only to a unique line
+missing quantity. Additions use add_item; corrections use replace_item; removals use
+remove_item. Resolve pronouns only when supplied candidates identify one unambiguous target.
+If a query is read-only or unrelated, return its appropriate intent with quote_request and
+quote_patch null, preserving any pending quote unchanged.
+
+Use the current turn's language when clear; otherwise return null so the host can retain it.
+"""
+_MAX_TURN_CONTEXT_BYTES = 16_384
+
+
+class TurnDecisionContextTooLargeError(ValueError):
+    """Raised when dynamic structured-decision context exceeds its byte limit."""
+
+
+def build_turn_decision_input(state: DemoState, user_input: str) -> RuntimeInput:
+    """Build stable-prefix model input with bounded, deterministic turn context.
+
+    Args:
+        state: Current host-owned conversation and quote state.
+        user_input: Current raw user turn.
+
+    Returns:
+        RuntimeInput whose fixed system prompt is followed by ordered JSON context.
+    """
+    user = state.get("authenticated_user")
+    role = user.role if user is not None else "anonymous"
+    workflow = state.get("quote_workflow")
+    pending_quote: dict[str, Any] | None = None
+    if workflow is not None:
+        pending_quote = {
+            "workflow_id": workflow.workflow_id,
+            "revision": workflow.revision,
+            "phase": workflow.phase,
+            "customer_query": workflow.customer_query,
+            "customer_name": workflow.customer_name,
+            "items": [
+                {
+                    "line_id": item.line_id,
+                    "product_query": item.product_query,
+                    "canonical_name": item.canonical_name,
+                    "quantity": item.quantity,
+                    "status": item.status,
+                    "candidates": item.candidates,
+                }
+                for item in workflow.items
+            ],
+            "last_candidates": workflow.last_candidates,
+        }
+    payload = {
+        "available_actions": sorted(allowed_actions(user)),
+        "identity_role": role,
+        "pending_quote": pending_quote,
+        "previous_language": state.get("language"),
+        "user_input": user_input,
+    }
+    serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    if len(serialized.encode("utf-8")) > _MAX_TURN_CONTEXT_BYTES:
+        raise TurnDecisionContextTooLargeError()
+    return RuntimeInput(
+        (
+            RuntimeMessage("system", (TextContent(_TURN_DECISION_SYSTEM_PROMPT),)),
+            RuntimeMessage("user", (TextContent(serialized),)),
+        )
+    )
+
 
 _PREVIEW_IGNORED_TERMS = frozenset(
     {
@@ -1130,6 +1223,8 @@ def _apply_quote_turn(
     req: QuoteRequest | None,
     text: str,
     patch: QuotePatch | None = None,
+    *,
+    replace_existing: bool = False,
 ) -> QuoteWorkflowState:
     """Apply one user turn to a quote workflow without dropping unrelated lines.
 
@@ -1138,6 +1233,7 @@ def _apply_quote_turn(
         req: Values explicitly extracted from the current turn.
         text: Raw current user turn used for deterministic correction syntax.
         patch: Optional model-proposed patch, revalidated by the host reducer.
+        replace_existing: Whether the validated request is an explicit full restatement.
 
     Returns:
         Updated workflow with a new revision when continuing an existing quote.
@@ -1158,21 +1254,8 @@ def _apply_quote_turn(
             for term in ("presupuesto", "cotizacion", "cotización", "quote", "cotizar")
         )
     )
-    if complete_request:
-        current.customer_query = (
-            req.customer.strip() if req and req.customer else current.customer_query
-        )
-        current.customer_id = None
-        current.customer_name = None
-        current.items = [
-            QuoteWorkflowItem(product_query=item.product, quantity=item.quantity)
-            for item in incoming
-        ]
-        current.focused_line_id = current.items[-1].line_id if current.items else None
-        current.revision = workflow.revision + 1
-        current.phase = "collecting"
-        current.last_candidates = []
-        return current
+    if (complete_request or replace_existing) and req is not None:
+        return _workflow_from_request(req)
 
     if re.search(r"\b(ese|esa|eso|that|it)\b", lowered):
         proposed = _quote_patch_from_text(current, text, req)
@@ -1306,7 +1389,10 @@ def create_demo_graph(
             return
 
     def _invocation_config(
-        state: DemoState, stage: str, task_id: str | None = None
+        state: DemoState,
+        stage: str,
+        task_id: str | None = None,
+        call_id: str | None = None,
     ) -> InvocationConfig:
         """Build safe per-call correlation metadata for Proteo invocations."""
         active_task: Any = task_id
@@ -1322,6 +1408,8 @@ def create_demo_graph(
             active_task = active_context_agent
 
         metadata: dict[str, str] = {"stage": stage}
+        if call_id is not None:
+            metadata["call_id"] = call_id
         interaction_id = state.get("interaction_id")
         if isinstance(interaction_id, str):
             metadata["interaction_id"] = interaction_id
@@ -1336,18 +1424,121 @@ def create_demo_graph(
             metadata["workflow_id"] = workflow_id
         return InvocationConfig(metadata=metadata)
 
+    def _emit_host_timing_event(
+        state: DemoState,
+        event_kind: str,
+        stage: str,
+        *,
+        result_code: str | None = None,
+        duration_ms: float | None = None,
+        call_id: str | None = None,
+        task_id: str | None = None,
+    ) -> None:
+        """Emit one content-free, correlated timing event on a best-effort basis.
+
+        Args:
+            state: Current host-owned graph state.
+            event_kind: Fixed event name from the application timing vocabulary.
+            stage: Stable workflow stage identifier.
+            result_code: Optional non-sensitive completion outcome.
+            duration_ms: Optional measured duration in milliseconds.
+            call_id: Optional stable identifier for one runtime call.
+            task_id: Optional task identifier known by the caller.
+        """
+        if actual_host_event_sink is None:
+            return
+        metadata = dict(_invocation_config(state, stage, task_id, call_id).metadata)
+        metadata["event_kind"] = event_kind
+        metadata["status"] = "running" if event_kind.endswith("_started") else "completed"
+        if result_code is not None:
+            metadata["result_code"] = result_code
+            metadata["status"] = "failed" if result_code.endswith("failed") else "completed"
+        if duration_ms is not None:
+            metadata["duration_ms"] = max(0.0, duration_ms)
+        try:
+            actual_host_event_sink(metadata)
+        except Exception:
+            # Timing telemetry must never affect model or workflow execution.
+            return
+
     async def _invoke_with_diagnostics(
         target: Any, input_value: Any, state: DemoState, stage: str, task_id: str | None = None
     ) -> Any:
-        """Invoke one runtime model/task with correlation and preserve its error stage."""
+        """Invoke one runtime model/task with correlation and measured host timing."""
+        call_id = uuid.uuid4().hex
+        started_at = perf_counter()
+        _emit_host_timing_event(
+            state,
+            "host.model_call_started",
+            stage,
+            call_id=call_id,
+            task_id=task_id,
+        )
         try:
-            return await target.ainvoke(
+            result = await target.ainvoke(
                 input_value,
-                config=_invocation_config(state, stage, task_id),
+                config=_invocation_config(state, stage, task_id, call_id),
             )
         except Exception as error:
+            _emit_host_timing_event(
+                state,
+                "host.model_call_completed",
+                stage,
+                result_code="model_call_failed",
+                duration_ms=(perf_counter() - started_at) * 1000,
+                call_id=call_id,
+                task_id=task_id,
+            )
             _mark_error_stage(error, stage)
             raise
+        _emit_host_timing_event(
+            state,
+            "host.model_call_completed",
+            stage,
+            result_code="model_call_completed",
+            duration_ms=(perf_counter() - started_at) * 1000,
+            call_id=call_id,
+            task_id=task_id,
+        )
+        return result
+
+    async def _structured_turn_decision(state: DemoState, user_input: str) -> TurnDecision:
+        """Classify and extract one turn using the stable structured prompt/schema pair.
+
+        Args:
+            state: Current host-owned graph state.
+            user_input: Raw user turn to classify and extract.
+
+        Returns:
+            Host-validated structured turn decision.
+        """
+        assert active_structured_model is not None
+        structured_router = active_structured_model.with_structured_output(TurnDecision)
+        result = await _invoke_with_diagnostics(
+            structured_router,
+            build_turn_decision_input(state, user_input),
+            state,
+            "intent_router",
+        )
+        return cast(TurnDecision, result.value)
+
+    def _oversized_context_decision(user_input: str, state: DemoState) -> dict[str, Any]:
+        """Return a localized clarification marker without invoking the model.
+
+        Args:
+            user_input: Current user turn used only for language detection.
+            state: Current state whose quote workflow must remain unchanged.
+
+        Returns:
+            Router result that scope handling renders as a bounded-context clarification.
+        """
+        return {
+            "intent": "clarification",
+            "language": resolve_language(user_input, state.get("language")),
+            "quote_request": None,
+            "quote_patch": None,
+            "router_result_code": "turn_context_too_large",
+        }
 
     def _record_host_error(error: Exception, state: DemoState, stage: str) -> None:
         """Record a swallowed host exception without changing the business result."""
@@ -1409,23 +1600,45 @@ def create_demo_graph(
             # Diagnostics must not change business workflow outcomes.
             return
 
-    def prompt_discount(subtotal_cents: int, language: str) -> int:
+    def prompt_discount(subtotal_cents: int, language: str, state: DemoState) -> int:
         """Call a compatible discount prompter with the active language when supported.
 
         Args:
             subtotal_cents: Authoritative subtotal in integer cents.
             language: Stable interaction language.
+            state: Current graph state used only for event correlation.
 
         Returns:
             Validated discount percentage.
         """
+        hitl_started_at = perf_counter()
+        _emit_host_timing_event(state, "host.hitl_started", "discount_hitl")
         try:
             accepts_language = "language" in signature(actual_discount_prompter).parameters
         except (TypeError, ValueError):
             accepts_language = False
-        if accepts_language:
-            return int(actual_discount_prompter(subtotal_cents, language=language))
-        return int(actual_discount_prompter(subtotal_cents))
+        try:
+            if accepts_language:
+                result = int(actual_discount_prompter(subtotal_cents, language=language))
+            else:
+                result = int(actual_discount_prompter(subtotal_cents))
+        except Exception:
+            _emit_host_timing_event(
+                state,
+                "host.hitl_resolved",
+                "discount_hitl",
+                result_code="hitl_failed",
+                duration_ms=(perf_counter() - hitl_started_at) * 1000,
+            )
+            raise
+        _emit_host_timing_event(
+            state,
+            "host.hitl_resolved",
+            "discount_hitl",
+            result_code="hitl_resolved",
+            duration_ms=(perf_counter() - hitl_started_at) * 1000,
+        )
+        return result
 
     def review_quote(draft: QuoteDraft, language: str) -> None:
         """Call the review renderer with language when its signature supports it.
@@ -1446,7 +1659,6 @@ def create_demo_graph(
     async def _intent_router_decision_node(state: DemoState) -> dict[str, Any]:
         """Classify user intent via deterministic rules or low-level structured classifier."""
         user_input = state.get("input", "")
-        user = state.get("authenticated_user")
         workflow = state.get("quote_workflow")
         pending_action = state.get("pending_action")
 
@@ -1485,18 +1697,14 @@ def create_demo_graph(
                 return {
                     "intent": pending_heuristic,
                     "language": resolve_language(user_input, state.get("language")),
+                    "quote_request": None,
                     "quote_patch": None,
                 }
             if pending_heuristic in {"login", "logout"}:
                 return {
                     "intent": pending_heuristic,
                     "language": resolve_language(user_input, state.get("language")),
-                    "quote_patch": None,
-                }
-            if pending_heuristic == "quote_create":
-                return {
-                    "intent": "quote_create",
-                    "language": resolve_language(user_input, state.get("language")),
+                    "quote_request": None,
                     "quote_patch": None,
                 }
             if workflow is not None:
@@ -1511,9 +1719,26 @@ def create_demo_graph(
                     return {
                         "intent": "quote_create",
                         "language": resolve_language(user_input, state.get("language")),
+                        "quote_request": None,
                         "quote_patch": None,
                     }
                 heuristic_request = parse_quote_request_heuristic(user_input)
+                complete_request = bool(
+                    heuristic_request is not None
+                    and heuristic_request.customer
+                    and heuristic_request.items
+                    and any(
+                        term in clean
+                        for term in ("presupuesto", "cotizacion", "cotización", "quote", "cotizar")
+                    )
+                )
+                if complete_request:
+                    return {
+                        "intent": "quote_create",
+                        "language": resolve_language(user_input, state.get("language")),
+                        "quote_request": heuristic_request,
+                        "quote_patch": None,
+                    }
                 deterministic_patch = _quote_patch_from_text(
                     workflow,
                     user_input,
@@ -1523,121 +1748,49 @@ def create_demo_graph(
                     return {
                         "intent": "quote_create",
                         "language": resolve_language(user_input, state.get("language")),
+                        "quote_request": None,
                         "quote_patch": deterministic_patch,
                     }
             if active_structured_model is not None:
-                lines = (
-                    [
-                        {
-                            "line_id": item.line_id,
-                            "product": item.product_query,
-                            "quantity": item.quantity,
-                            "candidates": item.candidates,
-                        }
-                        for item in workflow.items
-                    ]
-                    if workflow is not None
-                    else []
-                )
-                instructions = (
-                    "Classify this turn in the Smart Quote Agent. A quote workflow is pending.\n"
-                    "Return a read-only intent when the user asks a product/catalog, customer, quote preview, quote history, or help question.\n"
-                    "Keep clearly unrelated requests as out_of_scope; do not reinterpret them as quote edits.\n"
-                    "Otherwise use quote_create and propose only explicit QuotePatch operations.\n"
-                    "Use the exact line_id for replace_item, set_quantity, or remove_item when the target is clear.\n"
-                    "Do not guess targets or product names. Leave quote_patch null when ambiguous.\n"
-                    "Allowed patch operations: set_customer (target is customer query), add_item, replace_item, set_quantity, remove_item.\n"
-                    f"Current quote lines: {lines!r}\n"
-                    f"Current customer query: {workflow.customer_query if workflow is not None else None!r}"
-                )
-                runtime_input = RuntimeInput(
-                    (
-                        RuntimeMessage("system", (TextContent(instructions),)),
-                        RuntimeMessage("user", (TextContent(user_input),)),
-                    )
-                )
-                structured_router = active_structured_model.with_structured_output(TurnDecision)
-                res = await _invoke_with_diagnostics(
-                    structured_router,
-                    runtime_input,
-                    state,
-                    "intent_router",
-                )
-                decision = cast(TurnDecision, res.value)
-                if decision.intent != "quote_create":
-                    return {
-                        "intent": decision.intent,
-                        "language": decision.language
-                        or resolve_language(user_input, state.get("language")),
-                        "quote_patch": None,
-                    }
+                try:
+                    decision = await _structured_turn_decision(state, user_input)
+                except TurnDecisionContextTooLargeError:
+                    return _oversized_context_decision(user_input, state)
                 return {
-                    "intent": "quote_create",
+                    "intent": decision.intent,
                     "language": decision.language
                     or resolve_language(user_input, state.get("language")),
-                    "quote_patch": getattr(decision, "quote_patch", None),
+                    "quote_request": decision.quote_request,
+                    "quote_patch": decision.quote_patch,
                 }
             return {
                 "intent": "clarification",
                 "language": resolve_language(user_input, state.get("language")),
+                "quote_request": None,
                 "quote_patch": None,
             }
 
         # 1. Deterministic heuristic check
         heuristic = classify_intent_heuristic(user_input)
-        if heuristic is not None:
+        if heuristic is not None and heuristic != "quote_create":
             return {"intent": heuristic}
 
-        # 2. Ambiguous phrasing: invoke structured model if available
+        # 2. Ambiguous turns and quote requests use one combined structured decision.
         if active_structured_model is not None:
-            role_label = user.role if user is not None else "anonymous"
-            available = sorted(allowed_actions(user))
-            instructions = (
-                "You classify requests for the Smart Quote Agent.\n"
-                f"Current access level: {role_label}\n"
-                "Recognized application actions:\n"
-                "- 'login': Explicit request to initiate login/sign in right now (e.g. 'login', 'sign in', 'iniciar sesión'). "
-                "Informational questions about how to log in (e.g. 'How do I log in?', 'Cómo inicio sesión?') must be classified as 'help'.\n"
-                "- 'logout': User wants to sign out.\n"
-                "- 'help': User asks what the agent can do, asks for help, asks how to log in, greets the agent without "
-                "another concrete request, or asks about the application itself.\n"
-                "- 'acknowledgement': Polite acknowledgements or thanks (e.g. 'thanks', 'thank you', 'gracias', 'ok', 'perfecto').\n"
-                "- 'catalog_query': Product, catalog, or price availability questions.\n"
-                "- 'quote_preview': Non-persistent calculations or quote previews.\n"
-                "- 'quote_history': List or inspect persisted quotes.\n"
-                "- 'customer_query': List or search customers (staff only).\n"
-                "- 'quote_create': Create or persist a new quote for a customer.\n"
-                "- 'out_of_scope': Any request unrelated to Smart Quote Agent capabilities.\n"
-                f"Actions currently available for this access level:\n"
-                + "\n".join(f"- {act}" for act in available)
-                + "\n\n"
-                "Instructions:\n"
-                "- Classify what the user is asking for.\n"
-                "- Identify the requested action even if the current user is not allowed to perform it.\n"
-                "- Use 'out_of_scope' when the request is unrelated to this application.\n"
-                "- Do not map generic assistant tasks, programming, web research, arbitrary files, "
-                "image generation, or unrelated knowledge questions into a supported action."
-            )
-            runtime_input = RuntimeInput(
-                (
-                    RuntimeMessage("system", (TextContent(instructions),)),
-                    RuntimeMessage("user", (TextContent(user_input),)),
-                )
-            )
-            structured_router = active_structured_model.with_structured_output(TurnDecision)
-            res = await _invoke_with_diagnostics(
-                structured_router,
-                runtime_input,
-                state,
-                "intent_router",
-            )
-            decision = cast(TurnDecision, res.value)
+            try:
+                decision = await _structured_turn_decision(state, user_input)
+            except TurnDecisionContextTooLargeError:
+                return _oversized_context_decision(user_input, state)
             return {
                 "intent": decision.intent,
                 "language": decision.language
                 or resolve_language(user_input, state.get("language")),
-                "quote_patch": getattr(decision, "quote_patch", None),
+                "quote_request": decision.quote_request,
+                "quote_patch": decision.quote_patch,
             }
+
+        if heuristic == "quote_create":
+            return {"intent": heuristic, "quote_request": None, "quote_patch": None}
 
         # 3. Explicit offline deterministic fallback (provider-free)
         clean = user_input.strip().lower()
@@ -1727,10 +1880,18 @@ def create_demo_graph(
                 routed_state["pending_quote_request"]
             )
         updates = await _intent_router_decision_node(routed_state)
+        updates.setdefault("quote_request", None)
+        updates.setdefault("quote_patch", None)
+        updates["router_result_code"] = updates.get("router_result_code")
         if routed_state.get("quote_workflow") is not None:
             updates.setdefault("quote_workflow", routed_state["quote_workflow"])
         updates["interaction_id"] = routed_state["interaction_id"]
-        emit_host_transition(routed_state, "intent_router", "intent_routed", updates)
+        emit_host_transition(
+            routed_state,
+            "intent_router",
+            str(updates.get("router_result_code") or "intent_routed"),
+            updates,
+        )
         return updates
 
     async def scope_gate_node(state: DemoState) -> dict[str, Any]:
@@ -1742,6 +1903,20 @@ def create_demo_graph(
         allowed = allowed_actions(user)
 
         if intent == "clarification":
+            if state.get("router_result_code") == "turn_context_too_large":
+                if state.get("quote_workflow") is not None:
+                    msg = (
+                        "La solicitud es demasiado extensa para procesarla; la cotización pendiente se conserva. Acórtala e inténtalo de nuevo."
+                        if lang == "es"
+                        else "The request is too long to process; the pending quote is unchanged. Shorten it and try again."
+                    )
+                else:
+                    msg = (
+                        "La solicitud es demasiado extensa para procesarla. Acórtala e inténtalo de nuevo."
+                        if lang == "es"
+                        else "The request is too long to process. Shorten it and try again."
+                    )
+                return {"action_allowed": False, "output": msg, "language": lang}
             msg = (
                 "No identifiqué una acción clara. Indica qué quieres consultar o qué dato de la cotización quieres cambiar."
                 if lang == "es"
@@ -2014,7 +2189,7 @@ def create_demo_graph(
         workflow = state.get("quote_workflow")
         if workflow is None and state.get("pending_quote_request") is not None:
             workflow = _workflow_from_request(state["pending_quote_request"])
-        req: QuoteRequest | None = None
+        req = state.get("quote_request")
         proposed_patch = state.get("quote_patch")
         clean = user_input.strip().casefold()
         quantity_only = re.fullmatch(r"(?:cantidad|quantity)?\s*\d+", clean) is not None
@@ -2067,34 +2242,17 @@ def create_demo_graph(
             emit_host_transition(state, "quote_planner", "clarification_required", updates)
             return updates
 
-        if active_structured_model is not None and not (
-            workflow is not None and proposed_patch is not None and proposed_patch.operations
-        ):
-            instructions = (
-                "Extract quote creation parameters explicitly present in the user request.\n"
-                "- customer: Customer name or identifier explicitly stated, or null if omitted.\n"
-                "- items: List of requested products and quantities explicitly stated.\n"
-                "CRITICAL: Never invent or guess a customer. Never invent a product or quantity.\n"
-                "If information is missing, leave the field null or items empty."
-            )
-            runtime_input = RuntimeInput(
-                (
-                    RuntimeMessage("system", (TextContent(instructions),)),
-                    RuntimeMessage("user", (TextContent(user_input),)),
-                )
-            )
-            structured_planner = active_structured_model.with_structured_output(QuoteRequest)
-            res = await _invoke_with_diagnostics(
-                structured_planner,
-                runtime_input,
-                state,
-                "quote_planner",
-            )
-            req = cast(QuoteRequest, res.value)
-        else:
+        if req is None:
             req = parse_quote_request_heuristic(user_input)
 
-        workflow = _apply_quote_turn(workflow, req, user_input, proposed_patch)
+        workflow = _apply_quote_turn(
+            workflow,
+            req,
+            user_input,
+            proposed_patch,
+            replace_existing=state.get("quote_request") is not None
+            and state.get("quote_workflow") is not None,
+        )
         existing_workflow = state.get("quote_workflow")
         if (
             existing_workflow is not None
@@ -2339,7 +2497,7 @@ def create_demo_graph(
             emit_host_transition(state, "discount_hitl", "draft_stale", updates)
             return updates
 
-        discount_pct = prompt_discount(draft["subtotal_cents"], state.get("language", "en"))
+        discount_pct = prompt_discount(draft["subtotal_cents"], state.get("language", "en"), state)
         discount_amount = calculate_discount_amount(draft["subtotal_cents"], discount_pct)
         total_cents = draft["subtotal_cents"] - discount_amount
 
@@ -2399,11 +2557,33 @@ def create_demo_graph(
 
         # Dedicated write registry containing create_quote bound to the active staff user
         write_registry = get_quote_write_registry(conn, user)
+        quote_event_config = _invocation_config(state, "quote_persistence")
+        quote_event_task_id = quote_event_config.metadata.get("task_id")
+        quote_event_metadata = dict(quote_event_config.metadata)
+
+        async def correlated_quote_event_sink(event: RuntimeEvent) -> None:
+            """Attach safe interaction/workflow correlation to quote tool events."""
+            if actual_event_sink is None:
+                return
+            correlated_event = replace(
+                event,
+                task_id=(
+                    event.task_id
+                    or (quote_event_task_id if isinstance(quote_event_task_id, str) else None)
+                ),
+                metadata={**event.metadata, **quote_event_metadata},
+            )
+            try:
+                await actual_event_sink(correlated_event)
+            except Exception:
+                # Best-effort telemetry must not affect quote authorization or persistence.
+                return
+
         executor = create_tool_executor(
             write_registry,
             user,
             approval_handler=actual_approval_handler,
-            event_sink=actual_event_sink,
+            event_sink=(correlated_quote_event_sink if actual_event_sink is not None else None),
         )
 
         items_payload = [
@@ -2415,14 +2595,15 @@ def create_demo_graph(
         call_id = f"quote-call-{uuid.uuid4().hex}"
 
         tool_req = ToolRequest(
-            inv_id,
-            call_id,
-            "create_quote",
-            {
+            invocation_id=inv_id,
+            call_id=call_id,
+            name="create_quote",
+            arguments={
                 "customer_id": draft["customer_id"],
                 "items": items_payload,
                 "discount_percent": draft["discount_percent"],
             },
+            task_id=(quote_event_task_id if isinstance(quote_event_task_id, str) else None),
         )
 
         try:

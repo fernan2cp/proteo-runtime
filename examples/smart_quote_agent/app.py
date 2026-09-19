@@ -11,6 +11,7 @@ import sys
 import uuid
 from collections.abc import Callable
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 # Ensure demo directory is in sys.path when executed directly
@@ -73,6 +74,7 @@ async def _run_repl_loop(
     input_func: Callable[[str], str],
     interactive: bool,
     host_error_sink: Callable[..., None] | None = None,
+    host_event_sink: Callable[..., None] | None = None,
     task_id_provider: Callable[[], str | None] | None = None,
 ) -> None:
     """Execute the unified turn-by-turn interactive REPL loop.
@@ -82,6 +84,7 @@ async def _run_repl_loop(
         input_func: Callable for reading user input.
         interactive: Whether to print prompts and outputs.
         host_error_sink: Optional best-effort sink for sanitized host errors.
+        host_event_sink: Optional best-effort sink for content-free host lifecycle events.
         task_id_provider: Optional provider for the active runtime task ID.
     """
     current_user: AuthenticatedUser | None = None
@@ -118,6 +121,45 @@ async def _run_repl_loop(
         state["authenticated_user"] = current_user
         interaction_id = uuid.uuid4().hex
         state["interaction_id"] = interaction_id
+        interaction_started_at = perf_counter()
+
+        def record_interaction_event(
+            event_kind: str,
+            result_code: str,
+            interaction_id: str = interaction_id,
+            interaction_started_at: float = interaction_started_at,
+        ) -> None:
+            """Persist a correlated interaction timing event without user content."""
+            if host_event_sink is None:
+                return
+            try:
+                task_id = task_id_provider() if task_id_provider is not None else None
+            except Exception:
+                task_id = None
+            workflow = state.get("quote_workflow")
+            workflow_id = getattr(workflow, "workflow_id", None)
+            metadata: dict[str, Any] = {
+                "event_kind": event_kind,
+                "interaction_id": interaction_id,
+                "result_code": result_code,
+                "status": (
+                    "running"
+                    if event_kind.endswith("_started")
+                    else "failed"
+                    if result_code.endswith("failed")
+                    else "completed"
+                ),
+            }
+            if isinstance(task_id, str):
+                metadata["task_id"] = task_id
+            if isinstance(workflow_id, str):
+                metadata["workflow_id"] = workflow_id
+            if event_kind == "host.interaction_completed":
+                metadata["duration_ms"] = (perf_counter() - interaction_started_at) * 1000
+            with contextlib.suppress(Exception):
+                host_event_sink(metadata)
+
+        record_interaction_event("host.interaction_started", "interaction_started")
 
         try:
             result = await app_graph.ainvoke(state)
@@ -142,7 +184,9 @@ async def _run_repl_loop(
             output_text = result.get("output", "")
             if output_text and interactive:
                 print(f"\n{output_text}\n")
+            record_interaction_event("host.interaction_completed", "interaction_completed")
         except Exception as error:
+            record_interaction_event("host.interaction_completed", "interaction_failed")
             if host_error_sink is not None:
                 stage = getattr(error, "_smart_quote_stage", "graph.invoke")
                 if not isinstance(stage, str):
@@ -237,6 +281,7 @@ async def run_cli_loop(
                 input_func=input_func,
                 interactive=interactive,
                 host_error_sink=obs_mgr.record_host_error,
+                host_event_sink=obs_mgr.record_host_event,
             )
         else:
             runtime_cm = (
@@ -276,6 +321,7 @@ async def run_cli_loop(
                         input_func=input_func,
                         interactive=interactive,
                         host_error_sink=obs_mgr.record_host_error,
+                        host_event_sink=obs_mgr.record_host_event,
                         task_id_provider=lambda: (
                             session_mgr.active_task.id
                             if session_mgr.active_task is not None

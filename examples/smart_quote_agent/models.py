@@ -125,12 +125,6 @@ class QuotePatch(BaseModel):
     operations: list[QuotePatchOperation] = Field(default_factory=list)
 
 
-class TurnDecision(IntentDecision):
-    """Context-aware turn classification with an optional quote edit proposal."""
-
-    quote_patch: QuotePatch | None = None
-
-
 class RequestedItem(BaseModel):
     """Product quantity item extracted from quote request text."""
 
@@ -160,6 +154,31 @@ class QuoteRequest(BaseModel):
         default_factory=list,
         description="List of requested products and quantities explicitly stated in the request.",
     )
+
+
+class TurnDecision(IntentDecision):
+    """Context-aware classification and optional quote request or edit proposal."""
+
+    quote_request: QuoteRequest | None = None
+    quote_patch: QuotePatch | None = None
+
+    @model_validator(mode="after")
+    def validate_quote_payload(self) -> TurnDecision:
+        """Ensure quote data accompanies only quote creation and uses one representation.
+
+        Returns:
+            This validated turn decision.
+
+        Raises:
+            ValueError: If quote data conflicts with the declared intent or payload shape.
+        """
+        if self.intent != "quote_create" and (
+            self.quote_request is not None or self.quote_patch is not None
+        ):
+            raise ValueError("Quote request and patch payloads require quote_create intent")
+        if self.quote_request is not None and self.quote_patch is not None:
+            raise ValueError("Quote request and patch payloads are mutually exclusive")
+        return self
 
 
 class QuoteWorkflowItem(BaseModel):
@@ -254,6 +273,7 @@ class DemoState(TypedDict, total=False):
     output: str
     authenticated_user: AuthenticatedUser | None
     intent: str
+    router_result_code: str | None
     action_allowed: bool | None
     quote_authorized: bool | None
     pending_action: str | None

@@ -28,6 +28,7 @@ This module validates all 23 audit points required by the architectural audit:
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import sys
 from collections.abc import Generator
@@ -55,11 +56,13 @@ from database import (  # noqa: E402
     seed_database,
 )
 from graph import (  # noqa: E402
+    TurnDecisionContextTooLargeError,
     _apply_quote_turn,
     _draft_matches_workflow,
     _request_from_workflow,
     _workflow_from_request,
     allowed_actions,
+    build_turn_decision_input,
     classify_intent_heuristic,
     create_demo_graph,
     detect_language,
@@ -410,9 +413,12 @@ async def test_point_11_staff_can_enter_quote_workflow(
     structured_runtime = FakeRuntime(
         turns=[
             FakeTurn(
-                value=QuoteRequest(
-                    customer="Acme Corp.",
-                    items=[RequestedItem(product="Notebook Pro", quantity=2)],
+                value=TurnDecision(
+                    intent="quote_create",
+                    quote_request=QuoteRequest(
+                        customer="Acme Corp.",
+                        items=[RequestedItem(product="Notebook Pro", quantity=2)],
+                    ),
                 ).model_dump_json()
             ),
         ]
@@ -457,7 +463,12 @@ async def test_point_12_missing_customer_or_items_cannot_hallucinate_draft(
     """Validate missing customer or items prompts for clarification rather than hallucinating."""
     structured_runtime = FakeRuntime(
         turns=[
-            FakeTurn(value=QuoteRequest(customer=None, items=[]).model_dump_json()),
+            FakeTurn(
+                value=TurnDecision(
+                    intent="quote_create",
+                    quote_request=QuoteRequest(customer=None, items=[]),
+                ).model_dump_json()
+            ),
         ]
     )
 
@@ -503,9 +514,12 @@ async def test_point_14_final_approval_denial_writes_nothing(
     structured_runtime = FakeRuntime(
         turns=[
             FakeTurn(
-                value=QuoteRequest(
-                    customer="Acme Corp.",
-                    items=[RequestedItem(product="Notebook Pro", quantity=1)],
+                value=TurnDecision(
+                    intent="quote_create",
+                    quote_request=QuoteRequest(
+                        customer="Acme Corp.",
+                        items=[RequestedItem(product="Notebook Pro", quantity=1)],
+                    ),
                 ).model_dump_json()
             ),
         ]
@@ -1003,7 +1017,7 @@ async def test_scope_07_classifier_receives_access_level_and_allowed_actions_con
     db_conn: sqlite3.Connection,
     client_user: AuthenticatedUser,
 ) -> None:
-    """Validate structured classifier prompt receives access level and allowed action context.
+    """Keep classifier system prefix fixed and put identity in deterministic JSON context.
 
     Args:
         db_conn: SQLite connection fixture.
@@ -1011,12 +1025,13 @@ async def test_scope_07_classifier_receives_access_level_and_allowed_actions_con
     """
     captured_prompts: list[str] = []
     captured_configs: list[Any] = []
+    captured_schemas: list[Any] = []
 
     class InspectingModel:
         """Double that captures input prompt text."""
 
         def with_structured_output(self, schema: Any) -> Any:
-            del schema
+            captured_schemas.append(schema)
             return self
 
         async def ainvoke(self, input_: Any, **kwargs: Any) -> Any:
@@ -1025,7 +1040,7 @@ async def test_scope_07_classifier_receives_access_level_and_allowed_actions_con
                 text = getattr(msg, "text", "")
                 if text:
                     captured_prompts.append(text)
-            return type("Res", (), {"value": IntentDecision(intent="catalog_query")})()
+            return type("Res", (), {"value": TurnDecision(intent="catalog_query")})()
 
     graph = create_demo_graph(
         conn=db_conn,
@@ -1041,12 +1056,316 @@ async def test_scope_07_classifier_receives_access_level_and_allowed_actions_con
     )
     assert len(captured_prompts) >= 1
     system_text = captured_prompts[0]
-    assert "Current access level: client" in system_text
-    assert "Actions currently available for this access level:" in system_text
-    assert "out_of_scope" in system_text
+    user_context = json.loads(captured_prompts[1])
+    assert "Current access level" not in system_text
+    assert "Supported intents:" in system_text
+    assert user_context["identity_role"] == "client"
+    assert "quote_create" not in user_context["available_actions"]
+    assert captured_schemas == [TurnDecision]
     assert len(captured_configs) == 1
     assert captured_configs[0].metadata["interaction_id"] == "interaction-router-test"
     assert captured_configs[0].metadata["stage"] == "intent_router"
+    assert captured_configs[0].metadata["call_id"]
+
+
+def test_turn_decision_input_uses_identical_system_prefix_and_bounded_json() -> None:
+    """Keep model instructions byte-stable as turn-specific context changes."""
+    first_state: DemoState = {
+        "authenticated_user": None,
+        "language": "es",
+    }
+    pending_state: DemoState = {
+        "authenticated_user": AuthenticatedUser(
+            user_id=1,
+            username="staff",
+            display_name="Demo Staff",
+            role="staff",
+        ),
+        "language": "es",
+        "quote_workflow": QuoteWorkflowState(
+            workflow_id="quote-cache-test",
+            customer_query="Globex",
+            items=[QuoteWorkflowItem(product_query="Notebook Pro", quantity=1)],
+        ),
+    }
+
+    first_input = build_turn_decision_input(first_state, 'Create a quote for "Globex"')
+    repeated_input = build_turn_decision_input(first_state, 'Create a quote for "Globex"')
+    pending_input = build_turn_decision_input(pending_state, "for Globex")
+    first_messages = first_input.messages
+    repeated_messages = repeated_input.messages
+    pending_messages = pending_input.messages
+
+    assert first_messages[0].text == repeated_messages[0].text == pending_messages[0].text
+    assert first_messages[1].text == repeated_messages[1].text
+    assert first_messages[1].text != pending_messages[1].text
+    assert json.loads(first_messages[1].text)["user_input"] == 'Create a quote for "Globex"'
+    assert json.loads(pending_messages[1].text)["pending_quote"]["workflow_id"] == (
+        "quote-cache-test"
+    )
+    first_schema = json.dumps(
+        TurnDecision.model_json_schema(), sort_keys=True, separators=(",", ":")
+    )
+    second_schema = json.dumps(
+        TurnDecision.model_json_schema(), sort_keys=True, separators=(",", ":")
+    )
+    assert first_schema == second_schema
+
+
+@pytest.mark.asyncio
+async def test_structured_schema_and_system_prompt_are_identical_across_workflow_contexts(
+    db_conn: sqlite3.Connection,
+    staff_user: AuthenticatedUser,
+) -> None:
+    """Keep the actual model schema and static prefix identical across router contexts."""
+    captured: list[tuple[str, str]] = []
+
+    class CapturingModel:
+        """Capture structured schema and system prompt bytes for each invocation."""
+
+        schema_json: str
+
+        def with_structured_output(self, schema: Any) -> CapturingModel:
+            self.schema_json = json.dumps(
+                schema.model_json_schema(), sort_keys=True, separators=(",", ":")
+            )
+            return self
+
+        async def ainvoke(self, input_: Any, **kwargs: Any) -> Any:
+            del kwargs
+            system_text = input_.messages[0].text
+            captured.append((system_text, self.schema_json))
+            return type("Res", (), {"value": TurnDecision(intent="clarification")})()
+
+    graph = create_demo_graph(
+        conn=db_conn,
+        structured_model=CapturingModel(),  # type: ignore[arg-type]
+    )
+    await graph.ainvoke({"input": "Some ambiguous request", "authenticated_user": staff_user})
+    await graph.ainvoke(
+        {
+            "input": "Another ambiguous request",
+            "authenticated_user": staff_user,
+            "quote_workflow": QuoteWorkflowState(
+                workflow_id="quote-prompt-context",
+                customer_query="Globex",
+                items=[QuoteWorkflowItem(product_query="Notebook Pro", quantity=1)],
+            ),
+        }
+    )
+
+    assert len(captured) == 2
+    assert captured[0][0] == captured[1][0]
+    assert captured[0][1] == captured[1][1]
+
+
+@pytest.mark.asyncio
+async def test_timing_logger_failure_does_not_change_structured_model_result(
+    db_conn: sqlite3.Connection,
+    staff_user: AuthenticatedUser,
+) -> None:
+    """Keep successful model workflow behavior when host timing writes fail."""
+
+    class ResultModel:
+        """Return one quote request while telemetry raises on every event."""
+
+        def with_structured_output(self, schema: Any) -> ResultModel:
+            del schema
+            return self
+
+        async def ainvoke(self, input_: Any, **kwargs: Any) -> Any:
+            del input_, kwargs
+            return type(
+                "Res",
+                (),
+                {
+                    "value": TurnDecision(
+                        intent="quote_create",
+                        quote_request=QuoteRequest(customer="Globex", items=[]),
+                    )
+                },
+            )()
+
+    def failing_event_sink(event: Any) -> None:
+        """Simulate a telemetry storage failure."""
+        del event
+        raise OSError("telemetry unavailable")
+
+    graph = create_demo_graph(
+        conn=db_conn,
+        structured_model=ResultModel(),  # type: ignore[arg-type]
+        host_event_sink=failing_event_sink,
+    )
+    result = await graph.ainvoke(
+        {
+            "input": "Please prepare a requested quote",
+            "authenticated_user": staff_user,
+        }
+    )
+
+    workflow = result.get("quote_workflow")
+    assert workflow is not None
+    assert workflow.customer_query == "Globex"
+    assert workflow.items == []
+
+
+def test_turn_decision_input_rejects_context_over_utf8_byte_limit() -> None:
+    """Reject oversized UTF-8 payloads rather than silently truncating user content."""
+    with pytest.raises(TurnDecisionContextTooLargeError):
+        build_turn_decision_input({"language": "es"}, "á" * 9_000)
+
+
+@pytest.mark.asyncio
+async def test_oversized_turn_context_preserves_pending_workflow_without_model_call(
+    db_conn: sqlite3.Connection,
+    staff_user: AuthenticatedUser,
+) -> None:
+    """Clarify on oversized context without calling the model or changing quote state."""
+    workflow = QuoteWorkflowState(
+        workflow_id="quote-preserve-on-overflow",
+        revision=4,
+        customer_query="Globex",
+        items=[QuoteWorkflowItem(product_query="Wireless Mouse", quantity=2)],
+    )
+
+    class RejectingModel:
+        """Model double that fails the test if an oversized payload reaches it."""
+
+        def with_structured_output(self, schema: Any) -> RejectingModel:
+            del schema
+            return self
+
+        async def ainvoke(self, input_: Any, **kwargs: Any) -> Any:
+            del input_, kwargs
+            pytest.fail("oversized dynamic context must not invoke the model")
+
+    graph = create_demo_graph(
+        conn=db_conn,
+        structured_model=RejectingModel(),  # type: ignore[arg-type]
+    )
+    result = await graph.ainvoke(
+        {
+            "input": "á" * 9_000,
+            "authenticated_user": staff_user,
+            "language": "es",
+            "quote_workflow": workflow,
+        }
+    )
+
+    assert result.get("intent") == "clarification"
+    assert result.get("router_result_code") == "turn_context_too_large"
+    assert "demasiado extensa" in result.get("output", "")
+    assert result.get("quote_workflow").workflow_id == workflow.workflow_id
+    assert result.get("quote_workflow").revision == workflow.revision
+
+
+def test_complete_quote_reformulation_starts_a_fresh_workflow() -> None:
+    """Replace the quote workflow identity when the user fully restates the quote."""
+    existing = _workflow_from_request(
+        QuoteRequest(
+            customer="Globex",
+            items=[RequestedItem(product="Notebook Pro", quantity=1)],
+        )
+    )
+    restated = QuoteRequest(
+        customer="Initech",
+        items=[RequestedItem(product="Wireless Mouse", quantity=2)],
+    )
+
+    replacement = _apply_quote_turn(
+        existing,
+        restated,
+        "Create a complete new quote for Initech",
+        replace_existing=True,
+    )
+
+    assert replacement.workflow_id != existing.workflow_id
+    assert replacement.customer_query == "Initech"
+    assert [(item.product_query, item.quantity) for item in replacement.items] == [
+        ("Wireless Mouse", 2)
+    ]
+
+
+def test_turn_decision_rejects_quote_payloads_outside_quote_create() -> None:
+    """Reject contradictory intent and request/patch combinations host-side."""
+    request = QuoteRequest(customer="Globex", items=[])
+    patch = QuotePatch(operations=[SetCustomerOperation(operation="set_customer", target="Globex")])
+
+    with pytest.raises(ValidationError):
+        TurnDecision(intent="customer_query", quote_request=request)
+    with pytest.raises(ValidationError):
+        TurnDecision(intent="quote_create", quote_request=request, quote_patch=patch)
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_quote_turn_classifies_and_extracts_with_one_structured_call(
+    db_conn: sqlite3.Connection,
+    staff_user: AuthenticatedUser,
+) -> None:
+    """Use one structured model invocation for an ambiguous initial quote request."""
+    user_input = "Crea un presupuesto por una notebook pro y 2 mouse"
+    assert classify_intent_heuristic(user_input) is None
+    captured_inputs: list[Any] = []
+    captured_configs: list[Any] = []
+    captured_schemas: list[Any] = []
+    host_events: list[dict[str, Any]] = []
+
+    class CountingModel:
+        """Model double returning one combined intent and quote extraction."""
+
+        def with_structured_output(self, schema: Any) -> CountingModel:
+            captured_schemas.append(schema)
+            return self
+
+        async def ainvoke(self, input_: Any, **kwargs: Any) -> Any:
+            captured_inputs.append(input_)
+            captured_configs.append(kwargs.get("config"))
+            decision = TurnDecision(
+                intent="quote_create",
+                language="es",
+                quote_request=QuoteRequest(
+                    customer=None,
+                    items=[
+                        RequestedItem(product="Notebook Pro", quantity=1),
+                        RequestedItem(product="mouse", quantity=2),
+                    ],
+                ),
+            )
+            return type("Result", (), {"value": decision})()
+
+    graph = create_demo_graph(
+        conn=db_conn,
+        structured_model=CountingModel(),  # type: ignore[arg-type]
+        host_event_sink=lambda event: host_events.append(dict(event)),
+    )
+    result = await graph.ainvoke(
+        {
+            "input": user_input,
+            "authenticated_user": staff_user,
+            "interaction_id": "interaction-single-call",
+        }
+    )
+
+    workflow = result.get("quote_workflow")
+    assert workflow is not None
+    assert [(item.product_query, item.quantity) for item in workflow.items] == [
+        ("Notebook Pro", 1),
+        ("mouse", 2),
+    ]
+    assert result.get("pending_action") == "quote_create"
+    assert len(captured_inputs) == 1
+    assert captured_schemas == [TurnDecision]
+    assert captured_configs[0].metadata["interaction_id"] == "interaction-single-call"
+    call_id = captured_configs[0].metadata["call_id"]
+    model_events = [
+        event for event in host_events if event.get("event_kind", "").startswith("host.model_call_")
+    ]
+    assert [event["event_kind"] for event in model_events] == [
+        "host.model_call_started",
+        "host.model_call_completed",
+    ]
+    assert all(event["call_id"] == call_id for event in model_events)
+    assert model_events[-1]["result_code"] == "model_call_completed"
 
 
 def test_scope_08_anonymous_allowed_actions() -> None:
@@ -1674,6 +1993,7 @@ async def test_structured_failure_logs_its_stage_and_invocation_correlation(
     """Preserve the structured call stage and interaction ID at the REPL boundary."""
     captured_configs: list[Any] = []
     logged_errors: list[dict[str, Any]] = []
+    host_events: list[dict[str, Any]] = []
 
     class FailingStructuredModel:
         """Structured model double that fails after receiving invocation metadata."""
@@ -1703,6 +2023,7 @@ async def test_structured_failure_logs_its_stage_and_invocation_correlation(
         input_func=lambda _prompt: next(inputs),
         interactive=True,
         host_error_sink=capture_error,
+        host_event_sink=lambda event: host_events.append(dict(event)),
     )
 
     output = capsys.readouterr().out
@@ -1711,7 +2032,14 @@ async def test_structured_failure_logs_its_stage_and_invocation_correlation(
     assert len(captured_configs) == 1
     assert captured_configs[0].metadata["interaction_id"] == logged_errors[0]["interaction_id"]
     assert captured_configs[0].metadata["stage"] == "intent_router"
+    assert captured_configs[0].metadata["call_id"]
     assert logged_errors[0]["stage"] == "intent_router"
+    assert [event["event_kind"] for event in host_events] == [
+        "host.interaction_started",
+        "host.interaction_completed",
+    ]
+    assert host_events[-1]["result_code"] == "interaction_failed"
+    assert host_events[-1]["duration_ms"] >= 0
 
 
 @pytest.mark.asyncio
@@ -1725,11 +2053,20 @@ async def test_scope_20_existing_quote_creation_hitl_and_database_flows_continue
         db_conn: SQLite connection fixture.
         staff_user: Authenticated staff user fixture.
     """
+    host_events: list[dict[str, Any]] = []
+    runtime_events: list[Any] = []
+
+    async def capture_runtime_event(event: Any) -> None:
+        """Capture host tool events to verify workflow correlation metadata."""
+        runtime_events.append(event)
+
     graph = create_demo_graph(
         conn=db_conn,
         discount_prompter=lambda _subtotal: 5,
         approval_handler=ConsoleApprovalHandler(input_func=lambda _prompt: "yes"),
         quote_reviewer=lambda _draft: None,
+        event_sink=capture_runtime_event,
+        host_event_sink=lambda event: host_events.append(dict(event)),
     )
 
     result = await graph.ainvoke(
@@ -1749,6 +2086,29 @@ async def test_scope_20_existing_quote_creation_hitl_and_database_flows_continue
     row = cur.fetchone()
     assert row is not None
     assert row[0] == 2  # Globex LLC is customer ID 2
+    hitl_events = [
+        event for event in host_events if event.get("event_kind", "").startswith("host.hitl_")
+    ]
+    assert [event["event_kind"] for event in hitl_events] == [
+        "host.hitl_started",
+        "host.hitl_resolved",
+    ]
+    assert hitl_events[-1]["duration_ms"] >= 0
+    approval_events = [
+        event
+        for event in runtime_events
+        if event.kind.value in {"tool_approval_requested", "tool_approval_resolved"}
+    ]
+    assert [event.kind.value for event in approval_events] == [
+        "tool_approval_requested",
+        "tool_approval_resolved",
+    ]
+    workflow_id = next(
+        event["workflow_id"] for event in host_events if isinstance(event.get("workflow_id"), str)
+    )
+    for event in approval_events:
+        assert event.metadata["interaction_id"]
+        assert event.metadata["workflow_id"] == workflow_id
 
 
 # =============================================================================
@@ -1874,9 +2234,12 @@ async def test_hardening_05_quote_planner_fine_grained_guidance_and_localization
     runtime_missing_cust = FakeRuntime(
         turns=[
             FakeTurn(
-                value=QuoteRequest(
-                    customer=None,
-                    items=[RequestedItem(product="Notebook Pro", quantity=2)],
+                value=TurnDecision(
+                    intent="quote_create",
+                    quote_request=QuoteRequest(
+                        customer=None,
+                        items=[RequestedItem(product="Notebook Pro", quantity=2)],
+                    ),
                 ).model_dump_json()
             )
         ]
@@ -1895,9 +2258,12 @@ async def test_hardening_05_quote_planner_fine_grained_guidance_and_localization
     runtime_missing_cust_es = FakeRuntime(
         turns=[
             FakeTurn(
-                value=QuoteRequest(
-                    customer=None,
-                    items=[RequestedItem(product="Notebook Pro", quantity=2)],
+                value=TurnDecision(
+                    intent="quote_create",
+                    quote_request=QuoteRequest(
+                        customer=None,
+                        items=[RequestedItem(product="Notebook Pro", quantity=2)],
+                    ),
                 ).model_dump_json()
             )
         ]
@@ -1918,9 +2284,9 @@ async def test_hardening_05_quote_planner_fine_grained_guidance_and_localization
     runtime_missing_items = FakeRuntime(
         turns=[
             FakeTurn(
-                value=QuoteRequest(
-                    customer="Globex",
-                    items=[],
+                value=TurnDecision(
+                    intent="quote_create",
+                    quote_request=QuoteRequest(customer="Globex", items=[]),
                 ).model_dump_json()
             )
         ]
@@ -1941,9 +2307,9 @@ async def test_hardening_05_quote_planner_fine_grained_guidance_and_localization
     runtime_missing_items_es = FakeRuntime(
         turns=[
             FakeTurn(
-                value=QuoteRequest(
-                    customer="Globex",
-                    items=[],
+                value=TurnDecision(
+                    intent="quote_create",
+                    quote_request=QuoteRequest(customer="Globex", items=[]),
                 ).model_dump_json()
             )
         ]
@@ -1964,9 +2330,9 @@ async def test_hardening_05_quote_planner_fine_grained_guidance_and_localization
     runtime_missing_both = FakeRuntime(
         turns=[
             FakeTurn(
-                value=QuoteRequest(
-                    customer=None,
-                    items=[],
+                value=TurnDecision(
+                    intent="quote_create",
+                    quote_request=QuoteRequest(customer=None, items=[]),
                 ).model_dump_json()
             )
         ]
@@ -1985,9 +2351,9 @@ async def test_hardening_05_quote_planner_fine_grained_guidance_and_localization
     runtime_missing_both_es = FakeRuntime(
         turns=[
             FakeTurn(
-                value=QuoteRequest(
-                    customer=None,
-                    items=[],
+                value=TurnDecision(
+                    intent="quote_create",
+                    quote_request=QuoteRequest(customer=None, items=[]),
                 ).model_dump_json()
             )
         ]
@@ -2975,9 +3341,12 @@ async def test_hardening_terminal_persistence_failure_clears_workflow(
     structured_model = FakeRuntime(
         turns=[
             FakeTurn(
-                value=QuoteRequest(
-                    customer="Globex",
-                    items=[RequestedItem(product="Wireless Mouse", quantity=2)],
+                value=TurnDecision(
+                    intent="quote_create",
+                    quote_request=QuoteRequest(
+                        customer="Globex",
+                        items=[RequestedItem(product="Wireless Mouse", quantity=2)],
+                    ),
                 ).model_dump_json()
             )
         ]

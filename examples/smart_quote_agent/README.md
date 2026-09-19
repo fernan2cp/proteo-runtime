@@ -9,7 +9,7 @@ A complete, self-contained demonstration of **Proteo Runtime** showcasing LangGr
 > **"The model may decide what it wants to do. The host decides what it is allowed to do and what is actually executed."**
 
 The application enforces a clear **three-level separation of concerns**:
-1. **Model / Intent Classification**: Identifies what action the user is attempting (including recognizing forbidden operations or unsupported requests) using a 10-action schema.
+1. **Model / Turn Decision**: For ambiguous turns, one structured `TurnDecision` identifies the intent and, when relevant, extracts a new quote request or proposes a quote patch. The model can recognize forbidden or unsupported requests but cannot authorize them.
 2. **Host Action Authorization Policy (`allowed_actions`)**: The host authoritatively evaluates whether that recognized action is valid and allowed for the current access level (anonymous, client, or staff). If denied, out of scope, a help request, or an acknowledgement, the host responds deterministically without invoking the controlled LLM.
 3. **Host Tool Permission Policy (`ToolPermissionPolicy`)**: The host authoritatively mediates all tool execution via `ToolExecutor`. The conversational agent never has write tools in its registry.
 
@@ -31,7 +31,7 @@ The application enforces a clear **three-level separation of concerns**:
 flowchart TD
     User([User Input]) --> Router[Heuristic Router]
     Router -->|Unequivocal| DirectIntent{Intent}
-    Router -->|Ambiguous| StructuredClassifier[Structured Classifier: structured / low]
+    Router -->|Ambiguous or quote request| StructuredClassifier[Structured TurnDecision: intent + quote data]
     StructuredClassifier --> DirectIntent
 
     DirectIntent --> ScopeGate[Host Scope Gate: allowed_actions]
@@ -46,7 +46,7 @@ flowchart TD
     ScopeGate -->|catalog_query / quote_preview / allowed quote_history| ControlledAgent[Controlled Agent: controlled_agent / low (RuntimeTask)]
     ScopeGate -->|quote_create allowed| AuthGuard[Host Auth Guard]
 
-    AuthGuard -->|Staff| QuotePlanner[Quote Planner: structured / low]
+    AuthGuard -->|Staff| QuotePlanner[Quote Planner: host reducer only]
     QuotePlanner -->|Incomplete / Missing Data| ClarifyPrompt[Host: Fine-Grained Clarification]
     QuotePlanner -->|Valid Request| ResolveData[Resolve DB IDs & Catalog Prices]
     ResolveData -->|Not Found / Ambiguous| AmbiguityMessage[Disambiguation / Error]
@@ -67,14 +67,14 @@ The demo establishes two distinct execution abstractions, each configured explic
 
 1. **`structured_model`** (`profile="structured"`, `level="low"`, `RuntimeModel`):
    - Invocation-scoped ephemeral model under `ContextPolicy.EXTERNAL`.
-   - Used for deterministic JSON schema outputs (`IntentDecision` and `QuoteRequest`).
+   - Uses the same `TurnDecision` schema to classify and extract a quote request or edit proposal in one inference.
    - Does not bind tools; operates with structured output policies and strict schema validation (`extra="forbid"`).
-   - Injected with role context and recognized actions, classifying user intent even if forbidden for the current role.
+   - A fixed system prompt contains stable routing/extraction rules; role, allowed actions, language, workflow context, and user input appear in deterministic bounded JSON in the user message.
    - Instructed to extract only information explicitly stated and never invent or guess missing customer names, products, or quantities.
 2. **`context_agent`** (`profile="controlled_agent"`, `level="low"`, `RuntimeTask`):
    - Task-scoped ephemeral multi-turn execution under `ContextPolicy.RUNTIME`.
    - Managed by `AgentSessionManager`, binding the task lifecycle to the active identity.
-   - Provider-owned multi-turn conversational context: the provider thread maintains conversational history within the session, enabling follow-up turns (e.g., providing products in Turn 1 and customer in Turn 2) without re-asking.
+   - Provider-owned multi-turn conversational context: the provider thread maintains history for read-only turns sent to that task. LangGraph, not the task, owns the quote workflow and its follow-up fields.
    - Frozen authority: tool definitions, permissions, and initial instructions (`format_agent_instructions`) are frozen at task creation (`runtime.task(...)`). Post-creation modifications to external registries cannot expand authority.
    - User-only turns: task invocations accept user input directly (`task.ainvoke(user_input)`). Replaying messages or injecting per-turn system instructions is prohibited under `ContextPolicy.RUNTIME`.
    - Never exposed to `create_quote` (write tool segregation).
@@ -264,6 +264,18 @@ The complete provider-free test suite, including audit, containment, and convers
 ```bash
 uv run pytest examples/smart_quote_agent/tests
 ```
+
+### Latency and Prompt-Cache Diagnostics
+The structured router uses one byte-stable system prompt and one `TurnDecision` schema; variable identity and quote context is sent as compact UTF-8 JSON, capped at 16,384 bytes. If the bound is exceeded, the host asks for a shorter turn without truncating it or calling the model. This makes the static prefix eligible for provider prompt caching, but cache hits depend on the provider and are not guaranteed.
+
+The graph emits metadata-only interaction, model-call, and discount-prompt timings correlated by `interaction_id` and `call_id`. No prompts, responses, credentials, or tool arguments are stored. Inspect a full interaction or summarize the latest model invocations with:
+
+```powershell
+python examples/smart_quote_agent/inspect_observability.py --interaction <interaction-id>
+python examples/smart_quote_agent/inspect_observability.py --latency --limit 10
+```
+
+The detailed views separate provider setup, model/runtime span, time to first text delta (or structured terminal time), tool execution, and human approval/discount wait. A `controlled_agent` task span may include internal tools or HITL; it is not pure inference time.
 
 ---
 
@@ -847,6 +859,8 @@ An explicit full quote request may replace the current line set; an edit such as
 ```powershell
 python examples/smart_quote_agent/inspect_observability.py --task <task-id>
 python examples/smart_quote_agent/inspect_observability.py --workflow <workflow-id>
+python examples/smart_quote_agent/inspect_observability.py --interaction <interaction-id>
+python examples/smart_quote_agent/inspect_observability.py --latency --limit 10
 ```
 
 The telemetry migration adds nullable `task_id` and `interaction_id` to the local observability database only. It does not change or reset `demo.sqlite3`; provider cleanup behavior remains outside the example, though diagnostics such as `task.cleanup.provider_delete_failed` are surfaced by the inspector.
