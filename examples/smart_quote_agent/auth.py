@@ -81,6 +81,7 @@ def authenticate_user_interactive(
     *,
     input_func: Callable[[str], str] = input,
     getpass_func: Callable[[str], str] = getpass.getpass,
+    language: str = "en",
 ) -> AuthenticatedUser | None:
     """Prompt the user for credentials in the terminal with masked password input.
 
@@ -90,12 +91,16 @@ def authenticate_user_interactive(
         conn: Open SQLite database connection.
         input_func: Callable for username input (defaults to builtin input).
         getpass_func: Callable for masked password input (defaults to getpass.getpass).
+        language: Stable interaction language (`es` or `en`).
 
     Returns:
         AuthenticatedUser on success, or None on failure.
     """
-    username = input_func("Username: ")
-    password = getpass_func("Password: ")
+    is_spanish = language == "es"
+    username_prompt = "Usuario: " if is_spanish else "Username: "
+    password_prompt = "Contraseña: " if is_spanish else "Password: "
+    username = input_func(username_prompt)
+    password = getpass_func(password_prompt)
     user = authenticate_user_credentials(conn, username, password)
     del password
     return user

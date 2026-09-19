@@ -13,6 +13,7 @@ from database import (
     format_currency,
     get_quote_by_id,
     list_active_products,
+    list_customers,
     list_recent_quotes,
     persist_quote_transactional,
 )
@@ -213,6 +214,30 @@ def make_find_customer(conn: sqlite3.Connection) -> Any:
     return find_customer
 
 
+def make_list_customers(conn: sqlite3.Connection) -> Any:
+    """Create the staff-only list_customers tool bound to SQLite."""
+
+    @runtime_tool(
+        name="list_customers",
+        description="List customers by name and identifier (staff only).",
+        permission="customer.read",
+        side_effect=SideEffect.READ,
+        approval=ApprovalRequirement.NEVER,
+    )
+    async def list_customers_tool(limit: int = 50) -> list[dict[str, Any]]:
+        """List a bounded set of customer identifiers.
+
+        Args:
+            limit: Maximum number of customers to return, bounded to 1..50.
+
+        Returns:
+            Customer records containing id, code, and name.
+        """
+        return list_customers(conn, limit=limit)
+
+    return list_customers_tool
+
+
 def make_list_quotes(conn: sqlite3.Connection) -> Any:
     """Create the list_quotes tool bound to the SQLite connection."""
 
@@ -380,6 +405,7 @@ def get_agent_tool_registry(
 
     Staff sessions also expose:
     - find_customer
+    - list_customers
     - list_quotes
     - get_quote
 
@@ -399,6 +425,7 @@ def get_agent_tool_registry(
 
     if user is not None and user.role == "staff":
         registry.register(make_find_customer(conn))
+        registry.register(make_list_customers(conn))
         registry.register(make_list_quotes(conn))
         registry.register(make_get_quote(conn))
 

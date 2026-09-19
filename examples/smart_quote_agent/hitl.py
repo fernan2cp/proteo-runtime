@@ -18,32 +18,50 @@ def prompt_discount_interactive(
     subtotal_cents: int,
     *,
     input_func: Callable[[str], str] = input,
+    language: str = "en",
 ) -> int:
     """Prompt the human user interactively for a discount percentage (0..30).
 
     Args:
         subtotal_cents: Quote subtotal in integer cents.
         input_func: Input callable for testing or console interaction.
+        language: Stable interaction language (`es` or `en`).
 
     Returns:
         Whole discount percentage in range 0..30.
     """
+    is_spanish = language == "es"
     print(f"\nSubtotal: {format_currency(subtotal_cents)}")
-    apply_resp = input_func("Apply discount? [y/N]: ").strip().lower()
-    if apply_resp not in ("y", "yes"):
+    apply_prompt = "¿Aplicar descuento? [s/N]: " if is_spanish else "Apply discount? [y/N]: "
+    apply_resp = input_func(apply_prompt).strip().lower()
+    affirmative = ("s", "si", "sí", "y", "yes") if is_spanish else ("y", "yes")
+    if apply_resp not in affirmative:
         return 0
 
     while True:
-        raw = input_func("Discount percentage [0-30, default 0]: ").strip()
+        percentage_prompt = (
+            "Porcentaje de descuento [0-30, predeterminado 0]: "
+            if is_spanish
+            else "Discount percentage [0-30, default 0]: "
+        )
+        raw = input_func(percentage_prompt).strip()
         if not raw:
             return 0
         try:
             val = int(raw)
             if 0 <= val <= 30:
                 return val
-            print("Invalid percentage. Must be a whole number between 0 and 30.")
+            print(
+                "Porcentaje inválido. Debe ser un número entero entre 0 y 30."
+                if is_spanish
+                else "Invalid percentage. Must be a whole number between 0 and 30."
+            )
         except ValueError:
-            print("Invalid input. Please enter a whole number between 0 and 30.")
+            print(
+                "Entrada inválida. Ingresa un número entero entre 0 y 30."
+                if is_spanish
+                else "Invalid input. Please enter a whole number between 0 and 30."
+            )
 
 
 class ConsoleApprovalHandler(ApprovalHandler):
@@ -53,13 +71,24 @@ class ConsoleApprovalHandler(ApprovalHandler):
         self,
         *,
         input_func: Callable[[str], str] = input,
+        language: str = "en",
     ) -> None:
         """Configure the console approval handler.
 
         Args:
             input_func: Callable for interactive input (defaults to builtin input).
+            language: Stable interaction language (`es` or `en`).
         """
         self._input_func = input_func
+        self._language = language
+
+    def set_language(self, language: str) -> None:
+        """Set the language used by the next approval prompt.
+
+        Args:
+            language: Stable interaction language (`es` or `en`).
+        """
+        self._language = language
 
     async def request_approval(self, request: ApprovalRequest) -> ApprovalDecision:
         """Prompt the user interactively before allowing a tool with write side-effects.
@@ -70,17 +99,34 @@ class ConsoleApprovalHandler(ApprovalHandler):
         Returns:
             ApprovalDecision.APPROVE or ApprovalDecision.DENY.
         """
-        print(f"\n[APPROVAL REQUIRED] Tool execution requested: {request.tool_name}")
+        is_spanish = self._language == "es"
+        prefix = (
+            "[APROBACIÓN REQUERIDA] Acción solicitada"
+            if is_spanish
+            else "[APPROVAL REQUIRED] Tool execution requested"
+        )
+        print(f"\n{prefix}: {request.tool_name}")
         args = request.arguments
         if request.tool_name == "create_quote":
-            print(f"Customer ID: {args.get('customer_id')}")
-            print(f"Discount: {args.get('discount_percent', 0)}%")
+            customer_label = "ID de cliente" if is_spanish else "Customer ID"
+            discount_label = "Descuento" if is_spanish else "Discount"
+            print(f"{customer_label}: {args.get('customer_id')}")
+            print(f"{discount_label}: {args.get('discount_percent', 0)}%")
 
-        resp = await asyncio.to_thread(self._input_func, "\nApprove quote creation? [y/N]: ")
+        prompt = (
+            "\n¿Aprobar la creación de la cotización? [s/N]: "
+            if is_spanish
+            else "\nApprove quote creation? [y/N]: "
+        )
+        resp = await asyncio.to_thread(self._input_func, prompt)
         clean = resp.strip().lower()
-        if clean in ("y", "yes"):
-            print("[APPROVED] Action approved.")
+        if clean in (("s", "si", "sí", "y", "yes") if is_spanish else ("y", "yes")):
+            print("[APROBADO] Acción aprobada." if is_spanish else "[APPROVED] Action approved.")
             return ApprovalDecision.APPROVE
 
-        print("[DENIED] Action denied by user.")
+        print(
+            "[RECHAZADO] Acción rechazada por el usuario."
+            if is_spanish
+            else "[DENIED] Action denied by user."
+        )
         return ApprovalDecision.DENY

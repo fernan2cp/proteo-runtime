@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import unicodedata
 from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
@@ -230,6 +231,47 @@ def _escape_like(text: str) -> str:
     return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
+def _normalize_search_text(text: str) -> str:
+    """Normalize user-facing entity text for safe in-memory comparison.
+
+    Args:
+        text: Raw entity search text.
+
+    Returns:
+        Lowercase ASCII-like text with normalized whitespace and safe product aliases.
+    """
+    decomposed = unicodedata.normalize("NFKD", text.strip().lower())
+    normalized = "".join(char for char in decomposed if not unicodedata.combining(char))
+    words = normalized.split()
+    aliases = {
+        "mice": "mouse",
+        "mouses": "mouse",
+        "customers": "customer",
+        "clientes": "cliente",
+        "products": "product",
+        "productos": "producto",
+    }
+    return " ".join(aliases.get(word, word) for word in words)
+
+
+def list_customers(conn: sqlite3.Connection, *, limit: int = 50) -> list[dict[str, Any]]:
+    """List customers in stable name order with a bounded result count.
+
+    Args:
+        conn: Open SQLite connection.
+        limit: Maximum number of rows, clamped to 1..50.
+
+    Returns:
+        Customer dictionaries containing id, code, and name.
+    """
+    bounded = max(1, min(50, limit))
+    rows = conn.execute(
+        "SELECT id, code, name FROM customers ORDER BY name LIMIT ?;",
+        (bounded,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def find_customer_by_query(conn: sqlite3.Connection, query: str) -> dict[str, Any] | None:
     """Find a customer by exact ID, code, or name, or unique partial match.
 
@@ -261,32 +303,35 @@ def find_customer_by_query(conn: sqlite3.Connection, query: str) -> dict[str, An
         if row is not None:
             return dict(row)
 
-    # 2. Exact code
-    row = cur.execute(
-        "SELECT id, code, name FROM customers WHERE LOWER(code) = LOWER(?);",
-        (clean,),
-    ).fetchone()
-    if row is not None:
-        return dict(row)
+    rows = cur.execute("SELECT id, code, name FROM customers ORDER BY id;").fetchall()
+    normalized = _normalize_search_text(clean)
 
-    # 3. Exact name
-    row = cur.execute(
-        "SELECT id, code, name FROM customers WHERE LOWER(name) = LOWER(?);",
-        (clean,),
-    ).fetchone()
-    if row is not None:
-        return dict(row)
+    # Exact normalized code precedes the display-name match.
+    code_matches = [row for row in rows if _normalize_search_text(str(row["code"])) == normalized]
+    if len(code_matches) == 1:
+        return dict(code_matches[0])
 
-    # 4. Partial name match
-    escaped = _escape_like(clean)
-    rows = cur.execute(
-        "SELECT id, code, name FROM customers WHERE LOWER(name) LIKE LOWER(?) ESCAPE '\\';",
-        (f"%{escaped}%",),
-    ).fetchall()
-    if len(rows) == 1:
-        return dict(rows[0])
-    if len(rows) > 1:
-        candidates = [f"{r['name']} ({r['code']})" for r in rows]
+    # Accent-insensitive exact display-name match.
+    exact_name_matches = [
+        row for row in rows if _normalize_search_text(str(row["name"])) == normalized
+    ]
+    if len(exact_name_matches) == 1:
+        return dict(exact_name_matches[0])
+
+    # Unique partial matches are permitted, but multiple matches remain explicit.
+    partial_matches = [
+        row
+        for row in rows
+        if normalized
+        and (
+            normalized in _normalize_search_text(str(row["name"]))
+            or normalized in _normalize_search_text(str(row["code"]))
+        )
+    ]
+    if len(partial_matches) == 1:
+        return dict(partial_matches[0])
+    if len(partial_matches) > 1:
+        candidates = [f"{r['name']} ({r['code']})" for r in partial_matches]
         return {
             "ambiguous": True,
             "candidates": candidates,
@@ -376,16 +421,22 @@ def find_product_by_query(conn: sqlite3.Connection, query: str) -> dict[str, Any
     if row is not None:
         return dict(row)
 
-    # 4. Partial name match
-    escaped = _escape_like(clean)
-    rows = cur.execute(
+    # 4. Normalized alias / unique partial match. Catalog size is intentionally tiny,
+    # so comparison in Python keeps accent and irregular-plural behavior explicit.
+    normalized_query = _normalize_search_text(clean)
+    all_rows = cur.execute(
         """
         SELECT id, sku, name, description, unit_price_cents, active
         FROM products
-        WHERE LOWER(name) LIKE LOWER(?) ESCAPE '\\' AND active = 1;
-        """,
-        (f"%{escaped}%",),
+        WHERE active = 1;
+        """
     ).fetchall()
+    rows = [
+        row
+        for row in all_rows
+        if normalized_query in _normalize_search_text(str(row["name"]))
+        or normalized_query == _normalize_search_text(str(row["sku"]))
+    ]
     if len(rows) == 1:
         return dict(rows[0])
     if len(rows) > 1:
