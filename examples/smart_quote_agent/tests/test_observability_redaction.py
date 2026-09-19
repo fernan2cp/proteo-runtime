@@ -129,7 +129,7 @@ async def test_full_graph_interaction_zero_credential_leakage(tmp_path: Path) ->
     app_graph = create_demo_graph(
         conn,
         structured_model=None,
-        controlled_agent_model=None,
+        context_agent=None,
         approval_handler=AutoApprovalHandler(),
         discount_prompter=lambda _subtotal: 10,
         auth_interactive=fake_auth,
@@ -305,7 +305,7 @@ async def test_demo_password_1234_not_in_telemetry(tmp_path: Path) -> None:
     app_graph = create_demo_graph(
         conn,
         structured_model=None,
-        controlled_agent_model=None,
+        context_agent=None,
         approval_handler=AutoApprovalHandler(),
         discount_prompter=lambda _subtotal: 0,
         auth_interactive=fake_auth,

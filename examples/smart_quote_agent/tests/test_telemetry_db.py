@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -65,6 +66,7 @@ def test_schema_creation_and_indexes(temp_telemetry_db: Path) -> None:
         ]
         expected_indexes = {
             "idx_runtime_events_invocation",
+            "idx_runtime_events_interaction",
             "idx_runtime_events_kind",
             "idx_runtime_events_occurred_at",
             "idx_langsmith_runs_parent",
@@ -77,6 +79,56 @@ def test_schema_creation_and_indexes(temp_telemetry_db: Path) -> None:
         }
         for idx in expected_indexes:
             assert idx in indexes, f"Missing index: {idx}"
+    finally:
+        conn.close()
+
+
+def test_task_id_schema_migration_is_additive_and_idempotent(tmp_path: Path) -> None:
+    """Add task correlation to an existing runtime event table without dropping data."""
+    db_path = tmp_path / "legacy_observability.sqlite3"
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            "CREATE TABLE runtime_events ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, recorded_at TEXT NOT NULL, "
+            "occurred_at TEXT NOT NULL, event_id TEXT NOT NULL, event_kind TEXT NOT NULL, "
+            "invocation_id TEXT NULL, session_id TEXT NULL, turn_id TEXT NULL, "
+            "runtime_name TEXT NULL, model TEXT NULL, profile TEXT NULL, "
+            "reasoning_effort TEXT NULL, tool_name TEXT NULL, tool_call_id TEXT NULL, "
+            "status TEXT NULL, duration_ms REAL NULL, metadata_json TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO runtime_events "
+            "(recorded_at, occurred_at, event_id, event_kind, metadata_json) "
+            "VALUES ('now', 'then', 'legacy-1', 'invocation_started', '{}')"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    init_telemetry_database(db_path)
+    init_telemetry_database(db_path)
+
+    conn = get_telemetry_connection(db_path, read_only=True)
+    try:
+        columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(runtime_events);").fetchall()
+        }
+        indexes = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA index_list(runtime_events);").fetchall()
+        }
+        rows = conn.execute(
+            "SELECT event_id, task_id, interaction_id FROM runtime_events;"
+        ).fetchall()
+        assert "task_id" in columns
+        assert "interaction_id" in columns
+        assert "idx_runtime_events_task" in indexes
+        assert "idx_runtime_events_interaction" in indexes
+        assert [(row["event_id"], row["task_id"], row["interaction_id"]) for row in rows] == [
+            ("legacy-1", None, None)
+        ]
     finally:
         conn.close()
 

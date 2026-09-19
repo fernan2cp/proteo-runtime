@@ -24,7 +24,9 @@ CREATE TABLE IF NOT EXISTS runtime_events (
     event_id          TEXT NOT NULL,
     event_kind        TEXT NOT NULL,
     invocation_id     TEXT NULL,
+    interaction_id    TEXT NULL,
     session_id        TEXT NULL,
+    task_id           TEXT NULL,
     turn_id           TEXT NULL,
     runtime_name      TEXT NULL,
     model             TEXT NULL,
@@ -39,6 +41,10 @@ CREATE TABLE IF NOT EXISTS runtime_events (
 
 CREATE INDEX IF NOT EXISTS idx_runtime_events_invocation
     ON runtime_events(invocation_id);
+CREATE INDEX IF NOT EXISTS idx_runtime_events_interaction
+    ON runtime_events(interaction_id);
+CREATE INDEX IF NOT EXISTS idx_runtime_events_task
+    ON runtime_events(task_id);
 CREATE INDEX IF NOT EXISTS idx_runtime_events_kind
     ON runtime_events(event_kind);
 CREATE INDEX IF NOT EXISTS idx_runtime_events_occurred_at
@@ -217,6 +223,21 @@ def init_telemetry_database(
 
     conn = get_telemetry_connection(target_path)
     try:
+        has_events_table = (
+            conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'runtime_events';"
+            ).fetchone()
+            is not None
+        )
+        if has_events_table:
+            columns = {
+                str(row["name"])
+                for row in conn.execute("PRAGMA table_info(runtime_events);").fetchall()
+            }
+            if "task_id" not in columns:
+                conn.execute("ALTER TABLE runtime_events ADD COLUMN task_id TEXT NULL;")
+            if "interaction_id" not in columns:
+                conn.execute("ALTER TABLE runtime_events ADD COLUMN interaction_id TEXT NULL;")
         conn.executescript(TELEMETRY_SCHEMA_SQL)
         conn.commit()
     finally:
@@ -232,7 +253,9 @@ def insert_runtime_event(
     event_kind: str,
     occurred_at: str,
     invocation_id: str | None = None,
+    interaction_id: str | None = None,
     session_id: str | None = None,
+    task_id: str | None = None,
     turn_id: str | None = None,
     runtime_name: str | None = None,
     model: str | None = None,
@@ -252,7 +275,9 @@ def insert_runtime_event(
         event_kind: String kind of the runtime event.
         occurred_at: ISO-8601 UTC timestamp of occurrence.
         invocation_id: Optional correlation invocation identifier.
+        interaction_id: Optional host-generated per-turn correlation identifier.
         session_id: Optional session identifier.
+        task_id: Optional ephemeral task identifier.
         turn_id: Optional turn identifier.
         runtime_name: Name of the runtime provider.
         model: Target model name.
@@ -277,10 +302,10 @@ def insert_runtime_event(
                 """
                 INSERT INTO runtime_events (
                     recorded_at, occurred_at, event_id, event_kind,
-                    invocation_id, session_id, turn_id, runtime_name,
+                    invocation_id, interaction_id, session_id, task_id, turn_id, runtime_name,
                     model, profile, reasoning_effort, tool_name,
                     tool_call_id, status, duration_ms, metadata_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     recorded_at,
@@ -288,7 +313,9 @@ def insert_runtime_event(
                     event_id,
                     event_kind,
                     invocation_id,
+                    interaction_id,
                     session_id,
+                    task_id,
                     turn_id,
                     runtime_name,
                     model,
@@ -649,6 +676,87 @@ def fetch_invocation_events(
             (invocation_id,),
         ).fetchall()
         return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def fetch_task_events(
+    db_path: Path | str | None,
+    task_id: str,
+) -> list[dict[str, Any]]:
+    """Fetch all chronological neutral events correlated to one ephemeral task.
+
+    Args:
+        db_path: Database path to read from.
+        task_id: Provider-neutral task identifier.
+
+    Returns:
+        Chronological runtime event dictionaries for the task.
+    """
+    conn = get_telemetry_connection(db_path, read_only=True)
+    try:
+        rows = conn.execute(
+            "SELECT * FROM runtime_events WHERE task_id = ? ORDER BY occurred_at, id",
+            (task_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def fetch_interaction_events(
+    db_path: Path | str | None,
+    interaction_id: str,
+) -> list[dict[str, Any]]:
+    """Fetch chronological runtime and host events for one interaction.
+
+    Args:
+        db_path: Telemetry database path.
+        interaction_id: Host-generated per-turn correlation identifier.
+
+    Returns:
+        Chronological event dictionaries associated with the interaction.
+    """
+    conn = get_telemetry_connection(db_path, read_only=True)
+    try:
+        rows = conn.execute(
+            "SELECT * FROM runtime_events WHERE interaction_id = ? ORDER BY occurred_at, id",
+            (interaction_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def fetch_workflow_events(
+    db_path: Path | str | None,
+    workflow_id: str,
+) -> list[dict[str, Any]]:
+    """Fetch host transitions associated with one quote workflow.
+
+    Args:
+        db_path: Telemetry database path.
+        workflow_id: Host-generated quote workflow identifier.
+
+    Returns:
+        Chronological metadata-only transitions for the workflow.
+    """
+    conn = get_telemetry_connection(db_path, read_only=True)
+    try:
+        rows = conn.execute(
+            "SELECT * FROM runtime_events WHERE event_kind = 'host.turn_transition' "
+            "ORDER BY occurred_at, id"
+        ).fetchall()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            event = dict(row)
+            try:
+                metadata = json.loads(str(event.get("metadata_json") or "{}"))
+            except (TypeError, ValueError):
+                metadata = {}
+            if metadata.get("workflow_id") == workflow_id:
+                result.append(event)
+        return result
     finally:
         conn.close()
 

@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import sys
+import uuid
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -13,12 +16,18 @@ _DEMO_DIR = Path(__file__).resolve().parent
 if str(_DEMO_DIR) not in sys.path:
     sys.path.insert(0, str(_DEMO_DIR))
 
+from error_diagnostics import sanitize_exception  # noqa: E402
 from langsmith_recording import RecordingLangSmithClient  # noqa: E402
 from otel_recording import (  # noqa: E402
     LocalOtelBundle,
     create_local_otel_bundle,
 )
-from telemetry_db import get_telemetry_db_path, insert_runtime_event  # noqa: E402
+from telemetry_db import (  # noqa: E402
+    get_telemetry_db_path,
+    init_telemetry_database,
+    insert_runtime_event,
+    utc_now_iso,
+)
 
 from proteo_runtime.core.events import RuntimeEvent  # noqa: E402
 from proteo_runtime.observability import (  # noqa: E402
@@ -64,6 +73,8 @@ class SQLiteEventObserver(RuntimeObserver):
         )
 
         metadata = dict(event.metadata) if event.metadata else {}
+        interaction_id = metadata.get("interaction_id")
+        correlated_task_id = event.task_id or metadata.get("task_id")
 
         # Extract useful scalar attributes from metadata per Guide §9
         runtime_name = getattr(event, "runtime", None) or metadata.get("proteo.runtime")
@@ -85,7 +96,9 @@ class SQLiteEventObserver(RuntimeObserver):
             event_kind=event_kind,
             occurred_at=occurred_at,
             invocation_id=event.invocation_id,
+            interaction_id=(interaction_id if isinstance(interaction_id, str) else None),
             session_id=event.session_id,
+            task_id=correlated_task_id if isinstance(correlated_task_id, str) else None,
             turn_id=event.turn_id,
             runtime_name=str(runtime_name) if runtime_name is not None else None,
             model=str(model) if model is not None else None,
@@ -218,6 +231,7 @@ class ObservabilityManager:
             return
 
         # 1. Initialize local observers and clients
+        init_telemetry_database(self.db_path)
         self.sqlite_obs = SQLiteEventObserver(self.db_path)
         self.ls_client = RecordingLangSmithClient(self.db_path)
         self.ls_obs = LangSmithObserver(
@@ -263,6 +277,104 @@ class ObservabilityManager:
             )
 
         self.runtime_config = ObservabilityConfig(observers=tuple(runtime_bindings), strict=False)
+
+    def record_host_event(self, metadata: Mapping[str, Any]) -> None:
+        """Persist a safe host workflow transition as metadata-only telemetry.
+
+        Args:
+            metadata: Correlation and transition fields. Content fields are discarded.
+        """
+        if self.mode == "off" or self._closed:
+            return
+        allowed_keys = {
+            "interaction_id",
+            "task_id",
+            "workflow_id",
+            "revision",
+            "intent",
+            "route",
+            "phase_before",
+            "phase_after",
+            "result_code",
+        }
+        safe_metadata = {
+            key: value
+            for key, value in metadata.items()
+            if key in allowed_keys and isinstance(value, str | int | float | bool | type(None))
+        }
+        task_id = safe_metadata.get("task_id")
+        requested_kind = metadata.get("event_kind")
+        diagnostic_code = metadata.get("diagnostic_code")
+        if isinstance(diagnostic_code, str) and diagnostic_code.startswith("task.cleanup."):
+            safe_metadata["diagnostic_code"] = diagnostic_code
+        event_kind = (
+            str(requested_kind)
+            if isinstance(requested_kind, str) and requested_kind.startswith("task.cleanup.")
+            else "host.turn_transition"
+        )
+        insert_runtime_event(
+            self.db_path,
+            event_id=f"host-{uuid.uuid4().hex}",
+            event_kind=event_kind,
+            occurred_at=utc_now_iso(),
+            interaction_id=(
+                str(safe_metadata["interaction_id"])
+                if safe_metadata.get("interaction_id") is not None
+                else None
+            ),
+            task_id=str(task_id) if task_id is not None else None,
+            status=str(safe_metadata.get("result_code") or "recorded"),
+            metadata=safe_metadata,
+        )
+
+    def record_host_error(
+        self,
+        error: BaseException,
+        *,
+        stage: str,
+        interaction_id: str,
+        task_id: str | None = None,
+        workflow_id: str | None = None,
+    ) -> None:
+        """Persist a redacted host turn error without affecting application flow.
+
+        Args:
+            error: Exception to describe structurally, never by its message.
+            stage: Host/runtime phase where the exception occurred.
+            interaction_id: Per-turn correlation identifier.
+            task_id: Optional controlled-agent task identifier.
+            workflow_id: Optional pending quote workflow identifier.
+        """
+        if self.mode == "off" or self._closed:
+            return
+        try:
+            safe_stage = stage if re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", stage) else "unknown"
+            summary = sanitize_exception(
+                error,
+                repository_root=Path(__file__).resolve().parent.parent.parent,
+            )
+            safe_metadata: dict[str, Any] = {
+                "interaction_id": interaction_id[:160],
+                "stage": safe_stage,
+                **summary,
+            }
+            if task_id is not None and len(task_id) <= 160:
+                safe_metadata["task_id"] = task_id
+            if workflow_id is not None and len(workflow_id) <= 160:
+                safe_metadata["workflow_id"] = workflow_id
+            insert_runtime_event(
+                self.db_path,
+                event_id=f"host-error-{uuid.uuid4().hex}",
+                event_kind="host.turn_error",
+                occurred_at=utc_now_iso(),
+                interaction_id=interaction_id[:160],
+                task_id=task_id if task_id is not None and len(task_id) <= 160 else None,
+                status="failed",
+                metadata=safe_metadata,
+            )
+        except Exception:
+            # Telemetry failure must never hide or change the original turn failure.
+            return
 
     async def flush(self) -> None:
         """Flush all telemetry observers and OpenTelemetry providers idempotently."""

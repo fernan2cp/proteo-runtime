@@ -453,3 +453,106 @@ def test_inspector_histogram_metric_averaging(clean_obs_db: Path) -> None:
     output = inspect_telemetry(clean_obs_db, invocation=inv_id, otel_only=True)
     # 500 / 2 = 250 ms
     assert "250 ms" in output
+    assert "not invocation-scoped" in output
+
+
+def test_inspector_reconstructs_task_and_workflow_transitions(clean_obs_db: Path) -> None:
+    """Render host workflow transitions and cleanup diagnostics without payload content."""
+    insert_runtime_event(
+        clean_obs_db,
+        event_id="host-transition-1",
+        event_kind="host.turn_transition",
+        occurred_at="2026-09-19T12:00:00.000Z",
+        task_id="task-demo",
+        metadata={
+            "interaction_id": "interaction-demo",
+            "workflow_id": "quote-demo",
+            "revision": 3,
+            "intent": "quote_create",
+            "route": "resolve_quote_data",
+            "phase_before": "collecting",
+            "phase_after": "needs_resolution",
+            "result_code": "resolution_required",
+            "prompt": "must never be persisted",
+        },
+    )
+    insert_runtime_event(
+        clean_obs_db,
+        event_id="task-closed-1",
+        event_kind="task_closed",
+        occurred_at="2026-09-19T12:00:01.000Z",
+        task_id="task-demo",
+        metadata={
+            "diagnostics": [{"code": "task.cleanup.provider_delete_failed"}],
+        },
+    )
+
+    task_output = inspect_telemetry(clean_obs_db, task="task-demo")
+    workflow_output = inspect_telemetry(clean_obs_db, workflow="quote-demo")
+
+    assert "interaction_id" not in task_output
+    assert "resolve_quote_data" in task_output
+    assert "phase_before=collecting" in task_output
+    assert "diagnostic=task.cleanup.provider_delete_failed" in task_output
+    assert "quote-demo" in workflow_output
+    assert "must never be persisted" not in task_output
+
+
+def test_interaction_inspector_correlates_errors_and_preserves_success_status(
+    clean_obs_db: Path,
+) -> None:
+    """Render a correlated host failure as failed and successful runtime turns as completed."""
+    insert_runtime_event(
+        clean_obs_db,
+        event_id="runtime-interaction-error-start",
+        event_kind="invocation_started",
+        occurred_at="2026-09-19T12:10:00.000Z",
+        invocation_id="inv-interaction-error",
+        interaction_id="interaction-error",
+        task_id="task-interaction-error",
+        metadata={"stage": "quote_planner"},
+    )
+    insert_runtime_event(
+        clean_obs_db,
+        event_id="host-interaction-error",
+        event_kind="host.turn_error",
+        occurred_at="2026-09-19T12:10:01.000Z",
+        interaction_id="interaction-error",
+        task_id="task-interaction-error",
+        status="failed",
+        metadata={
+            "stage": "quote_planner",
+            "exception_module": "provider.errors",
+            "exception_type": "TransportError",
+            "code": "provider.transport_timeout",
+            "cause_types": ["builtins.TimeoutError"],
+            "frames": [
+                {
+                    "file": "examples/smart_quote_agent/graph.py",
+                    "function": "quote_planner",
+                    "line": 40,
+                }
+            ],
+            "exception_message": "must not be rendered",
+        },
+    )
+    insert_runtime_event(
+        clean_obs_db,
+        event_id="runtime-interaction-success-complete",
+        event_kind="invocation_completed",
+        occurred_at="2026-09-19T12:11:00.000Z",
+        invocation_id="inv-interaction-success",
+        interaction_id="interaction-success",
+    )
+
+    failed_output = inspect_telemetry(clean_obs_db, interaction="interaction-error")
+    success_output = inspect_telemetry(clean_obs_db, interaction="interaction-success")
+
+    assert "Status:     failed" in failed_output
+    assert "host.turn_error" in failed_output
+    assert "stage=quote_planner" in failed_output
+    assert "provider.errors.TransportError" in failed_output
+    assert "provider.transport_timeout" in failed_output
+    assert "graph.py:quote_planner:40" in failed_output
+    assert "must not be rendered" not in failed_output
+    assert "Status:     completed" in success_output

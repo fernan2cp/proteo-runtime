@@ -11,7 +11,7 @@ import contextlib
 import json
 import sys
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -22,12 +22,15 @@ if _DEMO_DIR not in sys.path:
 
 from telemetry_db import (  # noqa: E402
     derive_invocation_status,
+    fetch_interaction_events,
     fetch_invocation_events,
     fetch_langsmith_runs_for_invocation,
     fetch_last_invocation_id,
     fetch_otel_span_events,
     fetch_otel_spans_for_invocation,
     fetch_recent_invocations,
+    fetch_task_events,
+    fetch_workflow_events,
     get_telemetry_connection,
     get_telemetry_db_path,
 )
@@ -90,6 +93,22 @@ def _shorten_id(val: str | None, max_len: int = 16) -> str:
     if len(val) <= max_len:
         return val
     return f"{val[: max_len - 3]}..."
+
+
+def _event_metadata(event: Mapping[str, Any]) -> dict[str, Any]:
+    """Decode event metadata defensively for timeline filtering and rendering.
+
+    Args:
+        event: Runtime event row returned by the telemetry query layer.
+
+    Returns:
+        Metadata object, or an empty mapping for malformed/non-object JSON.
+    """
+    try:
+        value = json.loads(str(event.get("metadata_json") or "{}"))
+    except (TypeError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
 
 
 def render_recent_invocations_summary(
@@ -375,7 +394,7 @@ def render_invocation_details(
 
         lines.extend(
             [
-                "OpenTelemetry Metrics — recent/aggregate",
+                "OpenTelemetry Metrics — cumulative across database (not invocation-scoped)",
                 "─" * 40,
                 "",
             ]
@@ -434,11 +453,109 @@ def render_invocation_details(
     return "\n".join(lines).rstrip()
 
 
+def render_interaction_details(
+    db_path: Path | str | None,
+    interaction_id: str,
+) -> str:
+    """Render runtime events and redacted host errors for one CLI interaction.
+
+    Args:
+        db_path: Path to the telemetry database.
+        interaction_id: Host-generated per-turn correlation identifier.
+
+    Returns:
+        Multi-line interaction report with no exception messages or user content.
+    """
+    events = fetch_interaction_events(db_path, interaction_id)
+    if not events:
+        return f"Interaction '{interaction_id}' not found in telemetry database."
+
+    errors = [event for event in events if event.get("event_kind") == "host.turn_error"]
+    invocation_ids = list(
+        dict.fromkeys(
+            str(event["invocation_id"])
+            for event in events
+            if event.get("invocation_id") is not None
+        )
+    )
+    invocation_statuses = [
+        derive_invocation_status(fetch_invocation_events(db_path, invocation_id))
+        for invocation_id in invocation_ids
+    ]
+    if errors or "failed" in invocation_statuses:
+        status = "failed"
+    elif "running" in invocation_statuses:
+        status = "running"
+    elif invocation_statuses:
+        status = "completed"
+    else:
+        status = "host-only"
+
+    lines = [
+        f"Interaction {interaction_id}",
+        f"Status:     {status}",
+        f"Task:       {next((event.get('task_id') for event in events if event.get('task_id')), '-')}",
+        "",
+        "Correlated Runtime and Host Events",
+        "─" * 40,
+    ]
+    for event in events:
+        metadata = _event_metadata(event)
+        kind = str(event.get("event_kind", ""))
+        invocation_id = str(event.get("invocation_id") or "-")
+        stage = metadata.get("stage")
+        suffix = f" stage={stage}" if isinstance(stage, str) else ""
+        lines.append(
+            f"{_format_time_hhmmss(event.get('occurred_at'))}  {kind:<24} {invocation_id}{suffix}"
+        )
+
+    if errors:
+        lines.extend(["", "Host Error Diagnostics", "─" * 40])
+        for error in errors:
+            metadata = _event_metadata(error)
+            stage = _safe_display_value(metadata.get("stage"), "unknown")
+            module = _safe_display_value(metadata.get("exception_module"), "unknown")
+            exception_type = _safe_display_value(metadata.get("exception_type"), "unknown")
+            code = _safe_display_value(metadata.get("code"), "-")
+            lines.append(f"stage={stage} exception={module}.{exception_type} code={code}")
+            causes = metadata.get("cause_types")
+            if isinstance(causes, list):
+                safe_causes = [
+                    _safe_display_value(value, "unknown")
+                    for value in causes
+                    if isinstance(value, str)
+                ]
+                if safe_causes:
+                    lines.append(f"causes: {' -> '.join(safe_causes)}")
+            frames = metadata.get("frames")
+            if isinstance(frames, list) and frames:
+                lines.append("frames:")
+                for frame in frames:
+                    if not isinstance(frame, dict):
+                        continue
+                    filename = _safe_display_value(frame.get("file"), "unknown")
+                    function = _safe_display_value(frame.get("function"), "unknown")
+                    line_number = frame.get("line")
+                    if isinstance(line_number, int):
+                        lines.append(f"  {filename}:{function}:{line_number}")
+    return "\n".join(lines)
+
+
+def _safe_display_value(value: Any, default: str) -> str:
+    """Render only short scalar diagnostic values from local telemetry."""
+    if isinstance(value, str) and len(value) <= 240:
+        return "".join(character if character.isprintable() else " " for character in value)
+    return default
+
+
 def inspect_telemetry(
     db_path: Path | str | None = None,
     *,
     last: bool = False,
     invocation: str | None = None,
+    interaction: str | None = None,
+    task: str | None = None,
+    workflow: str | None = None,
     limit: int = 10,
     events_only: bool = False,
     langsmith_only: bool = False,
@@ -450,6 +567,9 @@ def inspect_telemetry(
         db_path: Path to the telemetry database.
         last: If True, inspect the most recent invocation.
         invocation: Specific invocation ID to inspect.
+        interaction: Specific host interaction ID to inspect with host diagnostics.
+        task: Specific ephemeral task ID to inspect as a multi-turn timeline.
+        workflow: Specific quote workflow ID to inspect as a host transition timeline.
         limit: Limit for recent invocations summary view.
         events_only: Show only runtime events.
         langsmith_only: Show only LangSmith tree.
@@ -464,6 +584,62 @@ def inspect_telemetry(
             f"Observability database not found at {target_db}.\n"
             "Run 'python init_observability.py' to initialize the telemetry database."
         )
+
+    if interaction is not None:
+        return render_interaction_details(target_db, interaction)
+
+    if task is not None or workflow is not None:
+        task_events = (
+            fetch_task_events(target_db, task)
+            if task is not None
+            else fetch_workflow_events(target_db, workflow or "")
+        )
+        if workflow is not None:
+            task_events = [
+                event
+                for event in task_events
+                if _event_metadata(event).get("workflow_id") == workflow
+            ]
+        if not task_events:
+            label = f"Task '{task}'" if task is not None else f"Workflow '{workflow}'"
+            return f"{label} not found in telemetry database."
+        heading = f"Task {task}" if task is not None else f"Workflow {workflow}"
+        lines = [heading, "─" * 48, "Correlated Runtime and Host Events"]
+        for event in task_events:
+            if event.get("event_kind") == "output_text_delta":
+                continue
+            invocation_id = str(event.get("invocation_id") or "-")
+            metadata = _event_metadata(event)
+            details: list[str] = []
+            if event.get("event_kind") == "host.turn_transition":
+                for key in (
+                    "route",
+                    "intent",
+                    "workflow_id",
+                    "revision",
+                    "phase_before",
+                    "phase_after",
+                    "result_code",
+                ):
+                    value = metadata.get(key)
+                    if value is not None:
+                        details.append(f"{key}={value}")
+            diagnostics = metadata.get("diagnostics", [])
+            diagnostic_code = metadata.get("diagnostic_code")
+            if isinstance(diagnostic_code, str) and diagnostic_code.startswith("task.cleanup."):
+                details.append(f"diagnostic={diagnostic_code}")
+            if isinstance(diagnostics, list):
+                details.extend(
+                    f"diagnostic={diagnostic.get('code')}"
+                    for diagnostic in diagnostics
+                    if isinstance(diagnostic, dict) and diagnostic.get("code")
+                )
+            suffix = " " + " ".join(details) if details else ""
+            lines.append(
+                f"{_format_time_hhmmss(event.get('occurred_at'))}  "
+                f"{str(event.get('event_kind')):<24} {invocation_id}{suffix}"
+            )
+        return "\n".join(lines)
 
     # 1. Inspect specific invocation or --last
     target_id = invocation
@@ -519,6 +695,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Inspect a specific Proteo runtime invocation by ID",
     )
     parser.add_argument(
+        "--interaction",
+        type=str,
+        default=None,
+        help="Inspect runtime events and sanitized host diagnostics for one interaction ID",
+    )
+    parser.add_argument(
+        "--task",
+        type=str,
+        default=None,
+        help="Inspect every recorded turn belonging to an ephemeral task ID",
+    )
+    parser.add_argument(
+        "--workflow",
+        type=str,
+        default=None,
+        help="Inspect metadata-only host transitions for one quote workflow ID",
+    )
+    parser.add_argument(
         "--limit",
         type=int,
         default=10,
@@ -552,6 +746,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         db_path=args.db,
         last=args.last,
         invocation=args.invocation,
+        interaction=args.interaction,
+        task=args.task,
+        workflow=args.workflow,
         limit=args.limit,
         events_only=args.events,
         langsmith_only=args.langsmith,

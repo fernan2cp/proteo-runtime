@@ -120,7 +120,7 @@ async def test_quote_creation_publishes_tool_lifecycle_events(tmp_path: Path) ->
     app_graph = create_demo_graph(
         conn,
         structured_model=None,
-        controlled_agent_model=None,
+        context_agent=None,
         approval_handler=AutoApprovalHandler(),
         discount_prompter=lambda _subtotal: 10,
         event_sink=bus.emit,
@@ -227,7 +227,7 @@ async def test_observer_failure_isolation_allows_quote_creation(tmp_path: Path) 
     app_graph = create_demo_graph(
         conn,
         structured_model=None,
-        controlled_agent_model=None,
+        context_agent=None,
         approval_handler=AutoApprovalHandler(),
         discount_prompter=lambda _subtotal: 5,
         event_sink=bus.emit,

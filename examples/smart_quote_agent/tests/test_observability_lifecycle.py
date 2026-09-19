@@ -6,9 +6,12 @@ ensuring zero double flush, zero double close, and zero event duplication.
 
 from __future__ import annotations
 
+import json
+import sqlite3
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -22,11 +25,15 @@ from observability import (  # noqa: E402
     ObservabilityManager,
     SQLiteEventObserver,
 )
+from session import AgentSessionManager  # noqa: E402
 from telemetry_db import (  # noqa: E402
+    fetch_interaction_events,
     fetch_invocation_events,
+    fetch_task_events,
     init_telemetry_database,
 )
 
+from proteo_runtime.core.diagnostics import RuntimeDiagnostic  # noqa: E402
 from proteo_runtime.core.events import RuntimeEvent, RuntimeEventKind  # noqa: E402
 from proteo_runtime.observability import (  # noqa: E402
     RuntimeEventBus,
@@ -191,3 +198,109 @@ async def test_zero_event_duplication_across_buses(temp_obs_db: Path) -> None:
     assert len(events) == 2
     event_ids = [e["event_id"] for e in events]
     assert event_ids == ["evt_dup_1", "evt_dup_2"]
+
+
+@pytest.mark.asyncio
+async def test_host_transition_event_is_task_correlated_and_metadata_only(
+    temp_obs_db: Path,
+) -> None:
+    """Persist only allow-listed transition metadata under the runtime task ID."""
+    manager = ObservabilityManager(mode="local", db_path=temp_obs_db)
+    try:
+        manager.record_host_event(
+            {
+                "interaction_id": "interaction-1",
+                "task_id": "task-1",
+                "workflow_id": "quote-1",
+                "revision": 4,
+                "intent": "quote_create",
+                "route": "resolve_quote_data",
+                "phase_before": "collecting",
+                "phase_after": "needs_resolution",
+                "result_code": "resolution_required",
+                "prompt": "private user text",
+                "password": "private credential",
+            }
+        )
+    finally:
+        await manager.close()
+
+    events = fetch_task_events(temp_obs_db, "task-1")
+    assert len(events) == 1
+    assert events[0]["event_kind"] == "host.turn_transition"
+    interaction_events = fetch_interaction_events(temp_obs_db, "interaction-1")
+    assert interaction_events == events
+    metadata = json.loads(str(events[0]["metadata_json"]))
+    assert metadata["workflow_id"] == "quote-1"
+    assert "prompt" not in metadata
+    assert "password" not in metadata
+
+
+@pytest.mark.asyncio
+async def test_runtime_event_extracts_interaction_and_task_correlation(
+    temp_obs_db: Path,
+) -> None:
+    """Project safe invocation metadata into indexed event correlation columns."""
+    observer = SQLiteEventObserver(temp_obs_db)
+    event = RuntimeEvent(
+        kind=RuntimeEventKind.INVOCATION_STARTED,
+        event_id="runtime-interaction-correlation",
+        sequence=1,
+        occurred_at=datetime.now(UTC),
+        runtime="codex",
+        invocation_id="inv-interaction-correlation",
+        metadata={
+            "interaction_id": "interaction-runtime-correlation",
+            "task_id": "task-runtime-correlation",
+            "stage": "intent_router",
+        },
+    )
+
+    await observer.on_event(event)
+
+    events = fetch_interaction_events(temp_obs_db, "interaction-runtime-correlation")
+    assert len(events) == 1
+    assert events[0]["event_kind"] == "invocation_started"
+    assert events[0]["invocation_id"] == "inv-interaction-correlation"
+    assert events[0]["task_id"] == "task-runtime-correlation"
+
+
+@pytest.mark.asyncio
+async def test_task_cleanup_diagnostic_is_correlated_and_redacted(temp_obs_db: Path) -> None:
+    """Persist cleanup diagnostic codes from task lifecycle without provider details."""
+    manager = ObservabilityManager(mode="local", db_path=temp_obs_db)
+    business_conn = sqlite3.connect(":memory:")
+
+    class DiagnosticTask:
+        """Minimal closeable test task exposing a sanitized cleanup diagnostic."""
+
+        id = "task-cleanup-1"
+        diagnostics = (
+            RuntimeDiagnostic(
+                code="task.cleanup.provider_delete_failed",
+                message="Remote task cleanup failed.",
+                details={"provider_payload": "must not be stored"},
+            ),
+        )
+
+        async def close(self) -> None:
+            """Complete fake task close without provider interaction."""
+
+    sessions = AgentSessionManager(
+        runtime=object(),
+        conn=business_conn,
+        host_event_sink=manager.record_host_event,
+    )
+    sessions._active_task = cast(Any, DiagnosticTask())
+    try:
+        await sessions.close()
+    finally:
+        business_conn.close()
+        await manager.close()
+
+    events = fetch_task_events(temp_obs_db, "task-cleanup-1")
+    assert len(events) == 1
+    assert events[0]["event_kind"] == "task.cleanup.provider_delete_failed"
+    metadata = json.loads(str(events[0]["metadata_json"]))
+    assert metadata["diagnostic_code"] == "task.cleanup.provider_delete_failed"
+    assert "provider_payload" not in metadata
