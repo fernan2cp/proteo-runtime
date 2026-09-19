@@ -237,6 +237,44 @@ async def test_host_transition_event_is_task_correlated_and_metadata_only(
 
 
 @pytest.mark.asyncio
+async def test_host_timing_event_persists_duration_and_safe_call_correlation(
+    temp_obs_db: Path,
+) -> None:
+    """Persist whitelisted model timing fields while discarding conversational content."""
+    manager = ObservabilityManager(mode="local", db_path=temp_obs_db)
+    try:
+        manager.record_host_event(
+            {
+                "event_kind": "host.model_call_completed",
+                "interaction_id": "interaction-timing-1",
+                "task_id": "task-timing-1",
+                "workflow_id": "quote-timing-1",
+                "stage": "intent_router",
+                "call_id": "call-timing-1",
+                "status": "completed",
+                "result_code": "model_call_completed",
+                "duration_ms": 3456.5,
+                "response": "private response text",
+                "password": "private credential",
+            }
+        )
+    finally:
+        await manager.close()
+
+    events = fetch_interaction_events(temp_obs_db, "interaction-timing-1")
+    assert len(events) == 1
+    event = events[0]
+    assert event["event_kind"] == "host.model_call_completed"
+    assert event["task_id"] == "task-timing-1"
+    assert event["duration_ms"] == 3456.5
+    metadata = json.loads(str(event["metadata_json"]))
+    assert metadata["call_id"] == "call-timing-1"
+    assert metadata["stage"] == "intent_router"
+    assert "response" not in metadata
+    assert "password" not in metadata
+
+
+@pytest.mark.asyncio
 async def test_runtime_event_extracts_interaction_and_task_correlation(
     temp_obs_db: Path,
 ) -> None:

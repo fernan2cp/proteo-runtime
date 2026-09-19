@@ -20,6 +20,7 @@ from telemetry_db import (  # noqa: E402
     fetch_last_invocation_id,
     fetch_otel_span_events,
     fetch_otel_spans,
+    fetch_recent_invocation_event_groups,
     fetch_recent_invocations,
     fetch_recent_metrics,
     get_telemetry_connection,
@@ -296,6 +297,33 @@ def test_read_helpers_and_summary_queries(temp_telemetry_db: Path) -> None:
 
     last_id = fetch_last_invocation_id(temp_telemetry_db)
     assert last_id == "inv_new"
+
+
+def test_fetch_recent_invocation_event_groups_limits_distinct_invocations(
+    temp_telemetry_db: Path,
+) -> None:
+    """Fetch latest distinct invocation events without truncating a group.
+
+    Args:
+        temp_telemetry_db: Initialized telemetry database fixture.
+    """
+    for invocation_id, base_second in (("inv_old", 0), ("inv_middle", 1), ("inv_new", 2)):
+        for event_index, kind in enumerate(("invocation_started", "invocation_completed")):
+            insert_runtime_event(
+                temp_telemetry_db,
+                event_id=f"{invocation_id}-{event_index}",
+                event_kind=kind,
+                occurred_at=f"2026-09-19T12:00:0{base_second}.{event_index}00Z",
+                invocation_id=invocation_id,
+                metadata={"stage": "intent_router"},
+            )
+
+    groups = fetch_recent_invocation_event_groups(temp_telemetry_db, limit=2)
+    assert [[event["invocation_id"] for event in group] for group in groups] == [
+        ["inv_middle", "inv_middle"],
+        ["inv_new", "inv_new"],
+    ]
+    assert fetch_recent_invocation_event_groups(temp_telemetry_db, limit=0) == []
 
 
 def test_concurrent_writes(temp_telemetry_db: Path) -> None:

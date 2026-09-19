@@ -293,9 +293,13 @@ class ObservabilityManager:
             "revision",
             "intent",
             "route",
+            "stage",
+            "call_id",
             "phase_before",
             "phase_after",
             "result_code",
+            "status",
+            "duration_ms",
         }
         safe_metadata = {
             key: value
@@ -307,10 +311,25 @@ class ObservabilityManager:
         diagnostic_code = metadata.get("diagnostic_code")
         if isinstance(diagnostic_code, str) and diagnostic_code.startswith("task.cleanup."):
             safe_metadata["diagnostic_code"] = diagnostic_code
-        event_kind = (
-            str(requested_kind)
-            if isinstance(requested_kind, str) and requested_kind.startswith("task.cleanup.")
-            else "host.turn_transition"
+        allowed_event_kinds = {
+            "host.interaction_started",
+            "host.interaction_completed",
+            "host.model_call_started",
+            "host.model_call_completed",
+            "host.hitl_started",
+            "host.hitl_resolved",
+        }
+        if isinstance(requested_kind, str) and (
+            requested_kind in allowed_event_kinds or requested_kind.startswith("task.cleanup.")
+        ):
+            event_kind = requested_kind
+        else:
+            event_kind = "host.turn_transition"
+        duration_value = safe_metadata.get("duration_ms")
+        duration_ms = (
+            float(duration_value)
+            if isinstance(duration_value, int | float) and not isinstance(duration_value, bool)
+            else None
         )
         insert_runtime_event(
             self.db_path,
@@ -323,7 +342,10 @@ class ObservabilityManager:
                 else None
             ),
             task_id=str(task_id) if task_id is not None else None,
-            status=str(safe_metadata.get("result_code") or "recorded"),
+            status=str(
+                safe_metadata.get("status") or safe_metadata.get("result_code") or "recorded"
+            ),
+            duration_ms=duration_ms,
             metadata=safe_metadata,
         )
 

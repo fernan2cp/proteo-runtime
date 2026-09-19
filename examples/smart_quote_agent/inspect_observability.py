@@ -12,6 +12,8 @@ import json
 import sys
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
+from datetime import datetime
+from math import ceil
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +30,7 @@ from telemetry_db import (  # noqa: E402
     fetch_last_invocation_id,
     fetch_otel_span_events,
     fetch_otel_spans_for_invocation,
+    fetch_recent_invocation_event_groups,
     fetch_recent_invocations,
     fetch_task_events,
     fetch_workflow_events,
@@ -109,6 +112,603 @@ def _event_metadata(event: Mapping[str, Any]) -> dict[str, Any]:
     except (TypeError, ValueError):
         return {}
     return value if isinstance(value, dict) else {}
+
+
+def _event_timestamp_ms(event: Mapping[str, Any]) -> float | None:
+    """Parse an event's ISO timestamp as epoch milliseconds.
+
+    Args:
+        event: Runtime or host telemetry event row.
+
+    Returns:
+        Epoch timestamp in milliseconds, or None if missing or invalid.
+    """
+    value = event.get("occurred_at")
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp() * 1000
+    except ValueError:
+        return None
+
+
+def _elapsed_ms(start: Mapping[str, Any], end: Mapping[str, Any]) -> float | None:
+    """Return elapsed milliseconds between two telemetry event rows.
+
+    Args:
+        start: Earlier lifecycle event row.
+        end: Later lifecycle event row.
+
+    Returns:
+        Non-negative elapsed milliseconds, or None if timestamps are unusable.
+    """
+    start_ms = _event_timestamp_ms(start)
+    end_ms = _event_timestamp_ms(end)
+    if start_ms is None or end_ms is None or end_ms < start_ms:
+        return None
+    return end_ms - start_ms
+
+
+def _metadata_value(event: Mapping[str, Any], key: str) -> Any:
+    """Read a value from a runtime event column or its metadata object.
+
+    Args:
+        event: Runtime or host telemetry event row.
+        key: Field name to read.
+
+    Returns:
+        Top-level field or metadata value, if present.
+    """
+    value = event.get(key)
+    return value if value is not None else _event_metadata(event).get(key)
+
+
+def _recorded_duration(event: Mapping[str, Any]) -> float | None:
+    """Read a finite non-negative duration from a completion event.
+
+    Args:
+        event: Event row that may contain duration_ms.
+
+    Returns:
+        Duration in milliseconds, or None if absent or invalid.
+    """
+    value = event.get("duration_ms")
+    if value is None:
+        value = _event_metadata(event).get("duration_ms")
+    if isinstance(value, int | float) and not isinstance(value, bool) and value >= 0:
+        return float(value)
+    return None
+
+
+def _event_order(event: Mapping[str, Any]) -> tuple[float, int]:
+    """Return a stable chronological sort key for an event row.
+
+    Args:
+        event: Runtime or host telemetry event row.
+
+    Returns:
+        Timestamp and SQLite row ID used for chronological ordering.
+    """
+    timestamp = _event_timestamp_ms(event)
+    row_id = event.get("id")
+    return timestamp if timestamp is not None else 0.0, row_id if isinstance(row_id, int) else 0
+
+
+def _pair_durations(
+    events: Sequence[Mapping[str, Any]],
+    start_kinds: set[str],
+    end_kinds: set[str],
+    *,
+    correlation_keys: tuple[str, ...],
+) -> tuple[list[float], list[Mapping[str, Any]]]:
+    """Pair lifecycle events and return completed durations and pending starts.
+
+    Args:
+        events: Runtime and host lifecycle event rows.
+        start_kinds: Event kinds that begin measured intervals.
+        end_kinds: Event kinds that finish measured intervals.
+        correlation_keys: Metadata or column fields used to pair each interval.
+
+    Returns:
+        Completed interval durations and lifecycle starts with no matching end.
+    """
+    pending: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+    durations: list[float] = []
+    ordered = sorted(events, key=_event_order)
+    for event in ordered:
+        kind = str(event.get("event_kind", ""))
+        correlation = next(
+            (
+                str(value)
+                for key in correlation_keys
+                if (value := _metadata_value(event, key)) is not None
+            ),
+            "unkeyed",
+        )
+        if kind in start_kinds:
+            pending[correlation].append(event)
+        elif kind in end_kinds and pending[correlation]:
+            start = pending[correlation].pop(0)
+            duration = _elapsed_ms(start, event)
+            if duration is not None:
+                durations.append(duration)
+
+    pending_starts = [event for starts in pending.values() for event in starts]
+    return durations, pending_starts
+
+
+def _final_token_snapshot(events: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Return the last cumulative token usage snapshot for an invocation.
+
+    Args:
+        events: Chronological event rows for one invocation.
+
+    Returns:
+        Final usage metadata, or an empty mapping if no usage was recorded.
+    """
+    usage_events = sorted(
+        (event for event in events if event.get("event_kind") == "token_usage_updated"),
+        key=_event_order,
+    )
+    if not usage_events:
+        return {}
+    metadata = _event_metadata(usage_events[-1])
+    usage = metadata.get("usage")
+    if isinstance(usage, dict):
+        return {**metadata, **usage}
+    return metadata
+
+
+def _token_number(snapshot: Mapping[str, Any], key: str) -> int | None:
+    """Read a non-negative integer token count from a usage snapshot.
+
+    Args:
+        snapshot: Final token usage metadata.
+        key: Usage field name.
+
+    Returns:
+        Token count, or None if missing or invalid.
+    """
+    value = snapshot.get(key)
+    if isinstance(value, int | float) and not isinstance(value, bool) and value >= 0:
+        return int(value)
+    return None
+
+
+def _derive_invocation_latency(events: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Derive model and tool timings from one invocation's neutral events.
+
+    Args:
+        events: Runtime event rows associated with one invocation.
+
+    Returns:
+        Metadata-only timing and token summary for the invocation.
+    """
+    ordered = sorted(events, key=_event_order)
+    starts = [event for event in ordered if event.get("event_kind") == "invocation_started"]
+    terminals = [
+        event
+        for event in ordered
+        if event.get("event_kind")
+        in {"invocation_completed", "invocation_failed", "cancelled", "turn_failed"}
+    ]
+    start = starts[0] if starts else None
+    terminal = terminals[-1] if terminals else None
+    model_duration = _elapsed_ms(start, terminal) if start is not None and terminal else None
+    if model_duration is None and start is not None and terminal is not None:
+        # Older event streams may provide no parseable timestamps but retain a duration.
+        duration_value = terminal.get("duration_ms")
+        model_duration = float(duration_value) if isinstance(duration_value, int | float) else None
+
+    first_delta = next(
+        (event for event in ordered if event.get("event_kind") == "output_text_delta"),
+        None,
+    )
+    ttft = _elapsed_ms(start, first_delta) if start is not None and first_delta else None
+    token_snapshot = _final_token_snapshot(ordered)
+    input_tokens = _token_number(token_snapshot, "input_tokens")
+    cached_tokens = _token_number(token_snapshot, "cached_input_tokens")
+    output_tokens = _token_number(token_snapshot, "output_tokens")
+    if input_tokens is None:
+        input_tokens = _token_number(token_snapshot, "prompt_tokens")
+    if cached_tokens is None:
+        cached_tokens = _token_number(token_snapshot, "cache_read_input_tokens")
+
+    requested_tools = [event for event in ordered if event.get("event_kind") == "tool_requested"]
+    started_tools = [event for event in ordered if event.get("event_kind") == "tool_started"]
+    completed_tools = [event for event in ordered if event.get("event_kind") == "tool_completed"]
+    tool_durations, _ = _pair_durations(
+        ordered,
+        {"tool_started"},
+        {"tool_completed", "tool_failed"},
+        correlation_keys=("tool_call_id",),
+    )
+    if not tool_durations:
+        tool_durations = [
+            float(event["duration_ms"])
+            for event in completed_tools
+            if isinstance(event.get("duration_ms"), int | float)
+        ]
+    turn_start = next(
+        (event for event in ordered if event.get("event_kind") == "turn_started"), start
+    )
+    pre_tool_ms: list[float] = []
+    post_tool_ms: list[float] = []
+    previous_tool_completion = turn_start
+    used_completion_ids: set[int] = set()
+    for requested_tool in requested_tools:
+        if previous_tool_completion is not None:
+            before_tool = _elapsed_ms(previous_tool_completion, requested_tool)
+            if before_tool is not None:
+                pre_tool_ms.append(before_tool)
+        tool_call_id = _metadata_value(requested_tool, "tool_call_id")
+        completion = next(
+            (
+                event
+                for event in ordered
+                if event.get("event_kind") in {"tool_completed", "tool_failed"}
+                and _event_order(event) > _event_order(requested_tool)
+                and event.get("id") not in used_completion_ids
+                and (tool_call_id is None or _metadata_value(event, "tool_call_id") == tool_call_id)
+            ),
+            None,
+        )
+        if completion is None:
+            continue
+        completion_id = completion.get("id")
+        if isinstance(completion_id, int):
+            used_completion_ids.add(completion_id)
+        previous_tool_completion = completion
+        next_model_event = next(
+            (
+                event
+                for event in ordered
+                if _event_order(event) > _event_order(completion)
+                and event.get("event_kind")
+                in {
+                    "tool_requested",
+                    "output_text_delta",
+                    "turn_completed",
+                    "turn_failed",
+                    "invocation_completed",
+                    "invocation_failed",
+                    "cancelled",
+                }
+            ),
+            None,
+        )
+        if next_model_event is not None:
+            after_tool = _elapsed_ms(completion, next_model_event)
+            if after_tool is not None:
+                post_tool_ms.append(after_tool)
+
+    stage = next(
+        (value for event in ordered if isinstance((value := _metadata_value(event, "stage")), str)),
+        "unknown",
+    )
+    model = next((event.get("model") for event in ordered if event.get("model")), None)
+    profile = next((event.get("profile") for event in ordered if event.get("profile")), None)
+    call_id = next(
+        (
+            str(value)
+            for event in ordered
+            if (value := _metadata_value(event, "call_id")) is not None
+        ),
+        None,
+    )
+    is_model_call = bool(start is not None and (call_id or model or profile or token_snapshot))
+    return {
+        "invocation_id": next(
+            (event.get("invocation_id") for event in ordered if event.get("invocation_id")),
+            "-",
+        ),
+        "stage": stage,
+        "model": model or "-",
+        "profile": profile or "-",
+        "call_id": call_id,
+        "started": start is not None,
+        "is_model_call": is_model_call,
+        "duration_ms": model_duration,
+        "ttft_ms": ttft,
+        "structured_terminal_ms": model_duration if first_delta is None else None,
+        "input_tokens": input_tokens,
+        "cached_input_tokens": cached_tokens,
+        "output_tokens": output_tokens,
+        "cache_ratio": (
+            cached_tokens / input_tokens
+            if cached_tokens is not None and input_tokens is not None and input_tokens > 0
+            else None
+        ),
+        "tool_count": len(started_tools) or len(requested_tools),
+        "tool_duration_ms": tool_durations,
+        "pre_tool_ms": pre_tool_ms,
+        "post_tool_ms": post_tool_ms,
+        "first_event": start,
+        "terminal_event": terminal,
+    }
+
+
+def _render_latency_breakdown(
+    events: Sequence[Mapping[str, Any]], *, invocation_scoped: bool = False
+) -> list[str]:
+    """Render safe latency measurements from invocation and host lifecycle events.
+
+    Args:
+        events: Correlated runtime and host event rows.
+        invocation_scoped: Whether to label tool approval and interaction HITL
+            measurements at their distinct scopes.
+
+    Returns:
+        Report lines containing timings and non-sensitive token counts.
+    """
+    lines = ["Latency Breakdown", "─" * 40]
+    ordered = sorted(events, key=_event_order)
+    interactions, pending_interactions = _pair_durations(
+        ordered,
+        {"host.interaction_started"},
+        {"host.interaction_completed"},
+        correlation_keys=("interaction_id",),
+    )
+    if interactions:
+        lines.append(
+            "Interaction total: " + ", ".join(_format_duration(value) for value in interactions)
+        )
+    else:
+        interaction_fallbacks = [
+            duration
+            for event in ordered
+            if event.get("event_kind") == "host.interaction_completed"
+            and (duration := _recorded_duration(event)) is not None
+        ]
+        if interaction_fallbacks:
+            lines.append(
+                "Interaction total: "
+                + ", ".join(_format_duration(value) for value in interaction_fallbacks)
+            )
+        elif pending_interactions:
+            lines.append("Interaction total: running")
+
+    groups: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+    for event in ordered:
+        invocation_id = event.get("invocation_id")
+        if isinstance(invocation_id, str) and not str(event.get("event_kind", "")).startswith(
+            "host."
+        ):
+            groups[invocation_id].append(event)
+    summaries = [_derive_invocation_latency(group) for group in groups.values()]
+    for summary in summaries:
+        if not summary["is_model_call"]:
+            continue
+        duration = summary["duration_ms"]
+        if summary["stage"] == "controlled_agent":
+            span_label = "runtime task span (may include tool/HITL cycles)"
+        else:
+            span_label = "model invocation span"
+        label = (
+            f"{summary['stage']} / {summary['model']} / {summary['profile']}: "
+            f"{span_label} {_format_duration(duration)}"
+        )
+        if summary["ttft_ms"] is not None:
+            label += f", TTFT {_format_duration(summary['ttft_ms'])}"
+        elif summary["structured_terminal_ms"] is not None:
+            label += f", structured terminal {_format_duration(summary['structured_terminal_ms'])} (no text delta)"
+        input_tokens = summary["input_tokens"]
+        cached_tokens = summary["cached_input_tokens"]
+        output_tokens = summary["output_tokens"]
+        if input_tokens is not None:
+            cache_text = (
+                f", cached {cached_tokens}/{input_tokens} ({summary['cache_ratio']:.0%})"
+                if cached_tokens is not None and summary["cache_ratio"] is not None
+                else f", cached n/a/{input_tokens}"
+            )
+            output_text = f", output {output_tokens}" if output_tokens is not None else ""
+            label += f", input {input_tokens}{cache_text}{output_text}"
+        lines.append(label)
+        if summary["pre_tool_ms"]:
+            lines.append(
+                "  Before tool(s): "
+                + ", ".join(_format_duration(value) for value in summary["pre_tool_ms"])
+            )
+        if summary["tool_duration_ms"]:
+            lines.append(
+                "  Tool execution: "
+                + ", ".join(_format_duration(value) for value in summary["tool_duration_ms"])
+            )
+        if summary["post_tool_ms"]:
+            lines.append(
+                "  After tool(s) to next model event: "
+                + ", ".join(_format_duration(value) for value in summary["post_tool_ms"])
+            )
+
+    model_starts: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+    runtime_starts: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+    for event in ordered:
+        kind = str(event.get("event_kind", ""))
+        call_id = _metadata_value(event, "call_id")
+        if not isinstance(call_id, str):
+            continue
+        if kind == "host.model_call_started":
+            model_starts[call_id].append(event)
+        elif kind == "invocation_started":
+            runtime_starts[call_id].append(event)
+    for call_id, host_starts in model_starts.items():
+        runtime_events = runtime_starts.get(call_id, [])
+        if host_starts and runtime_events:
+            setup_ms = _elapsed_ms(host_starts[0], runtime_events[0])
+            if setup_ms is not None:
+                stage = _metadata_value(host_starts[0], "stage") or "unknown"
+                lines.append(f"Provider preparation ({stage}): {_format_duration(setup_ms)}")
+        host_completions = [
+            event
+            for event in ordered
+            if event.get("event_kind") == "host.model_call_completed"
+            and _metadata_value(event, "call_id") == call_id
+        ]
+        if host_completions:
+            host_duration = _recorded_duration(host_completions[-1])
+            if host_duration is not None:
+                stage = _metadata_value(host_completions[-1], "stage") or "unknown"
+                host_span_label = (
+                    "host task-call wall time (may include tool/HITL cycles)"
+                    if stage == "controlled_agent"
+                    else "host model-call wall time"
+                )
+                lines.append(f"{host_span_label} ({stage}): {_format_duration(host_duration)}")
+
+    tool_durations, pending_tools = _pair_durations(
+        ordered,
+        {"tool_started"},
+        {"tool_completed", "tool_failed"},
+        correlation_keys=("tool_call_id",),
+    )
+    if tool_durations and not any(summary["is_model_call"] for summary in summaries):
+        lines.append(
+            "Tool execution: " + ", ".join(_format_duration(value) for value in tool_durations)
+        )
+    if pending_tools:
+        lines.append(f"Tool execution: {len(pending_tools)} still running")
+
+    approval_durations, pending_approvals = _pair_durations(
+        ordered,
+        {"tool_approval_requested"},
+        {"tool_approval_resolved", "tool_denied"},
+        correlation_keys=("tool_call_id", "interaction_id"),
+    )
+    hitl_durations, pending_hitl = _pair_durations(
+        ordered,
+        {"host.hitl_started"},
+        {"host.hitl_resolved"},
+        correlation_keys=("hitl_id", "interaction_id", "workflow_id"),
+    )
+    if not approval_durations:
+        approval_durations = [
+            duration
+            for event in ordered
+            if event.get("event_kind") in {"tool_approval_resolved", "tool_denied"}
+            and (duration := _recorded_duration(event)) is not None
+        ]
+    if not hitl_durations:
+        hitl_durations = [
+            duration
+            for event in ordered
+            if event.get("event_kind") == "host.hitl_resolved"
+            and (duration := _recorded_duration(event)) is not None
+        ]
+    if invocation_scoped:
+        if approval_durations:
+            lines.append(
+                "Invocation approval wait: "
+                + ", ".join(_format_duration(value) for value in approval_durations)
+            )
+        if hitl_durations:
+            lines.append(
+                "Interaction discount wait: "
+                + ", ".join(_format_duration(value) for value in hitl_durations)
+            )
+        if pending_approvals:
+            lines.append("Invocation approval wait: pending")
+        if pending_hitl:
+            lines.append("Interaction discount wait: pending")
+        if approval_durations or hitl_durations or pending_approvals or pending_hitl:
+            lines.append(
+                "Note: invocation elapsed time can include approval wait; discount wait is interaction-scoped."
+            )
+    else:
+        waits = approval_durations + hitl_durations
+        if waits:
+            lines.append(
+                "Human approval/discount wait: "
+                + ", ".join(_format_duration(value) for value in waits)
+            )
+            lines.append(
+                "Note: invocation elapsed time can include human wait; it is not all LLM time."
+            )
+        if pending_approvals or pending_hitl:
+            lines.append("Human approval/discount wait: pending")
+            lines.append(
+                "Note: invocation elapsed time can include human wait; it is not all LLM time."
+            )
+
+    if len(lines) == 2:
+        lines.append("No correlated model, tool, or human-wait timing events found.")
+    return lines
+
+
+def _percentile(values: Sequence[float], percentile: float) -> float | None:
+    """Calculate a linearly interpolated percentile for numeric samples.
+
+    Args:
+        values: Numeric sample values.
+        percentile: Fractional percentile between zero and one.
+
+    Returns:
+        Interpolated percentile value, or None for an empty sample set.
+    """
+    if not values:
+        return None
+    ordered = sorted(values)
+    rank = max(1, ceil(percentile * len(ordered)))
+    return ordered[min(rank, len(ordered)) - 1]
+
+
+def render_latency_summary(db_path: Path | str | None = None, limit: int = 10) -> str:
+    """Summarize latency and prompt-cache rates for recent model invocations.
+
+    Args:
+        db_path: Optional telemetry SQLite path.
+        limit: Number of most recently active runtime invocations to inspect.
+
+    Returns:
+        Formatted latency percentile and cache-rate summary.
+    """
+    groups = fetch_recent_invocation_event_groups(db_path, limit=limit)
+    summaries = [_derive_invocation_latency(events) for events in groups]
+    model_calls = [summary for summary in summaries if summary["is_model_call"]]
+    lines = [
+        f"Recent model invocation latency (last {limit} runtime invocations)",
+        "─" * 72,
+        "",
+    ]
+    if not model_calls:
+        lines.append("No model invocations found in the selected recent invocation window.")
+        return "\n".join(lines)
+
+    buckets: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    for call in model_calls:
+        buckets[(str(call["stage"]), str(call["model"]), str(call["profile"]))].append(call)
+    lines.append(
+        f"Model calls: {len(model_calls)} across {len(groups)} selected runtime invocations"
+    )
+    lines.append("")
+    lines.append(
+        f"{'Stage':<24} {'Model':<22} {'Profile':<20} {'Count':>5} {'Inc.':>5} {'p50':>10} {'p95':>10} {'Cache':>9}"
+    )
+    for (stage, model, profile), calls in sorted(buckets.items()):
+        durations = [
+            float(call["duration_ms"]) for call in calls if call["duration_ms"] is not None
+        ]
+        incomplete_count = len(calls) - len(durations)
+        cache_samples = [
+            call
+            for call in calls
+            if call["input_tokens"] is not None and call["cached_input_tokens"] is not None
+        ]
+        input_total = sum(int(call["input_tokens"]) for call in cache_samples)
+        cached_total = sum(int(call["cached_input_tokens"]) for call in cache_samples)
+        cache_ratio = f"{cached_total / input_total:.0%}" if input_total else "n/a"
+        p50 = _percentile(durations, 0.50)
+        p95 = _percentile(durations, 0.95)
+        lines.append(
+            f"{stage:<24.24} {model:<22.22} {profile:<20.20} {len(calls):>5} {incomplete_count:>5} "
+            f"{_format_duration(p50):>10} {_format_duration(p95):>10} {cache_ratio:>9}"
+        )
+    lines.append("")
+    lines.append("Cache ratio = summed final cached-input tokens / summed final input tokens.")
+    lines.append(
+        "Latency uses invocation_started → terminal; human waits are reported separately in detail views."
+    )
+    lines.append("Controlled-agent spans may include internal tool and human-wait cycles.")
+    return "\n".join(lines)
 
 
 def render_recent_invocations_summary(
@@ -332,6 +932,31 @@ def render_invocation_details(
         if e.get("duration_ms") is not None:
             duration_ms = max(duration_ms or 0.0, float(e["duration_ms"]))
 
+    latency_summary = _derive_invocation_latency(events)
+    if latency_summary["duration_ms"] is not None:
+        duration_ms = float(latency_summary["duration_ms"])
+    elif latency_summary["is_model_call"]:
+        duration_ms = None
+
+    host_latency_events: list[dict[str, Any]] = []
+    invocation_call_id = latency_summary["call_id"]
+    interaction_ids = {
+        str(event["interaction_id"]) for event in events if event.get("interaction_id") is not None
+    }
+    for interaction_id in interaction_ids:
+        host_latency_events.extend(
+            event
+            for event in fetch_interaction_events(db_path, interaction_id)
+            if str(event.get("event_kind", "")).startswith("host.interaction_")
+            or str(event.get("event_kind", "")).startswith("host.hitl_")
+            or (
+                invocation_call_id is not None
+                and str(event.get("event_kind", "")).startswith("host.model_call_")
+                and _metadata_value(event, "call_id") == invocation_call_id
+            )
+        )
+    latency_events = [*events, *host_latency_events]
+
     lines: list[str] = [
         f"Invocation {invocation_id}",
         f"Started:    {started_at}",
@@ -339,9 +964,11 @@ def render_invocation_details(
         f"Model:      {model or '-'}",
         f"Profile:    {profile or '-'}",
         f"Reasoning:  {reasoning or '-'}",
-        f"Duration:   {_format_duration(duration_ms)}",
+        f"Invocation span: {_format_duration(duration_ms) if latency_summary['is_model_call'] else 'not a model call'}",
         "",
     ]
+    lines.extend(_render_latency_breakdown(latency_events, invocation_scoped=True))
+    lines.append("")
 
     # Section 1: Runtime Events
     if show_events:
@@ -496,9 +1123,15 @@ def render_interaction_details(
         f"Status:     {status}",
         f"Task:       {next((event.get('task_id') for event in events if event.get('task_id')), '-')}",
         "",
-        "Correlated Runtime and Host Events",
-        "─" * 40,
     ]
+    lines.extend(_render_latency_breakdown(events))
+    lines.extend(
+        [
+            "",
+            "Correlated Runtime and Host Events",
+            "─" * 40,
+        ]
+    )
     for event in events:
         metadata = _event_metadata(event)
         kind = str(event.get("event_kind", ""))
@@ -579,6 +1212,7 @@ def inspect_telemetry(
     task: str | None = None,
     workflow: str | None = None,
     limit: int = 10,
+    latency: bool = False,
     events_only: bool = False,
     langsmith_only: bool = False,
     otel_only: bool = False,
@@ -593,6 +1227,7 @@ def inspect_telemetry(
         task: Specific ephemeral task ID to inspect as a multi-turn timeline.
         workflow: Specific quote workflow ID to inspect as a host transition timeline.
         limit: Limit for recent invocations summary view.
+        latency: If True, summarize latency and cache ratios for recent model calls.
         events_only: Show only runtime events.
         langsmith_only: Show only LangSmith tree.
         otel_only: Show only OpenTelemetry spans and metrics.
@@ -607,6 +1242,9 @@ def inspect_telemetry(
             "Run 'python init_observability.py' to initialize the telemetry database."
         )
 
+    if latency:
+        return render_latency_summary(target_db, limit=limit)
+
     if interaction is not None:
         return render_interaction_details(target_db, interaction)
 
@@ -616,17 +1254,13 @@ def inspect_telemetry(
             if task is not None
             else fetch_workflow_events(target_db, workflow or "")
         )
-        if workflow is not None:
-            task_events = [
-                event
-                for event in task_events
-                if _event_metadata(event).get("workflow_id") == workflow
-            ]
         if not task_events:
             label = f"Task '{task}'" if task is not None else f"Workflow '{workflow}'"
             return f"{label} not found in telemetry database."
         heading = f"Task {task}" if task is not None else f"Workflow {workflow}"
         lines = [heading, "─" * 48, "Correlated Runtime and Host Events"]
+        lines.extend(_render_latency_breakdown(task_events))
+        lines.append("")
         for event in task_events:
             if event.get("event_kind") == "output_text_delta":
                 continue
@@ -741,6 +1375,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Maximum number of recent invocations to display (default: 10)",
     )
     parser.add_argument(
+        "--latency",
+        action="store_true",
+        help="Summarize latency percentiles and prompt-cache ratio for recent model calls",
+    )
+    parser.add_argument(
         "--events",
         action="store_true",
         help="Display only runtime events",
@@ -772,6 +1411,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         task=args.task,
         workflow=args.workflow,
         limit=args.limit,
+        latency=args.latency,
         events_only=args.events,
         langsmith_only=args.langsmith,
         otel_only=args.otel,

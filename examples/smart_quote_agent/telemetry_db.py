@@ -680,6 +680,52 @@ def fetch_invocation_events(
         conn.close()
 
 
+def fetch_recent_invocation_event_groups(
+    db_path: Path | str | None = None,
+    limit: int = 10,
+) -> list[list[dict[str, Any]]]:
+    """Fetch event groups for the most recently active runtime invocations.
+
+    Args:
+        db_path: Optional telemetry database path.
+        limit: Maximum number of distinct invocations to include.
+
+    Returns:
+        Invocation event groups in chronological order, oldest group first.
+    """
+    if limit <= 0:
+        return []
+
+    conn = get_telemetry_connection(db_path, read_only=True)
+    try:
+        rows = conn.execute(
+            """
+            WITH recent_invocations AS (
+                SELECT invocation_id, MAX(occurred_at) AS last_occurred_at, MAX(id) AS last_id
+                FROM runtime_events
+                WHERE invocation_id IS NOT NULL
+                GROUP BY invocation_id
+                ORDER BY last_occurred_at DESC, last_id DESC
+                LIMIT ?
+            )
+            SELECT event.*
+            FROM runtime_events AS event
+            INNER JOIN recent_invocations AS recent
+                ON recent.invocation_id = event.invocation_id
+            ORDER BY event.occurred_at ASC, event.id ASC
+            """,
+            (limit,),
+        ).fetchall()
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            event = dict(row)
+            invocation_id = str(event["invocation_id"])
+            grouped.setdefault(invocation_id, []).append(event)
+        return list(grouped.values())
+    finally:
+        conn.close()
+
+
 def fetch_task_events(
     db_path: Path | str | None,
     task_id: str,
@@ -695,9 +741,25 @@ def fetch_task_events(
     """
     conn = get_telemetry_connection(db_path, read_only=True)
     try:
-        rows = conn.execute(
+        correlated_rows = conn.execute(
             "SELECT * FROM runtime_events WHERE task_id = ? ORDER BY occurred_at, id",
             (task_id,),
+        ).fetchall()
+        invocation_ids = sorted(
+            {
+                str(row["invocation_id"])
+                for row in correlated_rows
+                if row["invocation_id"] is not None
+            }
+        )
+        if not invocation_ids:
+            return [dict(row) for row in correlated_rows]
+
+        placeholders = ", ".join("?" for _ in invocation_ids)
+        rows = conn.execute(
+            "SELECT * FROM runtime_events WHERE task_id = ? OR invocation_id IN ("
+            f"{placeholders}) ORDER BY occurred_at, id",
+            (task_id, *invocation_ids),
         ).fetchall()
         return [dict(row) for row in rows]
     finally:
@@ -719,9 +781,25 @@ def fetch_interaction_events(
     """
     conn = get_telemetry_connection(db_path, read_only=True)
     try:
-        rows = conn.execute(
+        correlated_rows = conn.execute(
             "SELECT * FROM runtime_events WHERE interaction_id = ? ORDER BY occurred_at, id",
             (interaction_id,),
+        ).fetchall()
+        invocation_ids = sorted(
+            {
+                str(row["invocation_id"])
+                for row in correlated_rows
+                if row["invocation_id"] is not None
+            }
+        )
+        if not invocation_ids:
+            return [dict(row) for row in correlated_rows]
+
+        placeholders = ", ".join("?" for _ in invocation_ids)
+        rows = conn.execute(
+            "SELECT * FROM runtime_events WHERE interaction_id = ? OR invocation_id IN ("
+            f"{placeholders}) ORDER BY occurred_at, id",
+            (interaction_id, *invocation_ids),
         ).fetchall()
         return [dict(row) for row in rows]
     finally:
@@ -732,14 +810,14 @@ def fetch_workflow_events(
     db_path: Path | str | None,
     workflow_id: str,
 ) -> list[dict[str, Any]]:
-    """Fetch host transitions associated with one quote workflow.
+    """Fetch workflow transitions and their correlated runtime interactions.
 
     Args:
         db_path: Telemetry database path.
         workflow_id: Host-generated quote workflow identifier.
 
     Returns:
-        Chronological metadata-only transitions for the workflow.
+        Chronological host and runtime events associated with the workflow.
     """
     conn = get_telemetry_connection(db_path, read_only=True)
     try:
@@ -747,7 +825,7 @@ def fetch_workflow_events(
             "SELECT * FROM runtime_events WHERE event_kind = 'host.turn_transition' "
             "ORDER BY occurred_at, id"
         ).fetchall()
-        result: list[dict[str, Any]] = []
+        transitions: list[dict[str, Any]] = []
         for row in rows:
             event = dict(row)
             try:
@@ -755,8 +833,51 @@ def fetch_workflow_events(
             except (TypeError, ValueError):
                 metadata = {}
             if metadata.get("workflow_id") == workflow_id:
-                result.append(event)
-        return result
+                transitions.append(event)
+
+        interaction_ids: set[str] = set()
+        for event in transitions:
+            try:
+                transition_metadata = json.loads(str(event.get("metadata_json") or "{}"))
+            except (TypeError, ValueError):
+                transition_metadata = {}
+            interaction_id = event.get("interaction_id") or transition_metadata.get(
+                "interaction_id"
+            )
+            if isinstance(interaction_id, str):
+                interaction_ids.add(interaction_id)
+        sorted_interaction_ids = sorted(interaction_ids)
+        correlated_events = list(transitions)
+        if sorted_interaction_ids:
+            interaction_placeholders = ", ".join("?" for _ in sorted_interaction_ids)
+            interaction_rows = conn.execute(
+                "SELECT * FROM runtime_events WHERE interaction_id IN ("
+                f"{interaction_placeholders}) ORDER BY occurred_at, id",
+                tuple(sorted_interaction_ids),
+            ).fetchall()
+            interaction_events = [dict(row) for row in interaction_rows]
+            correlated_events.extend(interaction_events)
+            invocation_ids = sorted(
+                {
+                    str(event["invocation_id"])
+                    for event in interaction_events
+                    if event.get("invocation_id") is not None
+                }
+            )
+            if invocation_ids:
+                invocation_placeholders = ", ".join("?" for _ in invocation_ids)
+                invocation_rows = conn.execute(
+                    "SELECT * FROM runtime_events WHERE invocation_id IN ("
+                    f"{invocation_placeholders}) ORDER BY occurred_at, id",
+                    tuple(invocation_ids),
+                ).fetchall()
+                correlated_events.extend(dict(row) for row in invocation_rows)
+
+        unique_events = {str(event.get("event_id")): event for event in correlated_events}
+        return sorted(
+            unique_events.values(),
+            key=lambda event: (event.get("occurred_at", ""), event.get("id", 0)),
+        )
     finally:
         conn.close()
 
