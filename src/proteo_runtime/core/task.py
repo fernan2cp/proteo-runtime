@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from enum import StrEnum
-from typing import Any, Generic, Protocol, TypeVar
+from typing import Any, Generic, Protocol, TypeVar, runtime_checkable
 
 from .diagnostics import RuntimeDiagnostic
 from .errors import ContextPolicyError
@@ -51,6 +51,7 @@ def validate_task_input(input: str | RuntimeInput) -> RuntimeInput:
     return input
 
 
+@runtime_checkable
 class RuntimeTask(Protocol, Generic[T]):
     """Explicit lifecycle boundary for a task-scoped ephemeral controlled agent."""
 
