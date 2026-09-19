@@ -15,11 +15,12 @@ uv run ruff check examples/smart_quote_agent
 uv run ruff format --check examples/smart_quote_agent
 ```
 
-### 3. Repository Boundary Verification (Zero Pollution Check)
+### 3. Bounded Change Verification (Baseline-Aware)
 
 ```powershell
-# Must report untracked/modified files strictly under examples/smart_quote_agent/
-# and docs/plans/active/example-smart-quote-agent/
+# Review implementation changes against the task-start worktree baseline.
+# Authorized changes: examples/smart_quote_agent/* and this active SDD package only.
+# Preserve and separately report pre-existing user changes; do not require a clean tree.
 git status --short
 ```
 
@@ -92,6 +93,29 @@ print('SMOKE TESTS PASSED')
 | SCEN-011 | Staff list and inspect quotes | `AC-SQA-005` | Returns accurate quote history and line item details. |
 | SCEN-012 | Metadata-only telemetry check | `AC-SQA-010` | Observability events contain no passwords or secrets. |
 | SCEN-013 | Static analysis and style | `AC-SQA-011` | mypy strict and ruff checks pass cleanly. |
+| SCEN-014 | Staff lists customers while quote is pending | `AC-SQA-012`, `AC-SQA-015` | Customer response is returned; workflow and lines remain unchanged; next missing detail is stated in the active language. |
+| SCEN-015 | Catalog question interrupts a pending quote | `AC-SQA-012`, `AC-SQA-016` | Active catalog is returned; workflow remains unchanged and product candidates are stored for bounded references. |
+| SCEN-016 | Explicit replacement, add/remove, and isolated quantity | `AC-SQA-013` | Reducer changes only exact target lines; replacement preserves quantity and unrelated lines. |
+| SCEN-017 | Ambiguous “that/ese” or multiple missing quantities | `AC-SQA-013` | Clarification is requested and quote data/revision do not mutate. |
+| SCEN-018 | Obsolete workflow/revision draft | `AC-SQA-014` | Stale draft is cleared before discount/review and cannot reach create_quote. |
+| SCEN-019 | Terminal workflow outcomes | `AC-SQA-014` | Cancel/logout/deny/success/terminal failure clear all workflow references. |
+| SCEN-020 | Customer/product normalization and authorization | `AC-SQA-015` | Only staff can list customers; aliases and accents resolve safely; desk is not dock. |
+| SCEN-021 | Stable language and runtime memory boundary | `AC-SQA-016` | Brief follow-up preserves language; controlled task input contains only this user's current read-only turn. |
+| SCEN-022 | Task/workflow observability and migration | `AC-SQA-017` | Legacy DB migrates idempotently; inspector groups task/workflow transitions, excludes content, and surfaces cleanup diagnostics. |
+| SCEN-023 | Offline quote preview completeness and exact identifiers | `AC-SQA-018` | Exact active name/SKU requests use `calculate_quote`; unknown/ambiguous products and invalid, unassociated, or malformed quantities abort the entire preview; no quote is persisted. |
+
+---
+
+## Conversational Hardening Regression Commands
+
+The provider-free suite reproduces the reported thread without network calls or resetting the business database:
+
+```powershell
+uv run pytest examples/smart_quote_agent/tests/test_agent.py -q
+uv run pytest examples/smart_quote_agent/tests/test_observability_*.py examples/smart_quote_agent/tests/test_inspector_queries.py -q
+```
+
+For local telemetry migration and the full task/workflow view, use a temporary observability DB in tests. Never reset `examples/smart_quote_agent/data/demo.sqlite3` as part of acceptance verification.
 
 ---
 
@@ -135,3 +159,23 @@ Execute `python examples/smart_quote_agent/app.py` and run through the following
 | 2026-09-16 | `SQA-TASK-0010` / `AC-SQA-011` | `uv run ruff check examples/smart_quote_agent` | All checks passed! | Pass |
 | 2026-09-16 | `SQA-TASK-0010` / `AC-SQA-011` | `uv run ruff format --check examples/smart_quote_agent` | 9 files already formatted | Pass |
 | 2026-09-16 | `SQA-TASK-0010` / `AC-SQA-001` | `git status --short` | Zero files outside `examples/smart_quote_agent/` touched | Pass |
+| 2026-09-19 | `SQA-TASK-0011` / `AC-SQA-012`, `AC-SQA-013` | `python -m pytest examples/smart_quote_agent/tests/test_agent.py examples/smart_quote_agent/tests/test_telemetry_db.py examples/smart_quote_agent/tests/test_inspector_queries.py -q` | 84 passed; transcript completion, line-safe edits, ambiguous no-op, schema migration, and task/workflow rendering covered | Pass |
+| 2026-09-19 | `SQA-TASK-0012`–`SQA-TASK-0015` / `AC-SQA-012`–`AC-SQA-018` | `.venv\Scripts\python.exe -m pytest examples/smart_quote_agent/tests -q` | 137 passed, 2 opt-in live integration tests skipped; transcript recovery, stale guards, interruption/edit safety, customer/product resolution, offline preview edge cases, migration, and inspector covered. LangSmith emitted a non-fatal connectivity/compression warning; command exited successfully. | Pass |
+| 2026-09-19 | `SQA-TASK-0016` / `AC-SQA-011` | `.venv\Scripts\python.exe -m mypy examples/smart_quote_agent --strict` | Success: no issues found in 26 source files. | Pass |
+| 2026-09-19 | `SQA-TASK-0016` / `AC-SQA-011` | `.venv\Scripts\ruff.exe check examples/smart_quote_agent` | All checks passed. | Pass |
+| 2026-09-19 | `SQA-TASK-0016` / `AC-SQA-011` | `.venv\Scripts\ruff.exe format --check examples/smart_quote_agent` | 27 files already formatted. | Pass |
+| 2026-09-19 | `SQA-TASK-0016` / Live CLI | Initial provider-free task validation | Not run at that point because explicit live authorization was not available; superseded by the user-authorized diagnostic run recorded below. | Superseded |
+| 2026-09-19 | `SQA-TASK-0017` / `AC-SQA-019` | `.venv\Scripts\python.exe -m pytest examples\smart_quote_agent\tests\test_agent.py examples\smart_quote_agent\tests\test_telemetry_db.py examples\smart_quote_agent\tests\test_observability_lifecycle.py examples\smart_quote_agent\tests\test_inspector_queries.py examples\smart_quote_agent\tests\test_host_error_diagnostics.py -q` | 124 passed. Includes CLI logger failure, structured-call stage propagation, exception redaction/external-path reduction/cause/frame capture, runtime interaction correlation, schema migration, and inspector status regressions. | Pass |
+| 2026-09-19 | `SQA-TASK-0017` / `AC-SQA-019` | `.venv\Scripts\python.exe -m pytest examples\smart_quote_agent\tests -q` | 142 passed, 2 opt-in live tests skipped. LangSmith network warning was non-fatal; the environment proxy refused its external telemetry connection. | Pass |
+| 2026-09-19 | `SQA-TASK-0017` / `AC-SQA-019` | `.venv\Scripts\python.exe -m mypy examples\smart_quote_agent --strict` | Success: no issues found in 28 source files. | Pass |
+| 2026-09-19 | `SQA-TASK-0017` / `AC-SQA-019` | `.venv\Scripts\ruff.exe check examples\smart_quote_agent`; `.venv\Scripts\ruff.exe format --check examples\smart_quote_agent`; `git diff --check` | Ruff clean; 29 files already formatted; `git diff --check` returned no whitespace errors (Git printed a working-copy LF→CRLF advisory for the touched test file). | Pass |
+| 2026-09-19 | `SQA-TASK-0017` / Live diagnostic | `uv run python examples/smart_quote_agent/app.py` | Could not reach app startup: uv cache access denied. Retried with workspace `.venv` interpreter; sandbox then denied access to local Codex state. User-authorized elevated run started the app and allowed staff login. | Pass with documented environment constraints |
+| 2026-09-19 | `SQA-TASK-0017` / `AC-SQA-019` | Live REPL: `staff` login; submit original `quisira armar un presupuesto por un dock y 2 mouses` twice | Both turns returned the unchanged localized generic error. Each generated a distinct interaction ID and one `host.turn_error`; stage `intent_router`, type `proteo_runtime.core.errors.RuntimeUnavailableError`, code `runtime_unavailable`. Both runtime calls had `invocation_started` and no terminal event. No customer selection/review/approval prompt was reached. | Diagnosed; quote path blocked |
+| 2026-09-19 | `SQA-TASK-0017` / `AC-SQA-019` | `inspect_observability.py --interaction 9ea8b8c8ff09401985727caf65bc9c1c`; `--interaction 1c82c85d14dd4a9aa42868c0631269df` | Both views rendered `Status: failed`, task `task_493a14a331f948f6a26a2b6ac2a8c8a6`, stage/type/code above, and repository-relative frames through `src/proteo_runtime/providers/codex/_runner.py:events:287`. No cause type was present. No exception message or local values were displayed. | Pass |
+| 2026-09-19 | `SQA-TASK-0017` / Business DB safety | Read-only quote count before and after the live attempt | `(7, 7)` before and `(7, 7)` after. No quote was persisted; the DB was not reset. | Pass |
+
+### Diagnostic Interpretation (Facts vs. Hypothesis)
+
+Observed facts: each failed turn started a structured runtime invocation at `intent_router`; the REPL kept its generic Spanish response; the correlated host diagnostic recorded `RuntimeUnavailableError` with stable code `runtime_unavailable`; the interaction view correctly derived `failed` from the incomplete invocation plus `host.turn_error`. The exception had no causal exception in its chain, so the log reports no cause types. The inspected frames terminate in the runtime runner's event loop at `_runner.py:events:287`.
+
+Inference from the current implementation: `_runner.py` constructs `RuntimeUnavailableError` with the message `Codex turn failed` when the provider terminal status is not successful. The sanitized record intentionally excludes that message and does not retain the provider status value, so the exact provider-side status/reason is not established by this evidence. This points to a provider-turn failure after invocation start, not a quote extraction or catalog-resolution failure; the quote workflow was never reached.

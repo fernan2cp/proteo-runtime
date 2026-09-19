@@ -6,7 +6,7 @@ Task states are `pending`, `in_progress`, `done`, or `blocked`.
 All tasks start in `pending`. A task may only transition to `done` when concrete test or verification evidence is recorded in `05_validation_plan.md`.
 
 Strict Boundary Rule:
-No files outside `examples/smart_quote_agent/` may be created, modified, or touched during the execution of any task.
+Product code, tests, scripts, and example docs may change only inside `examples/smart_quote_agent/`. The explicit documentation exception is this existing active SDD package. Do not modify `src/*`, repository tests, configuration, public runtime APIs, or the business database schema. Pre-existing worktree changes must be preserved and must not be attributed to this plan.
 
 ---
 
@@ -178,4 +178,109 @@ No files outside `examples/smart_quote_agent/` may be created, modified, or touc
 - Run `uv run ruff format --check examples/smart_quote_agent`.
 - Verify `git status` confirms zero modifications outside `examples/smart_quote_agent/`.
 - Record execution logs and evidence in `05_validation_plan.md`.
-- Evidence: `mypy --strict` passed cleanly (8 files, 0 errors); `ruff check` passed (0 errors); `ruff format --check` passed (9 files formatted); `ApprovalHandler` denial/allow test passed; `git status` verified zero modifications outside `examples/smart_quote_agent/`.
+- Historical evidence: `mypy --strict`, `ruff check`, `ruff format --check`, and approval denial/allow tests passed for the original example implementation. The old zero-worktree-change assertion is superseded by bounded isolation in `SQA-REQ-001`; pre-existing user changes are not attributed to this plan.
+
+---
+
+### SQA-TASK-0011 — Conversational Failure Characterization and SDD Boundary Repair
+
+**State:** `done`
+**Depends on:** `SQA-TASK-0010`
+**Requirements:** `SQA-REQ-001`, `SQA-REQ-014`, `SQA-REQ-015`
+**Acceptance:** `AC-SQA-012`, `AC-SQA-013`
+
+- Add provider-free regressions for customer/catalog interruptions, product correction, isolated quantity, successful continuation, ambiguous reference, and stale draft.
+- Update this active SDD in place to allow its own requested documentation changes while preserving the code-only example boundary.
+- Record the initial transcript failure modes as concrete acceptance tests.
+- Evidence: targeted command `python -m pytest examples/smart_quote_agent/tests/test_agent.py -q` passed with 68 cases after transcript and ambiguity characterization; the active SDD boundary text now distinguishes authorized docs from pre-existing worktree changes.
+
+---
+
+### SQA-TASK-0012 — Quote Workflow Reducer and Revision-Bound Draft Lifecycle
+
+**State:** `done`
+**Depends on:** `SQA-TASK-0011`
+**Requirements:** `SQA-REQ-014`, `SQA-REQ-015`
+**Acceptance:** `AC-SQA-013`, `AC-SQA-014`
+
+- Introduce `QuoteWorkflowState`, stable line IDs, revision/phase, customer and per-line resolution state.
+- Reduce validated `QuotePatch` operations without replacing unrelated lines; preserve quantity for product replacement and merge canonical duplicate product lines in the draft.
+- Clear stale drafts before planning and check draft workflow/revision before discount review and persistence.
+- Clear all workflow references on cancellation, logout, identity change, approval denial, success, and terminal persistence failure.
+- Evidence: reducer, transcript, terminal-cleanup, failed-resolution, and direct stale-before-discount/approval regressions pass in the 137-pass full suite; strict mypy and Ruff checks pass.
+
+---
+
+### SQA-TASK-0013 — Contextual Routing, Interruption, Clarification, and Language
+
+**State:** `done`
+**Depends on:** `SQA-TASK-0012`
+**Requirements:** `SQA-REQ-006`, `SQA-REQ-015`, `SQA-REQ-017`
+**Acceptance:** `AC-SQA-012`, `AC-SQA-013`, `AC-SQA-016`, `AC-SQA-018`
+
+- Prioritize deterministic cancel/logout and explicit read-only intent while collecting a quote.
+- Feed one context-aware `TurnDecision` and optional patch into the reducer; avoid a second structured extraction when a validated patch is available.
+- Keep ambiguous references and multi-target quantities as no-op clarifications.
+- Preserve Spanish/English across short replies and append a localized next-step reminder after read-only interruption.
+- Provide deterministic offline previews through `calculate_quote`; reject partial previews when any requested line is unresolved.
+- Evidence: interruption, clarification, stable-language, CLI error localization, and offline preview regressions pass in the full suite; strict mypy and Ruff checks pass.
+
+---
+
+### SQA-TASK-0014 — Canonical Customer and Product Resolution
+
+**State:** `done`
+**Depends on:** `SQA-TASK-0012`
+**Requirements:** `SQA-REQ-005`, `SQA-REQ-016`
+**Acceptance:** `AC-SQA-015`, `AC-SQA-018`
+
+- Add bounded staff-only `list_customers` under `customer.read`; keep targeted `find_customer`.
+- Normalize case, accents, safe singular/plural forms and the mouse/mice/mouses alias.
+- Resolve all quote lines and retain per-line candidates/errors; never infer desk → dock.
+- Evidence: bounded directory authorization, accent/plural/alias matching, explicit ambiguity, SKU preview resolution, unknown-line rejection, and `desk` negative lookup pass in the full suite; strict mypy and Ruff checks pass.
+
+---
+
+### SQA-TASK-0015 — Task/Workflow Event Correlation and Inspector
+
+**State:** `done`
+**Depends on:** `SQA-TASK-0013`
+**Requirements:** `SQA-REQ-018`
+**Acceptance:** `AC-SQA-017`
+
+- Add `task_id` to local `runtime_events` with an additive idempotent migration.
+- Emit metadata-only host transition records for router, planner, resolution, stale draft, and persistence outcomes.
+- Extend inspector with `--task` and `--workflow` views; show cleanup diagnostic codes and label cumulative metrics explicitly.
+- Evidence: legacy-schema migration, task/workflow timeline, cleanup diagnostic display, and metadata-whitelist tests pass in the 137-pass full suite.
+
+---
+
+### SQA-TASK-0016 — User Guide, Final Verification, and Human Review Handoff
+
+**State:** `in_progress`
+**Depends on:** `SQA-TASK-0012`, `SQA-TASK-0013`, `SQA-TASK-0014`, `SQA-TASK-0015`, `SQA-TASK-0017`
+**Requirements:** `SQA-REQ-001`, `SQA-REQ-006`, `SQA-REQ-011`, `SQA-REQ-012`, `SQA-REQ-013`, `SQA-REQ-016`, `SQA-REQ-018`, `SQA-REQ-019`
+**Acceptance:** `AC-SQA-001`, `AC-SQA-011`, `AC-SQA-012`–`AC-SQA-019`
+
+- Update the example README with workflow state, interruptions, corrections, customer listing, and task/workflow inspection usage.
+- Keep the active SDD open until the live quote workflow itself has been validated or its remaining provider blocker is reviewed by the repository owner.
+- Run targeted and full example tests, strict mypy, Ruff lint/format, and bounded worktree review.
+- Run a live transcript only through the documented explicit integration opt-in and only when credentials are available; never reset the user's business database.
+- Keep this SDD active until evidence is complete and human review is requested; do not move it to `complete` automatically.
+- Evidence: full provider-free suite reports 142 passed / 2 opt-in live tests skipped; strict mypy and Ruff checks pass. Explicit live validation was attempted under the available local Codex state; the provider returned `RuntimeUnavailableError` before the quote workflow. `AC-SQA-019` has the correlated failure evidence; full quote-path validation and human review remain open.
+
+---
+
+### SQA-TASK-0017 — Correlated Host Error Logging and Interaction Inspector
+
+**State:** `done`
+**Depends on:** `SQA-TASK-0015`
+**Requirements:** `SQA-REQ-018`, `SQA-REQ-019`
+**Acceptance:** `AC-SQA-017`, `AC-SQA-019`
+
+- Assign a unique interaction ID in the REPL before graph entry and pass safe `InvocationConfig.metadata` to every structured-model and controlled-task call.
+- Add `host.turn_error` persistence with bounded stage/code/type/cause fields and sanitized traceback frames; keep logging best effort and preserve the generic localized error message.
+- Add nullable `runtime_events.interaction_id` and its index through an additive idempotent migration; correlate runtime and host rows in the read-only `--interaction` inspector and derive incomplete correlated failures as failed.
+- Add tests for redaction, error codes/frames, invocation metadata, logger failure, migration idempotence, correlated failed/success inspector states, and REPL continuation.
+- Execute the original live request twice after staff login, inspect each failed interaction, and verify no business quote was added when review was not reached.
+- Evidence: all targeted tests and the full suite pass (142 passed, 2 skipped); strict mypy, Ruff, format, and diff checks pass. Both live attempts were recorded as `RuntimeUnavailableError` (`runtime_unavailable`) at `intent_router` with sanitized frames. Quote count remained 7; details are in `05_validation_plan.md`.

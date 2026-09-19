@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This package defines the decision-complete Software Design Document (SDD) for implementing the Smart Quote Agent example application inside `examples/smart_quote_agent/`.
+This package is the authoritative active Software Design Document (SDD) for implementing and hardening the Smart Quote Agent example in `examples/smart_quote_agent/`. This plan is updated in place; no parallel SDD is created.
 
 The application is a small, integrated CLI demonstration that showcases:
 - LangGraph orchestration owned by the host;
@@ -17,6 +17,7 @@ The application is a small, integrated CLI demonstration that showcases:
 - final human approval prior to persistence via Proteo Phase 5 approval contracts;
 - atomic SQLite persistence with quote and quote-line history;
 - metadata-only runtime and tool observability;
+- resumable host-owned quote workflows with safe interruptions, corrections, task/workflow observability, and redacted interaction-level error diagnostics;
 - absolute boundary separation between model suggestions and host execution authority.
 
 ## Source of Truth
@@ -76,6 +77,8 @@ Status: `active`.
   - `graph.py`: LangGraph state graph compilation, deterministic workflow, and controlled agent branch.
   - `hitl.py`: Interactive discount validation (0–30%) and Phase 5 `ApprovalHandler` implementation.
   - `data/.gitkeep`: Local directory placeholder for `demo.sqlite3`.
+- Incremental requirements, tasks, acceptance criteria, validation, and traceability updates in this active SDD package are explicitly included.
+- Additive, idempotent evolution of the local observability SQLite schema is included; the business `demo.sqlite3` schema is unchanged.
 - Deterministic seeding: 1 staff user, 4 client users, 4 customer records, 6 product catalog records.
 - Trivial demo password (`1234`) with explicit non-production security disclaimer.
 - Password masking via `getpass.getpass()`, with absolute zero-leakage guarantees (passwords never enter graph state, runtime events, or logs).
@@ -85,7 +88,7 @@ Status: `active`.
 
 ### Explicitly Excluded (Non-Scope & Strict Boundaries)
 
-- **Zero Project Code Modifications**: Under no circumstances may any file outside `examples/smart_quote_agent/*` be created, modified, or deleted (no changes to `src/*`, `tests/*`, `pyproject.toml`, etc.).
+- **Bounded Change Rule**: Product code, tests, scripts, and example documentation remain confined to `examples/smart_quote_agent/*`. The only permitted changes outside it are updates to this already-active SDD package, as explicitly requested. No changes to `src/*`, repository-level tests, `pyproject.toml`, `uv.lock`, public runtime contracts, or business database schema are in scope.
 - No customer CRUD or self-registration.
 - No product creation or price modification interfaces.
 - No shopping cart, checkout, payment processing, or inventory reservation.
@@ -93,6 +96,7 @@ Status: `active`.
 - No JWT, OAuth2, session tokens, or password hashing frameworks.
 - No production database engines (PostgreSQL, MySQL), Redis, or Docker containers.
 - No database migration frameworks (Alembic) or ORM libraries.
+- No changes to the provider cleanup implementation; this example may surface existing `task.cleanup.provider_delete_failed` diagnostics only.
 - No Phase 6 strong process/sandbox isolation or Phase 7 transport recovery.
 
 ## Traceability Rule

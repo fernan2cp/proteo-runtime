@@ -276,3 +276,41 @@ Interactive CLI entrypoint:
 | Transactional Integrity | SQLite atomic transaction (`BEGIN ... COMMIT`) with rollback on denial. |
 | Controlled Agent Sandboxing | Tools strictly bounded to catalog/read; no OS, shell, or raw SQL access. |
 | Observability Safety | `PayloadMode.METADATA_ONLY` prevents telemetry data leakage. |
+
+## Conversational Hardening Addendum (Authoritative for SQA-REQ-014–018)
+
+This addendum supersedes any earlier one-shot quote-state descriptions above. The model may propose an intent or patch; the host reducer and database remain authoritative.
+
+### Host-Owned Quote Workflow
+
+`DemoState.quote_workflow` is a `QuoteWorkflowState` with a generated `workflow_id`, monotonic `revision`, phase, customer query and canonical resolution, stable line IDs, product query/canonical resolution, quantity, per-line status/candidates, focus, and the last candidate set shown. `pending_quote_request` is only a compatibility projection. `quote_draft` is disposable and carries the exact workflow ID/revision from which host prices were calculated.
+
+The pure host reducer applies `QuotePatch` operations (`set_customer`, `add_item`, `replace_item`, `set_quantity`, `remove_item`) against stable line IDs. It preserves unrelated lines and quantity during replacement. A short answer can target a missing field only if there is exactly one compatible line; otherwise the graph returns clarification without changing quote data or revision. Deictic references require one candidate/reference stored by the host.
+
+Resolver behavior is all-lines, not fail-fast: it keeps valid lines, reports every invalid or incomplete line and candidate, re-reads active SQLite prices, and produces a revision-bound draft only after all required values resolve. Discount review and persistence both check workflow ID/revision. Terminal cancellation, logout, identity switch, approval denial, success, and persistence failure clear every pending quote reference.
+
+### Contextual Router and Read-Only Task
+
+Deterministic cancel/logout and explicit read-only intents precede pending-quote edits. Catalog, customer directory, help, and quote-history requests may be answered while a quote is pending; the host preserves the workflow and appends a localized reminder naming the next missing detail. Ambiguous input does not become a generic quote-create extraction.
+
+The `RuntimeTask` remains one task per identity and receives only read-only conversational turns under `ContextPolicy.RUNTIME`. Its provider memory covers only turns sent to that task; it neither owns quote state nor receives host-side history replay. Host language state is stable across terse follow-ups.
+
+### Entity Resolution and Customer Directory
+
+The staff conversational registry contains `list_customers` (`customer.read`, bounded to 50, fields `id`, `code`, `name`) and `find_customer`. Customer and product matching normalizes case and accents. Resolution prefers exact ID/SKU/code, exact normalized name, safe alias, then a unique partial match. Multiple matches return explicit candidates. `mouse`, `mice`, and `mouses` may resolve to Wireless Mouse; `desk` never implies `dock` without an explicit correction.
+
+### Metadata-Only Transition Observability
+
+The local neutral `runtime_events` table gains nullable `task_id` through an additive, idempotent migration. Host transitions are stored with correlation IDs, workflow revision, intent, route, phase-before/after, and stable result code only; prompts, responses, and sensitive arguments are excluded. The inspector can render `--task` and `--workflow` timelines and surfaces provider diagnostics such as `task.cleanup.provider_delete_failed`. OTel metrics displayed alongside a selected invocation remain explicitly labeled database-cumulative rather than invocation-scoped. Provider cleanup implementation remains outside the example boundary.
+
+## Correlated Turn Error Diagnostics (Authoritative for SQA-REQ-019)
+
+`app.py::_run_repl_loop` creates a fresh random `interaction_id` before calling `app_graph.ainvoke`. `graph.py` preserves that ID for direct-test compatibility and passes it to each structured `RuntimeModel.ainvoke` and controlled `RuntimeTask.ainvoke` as `InvocationConfig.metadata`, alongside a fixed stage label and task/workflow IDs when available. The runtime API is consumed as-is; no `src/` change is allowed.
+
+The REPL error boundary records a best-effort `host.turn_error` via `ObservabilityManager.record_host_error`. Structured calls annotate a raised exception with a fixed stage label and re-raise it unchanged. Persistence errors that are intentionally converted to a host response are logged at `create_quote_tool` before the graph handles the terminal result. The diagnostic encoder reads no exception message or locals; it records exception module/type, a code only when it matches a bounded machine-code pattern, cause type names (maximum eight), and at most forty traceback frames. In-repository paths are repository-relative; external paths contain only a basename. Both the REPL and `record_host_error` isolate logger failures.
+
+The telemetry schema adds nullable `interaction_id` to `runtime_events`, indexed by `idx_runtime_events_interaction`. Migration checks column existence before `ALTER TABLE`, preserving existing rows. Runtime events extract interaction correlation from safe invocation metadata; host transitions/errors use the same column and retain only explicit metadata allow-lists.
+
+The read-only `--interaction` inspector queries the new column and renders a merged chronological event timeline plus a curated error summary. A host error overrides only the derived interaction view to `failed`; it does not mutate the original runtime event stream or invocation status rows. Successful interactions with terminal runtime completion remain `completed`. The diagnostic view never renders arbitrary metadata fields.
+
+Live validation compares a read-only quote count immediately before and after execution. The quote write is approved only if customer, canonical SKUs, quantities, discount, and total match the acceptance condition. Provider failures are captured and reported without retrying persistence or resetting either database.

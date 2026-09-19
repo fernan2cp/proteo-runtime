@@ -2,14 +2,15 @@
 
 ## Functional Requirements
 
-### SQA-REQ-001 — Directory Isolation and Zero Repository Pollution
+### SQA-REQ-001 — Bounded Change Isolation
 
-1. The example application must be 100% contained within the directory:
+1. Example product code, tests, scripts, local data, and example docs must be contained within:
    ```text
    examples/smart_quote_agent/
    ```
-2. No file outside this directory (including `src/*`, `tests/*`, `pyproject.toml`, `uv.lock`, `.pre-commit-config.yaml`, or root documentation) may be created, modified, or deleted during the implementation or execution of this example.
-3. The repository working tree outside `examples/smart_quote_agent/` must remain completely unmodified.
+2. The current implementation request explicitly permits updates only to the existing active SDD package at `docs/plans/active/example-smart-quote-agent/` in addition to the example directory.
+3. No implementation change may touch `src/*`, repository-level tests, configuration files, public runtime contracts, or the business database schema.
+4. Pre-existing worktree changes must be preserved and must not be represented as changes made by this implementation.
 
 ### SQA-REQ-002 — SQLite Domain Schema and Deterministic Initialization
 
@@ -39,12 +40,14 @@
 ### SQA-REQ-003 — Domain Models and Structured Schemas
 
 1. Structured models defined using Pydantic must handle router classification and quote extraction:
-   - `IntentDecision`: specifies `intent` restricted to `"login"`, `"logout"`, `"quote_create"`, `"agent_request"`.
-   - `RequestedItem`: contains `product: str` and `quantity: int` (with validation `quantity > 0`).
-   - `QuoteRequest`: contains `customer: str` and `items: list[RequestedItem]` (with validation `customer` non-empty, `len(items) >= 1`).
+   - `IntentDecision`: classifies `login`, `logout`, `help`, `acknowledgement`, `catalog_query`, `quote_preview`, `quote_history`, `customer_query`, `quote_create`, or `out_of_scope`; turn language may be unknown.
+   - `RequestedItem`: allows product and quantity to remain absent while information is being collected; any provided quantity must be positive.
+   - `QuoteRequest`: allows customer/items to remain absent during collection rather than forcing a partial request into a complete schema.
+   - `TurnDecision` may include an optional validated `QuotePatch` for the current pending workflow.
 2. Graph state definitions must include:
    - `AuthenticatedUser`: immutable representation containing `user_id: int`, `username: str`, `display_name: str`, `role: Literal["staff", "client"]`, `customer_id: int | None`.
    - `DemoState`: typed dictionary tracking current `input: str`, `output: str`, `authenticated_user: AuthenticatedUser | None`, `intent: str`, `quote_request: QuoteRequest | None`, `quote_draft: Any | None`, and `created_quote_id: int | None`.
+   - `DemoState` also carries stable session language, current `QuoteWorkflowState`, and interaction correlation; `quote_draft` remains revision-bound and ephemeral.
 
 ### SQA-REQ-004 — Host Authentication and Masked Credential Handling
 
@@ -57,11 +60,12 @@
 
 ### SQA-REQ-005 — Host-Managed Tools Registry and Dual-Role Policies
 
-1. The application must define seven host-managed tools using the `@runtime_tool` decorator:
+1. The application must define eight host-managed tools using the `@runtime_tool` decorator:
    - `list_products`: permission `catalog.read`, side effect `SideEffect.READ`, approval `never`. Lists active catalog products.
    - `find_product`: permission `catalog.read`, side effect `SideEffect.READ`, approval `never`. Searches products by name or SKU.
    - `calculate_quote`: permission `quote.calculate`, side effect `SideEffect.NONE`, approval `never`. Computes authoritative subtotal for resolved product IDs and quantities.
    - `find_customer`: permission `customer.read`, side effect `SideEffect.READ`, approval `never`. Staff-only customer lookup.
+   - `list_customers`: permission `customer.read`, side effect `SideEffect.READ`, approval `never`. Staff-only bounded customer directory with `id`, `code`, and `name` fields.
    - `create_quote`: permission `quote.create`, side effect `SideEffect.WRITE`, approval `for_side_effects`. Staff-only quote persistence.
    - `list_quotes`: permission `quote.read`, side effect `SideEffect.READ`, approval `never`. Staff-only listing of recent quotes (default limit 10).
    - `get_quote`: permission `quote.read`, side effect `SideEffect.READ`, approval `never`. Staff-only detail lookup of a specific quote and its line items.
@@ -84,6 +88,7 @@
    - The insertion of the `quotes` record and all associated `quote_lines` records must occur within a single SQLite transaction.
    - In case of failure or cancellation, the transaction must roll back cleanly, ensuring no orphaned or partial quote records exist.
    - Quote line records must store a historical snapshot of `unit_price_cents`.
+5. In provider-free offline mode, explicit `quote_preview` requests must use the same host-managed `calculate_quote` tool. Every requested line must resolve to an active catalog product and positive quantity; unknown or ambiguous lines reject the entire preview rather than returning a partial subtotal. A preview must never persist a quote.
 
 ### SQA-REQ-007 — Human-in-the-Loop (HITL) Workflows
 
@@ -100,11 +105,11 @@
 ### SQA-REQ-008 — LangGraph Orchestration & Hybrid Flow
 
 1. The LangGraph `StateGraph` must orchestrate the application workflow according to the design:
-   - `intent_router` classifies user input into `login`, `logout`, `quote_create`, or `agent_request`.
+   - `intent_router` classifies supported actions and, when a workflow is pending, prioritizes explicit read-only interruptions and validated quote edits.
    - `login` transitions to `login_hitl`.
    - `logout` transitions to `clear_auth`.
    - `quote_create` transitions to `auth_guard` (denying non-staff immediately), then `quote_planner`, `resolve_quote_data`, `discount_hitl`, `create_quote_tool` (with approval), and `final_output`.
-   - `agent_request` transitions to `controlled_agent` (using Proteo's `RuntimeModel.with_tools`).
+   - catalog, customer, help, and quote-history inquiries transition to `controlled_agent` or a deterministic host reply according to role policy.
 2. The controlled agent must only execute tools permitted by the active role policy and must never possess arbitrary shell, network, filesystem, or raw database access.
 
 ### SQA-REQ-009 — Interactive CLI Application
@@ -144,3 +149,45 @@
 
 1. All code must pass `uv run ruff check examples/smart_quote_agent` without errors or warnings.
 2. All code must pass `uv run ruff format --check examples/smart_quote_agent`.
+
+### SQA-REQ-014 — Transactional Quote Conversation State
+
+1. LangGraph and host code own a `QuoteWorkflowState` containing a stable `workflow_id`, monotonic `revision`, phase (`collecting`, `needs_resolution`, or `ready_for_review`), customer request/resolution, stable line IDs, quantities, product resolution status, candidates, and the current focus.
+2. A `QuoteDraft` is ephemeral and valid only for the exact active `workflow_id` and `revision`; validate this before discount prompts/review and persistence.
+3. Customer/product/quantity resolution failures preserve the workflow and all unrelated lines. Resolve all lines and return per-line errors/candidates rather than stopping at the first error.
+4. Cancel, logout, login identity switch, approval denial, success, and terminal persistence failure clear the workflow, draft, pending request, and patch references together.
+
+### SQA-REQ-015 — Contextual Routing and Validated Quote Patches
+
+1. Deterministic cancel/logout and explicit read-only intents take priority while a workflow is pending. Product, customer, help, and history queries do not consume or mutate that workflow.
+2. `TurnDecision` may contain an optional `QuotePatch`; patch operations are a discriminated union of setting a customer, adding/replacing/removing a line, or setting quantity. A pure host reducer validates targets and applies each operation without dropping unrelated lines.
+3. A short answer may complete a field only when exactly one compatible field is pending. An ambiguous answer must leave quote data and revision unchanged and ask a localized clarification.
+4. Replacing a product preserves that line's quantity and every other line. Deictic references such as “ese/that” require exactly one stored candidate/reference.
+
+### SQA-REQ-016 — Canonical Entity Search and Customer Directory
+
+1. Add `list_customers` as a bounded staff-only tool authorized by `customer.read`; maintain `find_customer` for targeted search.
+2. Normalize case, accents, and safe singular/plural aliases. Product resolution order is exact ID/SKU, exact normalized name, unique safe alias, then unique partial match. Multiple matches produce candidate lists.
+3. Support safe `mouse`, `mice`, and `mouses` aliases. Never map `desk` to `dock` unless the user explicitly corrects the product.
+
+### SQA-REQ-017 — Language and Controlled-Agent Continuity
+
+1. Preserve the interaction language in host state; update it only when current-turn language is clear, and retain it for terse follow-ups.
+2. A controlled `RuntimeTask` remembers only read-only turns actually sent to that task under `ContextPolicy.RUNTIME`; it is not the owner of quote workflow state and receives no host-side history replay.
+3. Deterministic host replies use localized Spanish/English templates. Read-only interruptions briefly report that a quote remains pending and identify its next missing detail.
+
+### SQA-REQ-018 — Task/Workflow Observability Correlation
+
+1. Add `task_id` to the neutral local `runtime_events` table through an additive, idempotent SQLite migration. Do not alter the business database.
+2. Record metadata-only host transitions correlating `interaction_id`, `task_id`, `workflow_id`, revision, intent, route, phases, and stable result code; never persist prompt, response, or sensitive arguments.
+3. The inspector supports task and workflow timelines and displays provider cleanup diagnostics such as `task.cleanup.provider_delete_failed`. It distinguishes cumulative database metrics from invocation-scoped details.
+4. Surfacing cleanup diagnostics is in scope; changing provider cleanup behavior is not.
+
+### SQA-REQ-019 — Correlated, Redacted Turn Error Diagnostics
+
+1. The CLI assigns a unique `interaction_id` before each graph invocation. Structured model calls and controlled `RuntimeTask` turns receive only safe correlation metadata (`interaction_id`, stage, and available task/workflow IDs) via `InvocationConfig.metadata`; no prompt or output is added to diagnostic records.
+2. A host-side failure is recorded as `host.turn_error` with interaction ID, stage, exception module/type, an optional bounded stable error code, causal exception type names, and traceback frames containing only repository-relative or external-basename file, function, and line.
+3. Error messages, exception representations, local variables, prompts, responses, tool arguments, credentials, and absolute external filesystem paths MUST NOT be persisted. Host logging is best effort and MUST NOT mask an original failure or alter the generic localized REPL response.
+4. The local `runtime_events` table adds nullable `interaction_id` and an index through an additive, idempotent migration. The business database and public Proteo Runtime APIs remain unchanged.
+5. `inspect_observability.py --interaction <id>` displays runtime and host events together. If a correlated `host.turn_error` exists, that interaction is shown as failed even when its runtime invocation lacks a terminal event; existing event rows are never rewritten. Completed runtime invocations remain reported as completed.
+6. A live test uses the original quote request and approved staff identity. It proceeds to persistence only after review confirms Globex, one USB-C Dock, two Wireless Mouse, zero discount, and USD 230; if the provider fails first, the interaction is inspected and the demo quote count must remain unchanged.
