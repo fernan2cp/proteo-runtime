@@ -9,6 +9,11 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from openai_codex.generated.v2_all import (
+    CodexErrorInfo,
+    ResponseStreamDisconnected,
+    ResponseStreamDisconnectedCodexErrorInfo,
+)
 
 from proteo_runtime.config import validate_config
 from proteo_runtime.core.errors import (
@@ -696,6 +701,58 @@ async def test_runner_failed_interrupted_and_fallback_terminal(
         async for event in model.astream("fallback"):
             fallback.append(event)
     assert fallback[-1].kind is RuntimeEventKind.INVOCATION_FAILED
+
+
+@pytest.mark.asyncio
+async def test_failed_turn_preserves_safe_provider_error_classification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Preserve safe provider error codes while redacting sensitive details."""
+
+    notifications = list(_notifications("failed"))
+    terminal = notifications[-1].payload.turn
+    terminal.error = SimpleNamespace(
+        codex_error_info=CodexErrorInfo(
+            root=ResponseStreamDisconnectedCodexErrorInfo(
+                response_stream_disconnected=ResponseStreamDisconnected(http_status_code=400)
+            )
+        ),
+        message="sensitive provider message",
+        additional_details="sensitive additional details",
+    )
+    sdk = FakeSDK(turns=[FakeTurn(notifications=tuple(notifications))])
+    install_sdk(monkeypatch, sdk)
+    runtime = codex_runtime.CodexRuntime()
+    await runtime.start()
+    model = await runtime.brain()
+    events: list[Any] = []
+
+    with pytest.raises(RuntimeUnavailableError) as raised:
+        async for event in model.astream("failed structured turn"):
+            events.append(event)
+
+    failed_events = [
+        event
+        for event in events
+        if event.kind in {RuntimeEventKind.TURN_FAILED, RuntimeEventKind.INVOCATION_FAILED}
+    ]
+    assert [event.kind for event in failed_events] == [
+        RuntimeEventKind.TURN_FAILED,
+        RuntimeEventKind.INVOCATION_FAILED,
+    ]
+    for event in failed_events:
+        assert event.metadata["provider_status"] == "failed"
+        assert event.metadata["provider_error_code"] == "responseStreamDisconnected"
+        assert event.metadata["provider_http_status"] == 400
+        assert "sensitive provider message" not in repr(event.metadata)
+        assert "sensitive additional details" not in repr(event.metadata)
+        assert "sensitive provider message" not in repr(event.payload)
+        assert "sensitive additional details" not in repr(event.payload)
+    assert raised.value.details["provider_status"] == "failed"
+    assert raised.value.details["provider_error_code"] == "responseStreamDisconnected"
+    assert raised.value.details["provider_http_status"] == 400
+    assert "sensitive provider message" not in repr(raised.value.details)
+    assert "sensitive additional details" not in repr(raised.value.details)
 
 
 @pytest.mark.asyncio

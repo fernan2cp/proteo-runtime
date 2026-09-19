@@ -9,11 +9,14 @@ from types import SimpleNamespace
 import pytest
 from pydantic import BaseModel, ConfigDict
 
+from proteo_runtime.core.errors import RuntimeUnavailableError
+from proteo_runtime.core.events import RuntimeEventKind
 from proteo_runtime.core.model import RuntimeResult
 from proteo_runtime.providers.codex import runtime as codex_runtime
 from proteo_runtime.providers.codex._structured import (
     _normalize_sdk_schema,
     _SchemaAdapter,
+    _ValidationFailure,
 )
 
 # Ensure examples/smart_quote_agent is on sys.path for QuoteRequest import
@@ -21,11 +24,12 @@ _DEMO_DIR = Path(__file__).resolve().parent.parent.parent / "examples" / "smart_
 if str(_DEMO_DIR) not in sys.path:
     sys.path.insert(0, str(_DEMO_DIR))
 
-from models import QuoteRequest, RequestedItem  # noqa: E402
+from models import QuoteRequest, RequestedItem, TurnDecision  # noqa: E402
 from test_codex_provider import (  # noqa: E402
     FakeNotification,
     FakeSDK,
     FakeTurn,
+    _notifications,
     install_sdk,
 )
 
@@ -62,6 +66,29 @@ def _json_notifications(text: str) -> tuple[FakeNotification, ...]:
         FakeNotification("thread/tokenUsage/updated", SimpleNamespace(token_usage=usage)),
         FakeNotification("turn/completed", SimpleNamespace(turn=turn)),
     )
+
+
+def _schema_keys(value: object) -> set[str]:
+    """Collect every key name from a nested JSON Schema value.
+
+    Args:
+        value: A JSON-compatible schema value.
+
+    Returns:
+        The set of dictionary keys found recursively in the value.
+    """
+    if isinstance(value, dict):
+        keys: set[str] = set()
+        for key, item in value.items():
+            keys.add(str(key))
+            keys.update(_schema_keys(item))
+        return keys
+    if isinstance(value, list):
+        keys = set()
+        for item in value:
+            keys.update(_schema_keys(item))
+        return keys
+    return set()
 
 
 def test_a1_required_nullable_scalar() -> None:
@@ -211,5 +238,120 @@ async def test_a4_canonical_structured_runtime_invocation(
             "product",
             "quantity",
         }
+    finally:
+        await runtime.close()
+
+
+def test_a5_nested_one_of_is_rewritten_and_discriminator_removed() -> None:
+    """Normalize nested unions to the provider-compatible schema subset."""
+    raw_schema = {
+        "type": "object",
+        "properties": {
+            "payload": {
+                "type": "array",
+                "items": {
+                    "oneOf": [
+                        {"type": "string"},
+                        {"type": "integer"},
+                    ],
+                    "discriminator": {"propertyName": "kind"},
+                },
+            }
+        },
+        "required": ["payload"],
+    }
+
+    normalized = _normalize_sdk_schema(raw_schema)
+
+    item_schema = normalized["properties"]["payload"]["items"]
+    assert "oneOf" not in item_schema
+    assert item_schema["anyOf"] == [{"type": "string"}, {"type": "integer"}]
+    assert "discriminator" not in _schema_keys(normalized)
+
+
+def test_a6_turn_decision_provider_schema_has_no_discriminated_union() -> None:
+    """Normalize the example's real router schema for the Codex provider."""
+    adapter = _SchemaAdapter.create(TurnDecision)
+
+    keys = _schema_keys(adapter.schema)
+    assert "oneOf" not in keys
+    assert "discriminator" not in keys
+    assert "anyOf" in keys
+
+
+def test_a7_dict_schema_host_validation_preserves_one_of_exclusivity() -> None:
+    """Reject values matching multiple original oneOf alternatives on the host."""
+    schema = {
+        "type": "object",
+        "properties": {
+            "value": {
+                "oneOf": [
+                    {"type": "string"},
+                    {"type": "string", "minLength": 1},
+                ]
+            }
+        },
+        "required": ["value"],
+        "additionalProperties": False,
+    }
+    adapter = _SchemaAdapter.create(schema)
+
+    assert "oneOf" not in adapter.schema["properties"]["value"]
+    assert "anyOf" in adapter.schema["properties"]["value"]
+    assert adapter.validate('{"value":""}') == {"value": ""}
+    with pytest.raises(_ValidationFailure):
+        adapter.validate('{"value":"overlaps both alternatives"}')
+
+
+def test_schema_keyword_names_inside_properties_remain_literal_field_names() -> None:
+    """Do not treat user property names as JSON Schema keywords."""
+    schema = {
+        "type": "object",
+        "properties": {
+            "oneOf": {"type": "string"},
+            "discriminator": {"type": "string"},
+            "default": {"type": "string", "default": "removed from schema node"},
+        },
+    }
+
+    normalized = _normalize_sdk_schema(schema)
+
+    assert set(normalized["properties"]) == {"oneOf", "discriminator", "default"}
+    assert normalized["properties"]["oneOf"] == {"type": "string"}
+    assert normalized["properties"]["discriminator"] == {"type": "string"}
+    assert normalized["properties"]["default"] == {"type": "string"}
+    assert set(normalized["required"]) == {"oneOf", "discriminator", "default"}
+
+
+@pytest.mark.asyncio
+async def test_structured_failed_turn_replays_buffered_terminal_events(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Publish provider failure events through the logical structured invocation."""
+    sdk = FakeSDK(turns=[FakeTurn(notifications=_notifications("failed"))])
+    install_sdk(monkeypatch, sdk)
+    runtime = codex_runtime.CodexRuntime()
+    await runtime.start()
+
+    try:
+        model = runtime.model(profile="structured", level="low").with_structured_output(
+            QuoteRequest
+        )
+        events = []
+        with pytest.raises(RuntimeUnavailableError):
+            async for event in model.astream("create a quote"):
+                events.append(event)
+
+        terminal = [
+            event
+            for event in events
+            if event.kind in {RuntimeEventKind.TURN_FAILED, RuntimeEventKind.INVOCATION_FAILED}
+        ]
+        assert [event.kind for event in terminal] == [
+            RuntimeEventKind.TURN_FAILED,
+            RuntimeEventKind.INVOCATION_FAILED,
+        ]
+        assert len({event.invocation_id for event in terminal}) == 1
+        assert terminal[-1].sequence == terminal[0].sequence + 1
     finally:
         await runtime.close()

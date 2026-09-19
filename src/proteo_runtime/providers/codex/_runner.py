@@ -106,6 +106,59 @@ def _usage_metadata(usage: object) -> Mapping[str, int | float | None]:
     }
 
 
+def _provider_error_metadata(turn: object) -> dict[str, str | int]:
+    """Extract allowlisted Codex error classification from a failed turn.
+
+    Provider message text and additional details are deliberately never read.
+    """
+
+    turn_error = getattr(turn, "error", None)
+    error_info = getattr(turn_error, "codex_error_info", None)
+    root = getattr(error_info, "root", error_info)
+    stable_codes = {
+        "contextWindowExceeded",
+        "sessionBudgetExceeded",
+        "usageLimitExceeded",
+        "serverOverloaded",
+        "cyberPolicy",
+        "internalServerError",
+        "unauthorized",
+        "badRequest",
+        "threadRollbackFailed",
+        "sandboxError",
+        "other",
+        "httpConnectionFailed",
+        "responseStreamConnectionFailed",
+        "responseStreamDisconnected",
+        "responseTooManyFailedAttempts",
+        "activeTurnNotSteerable",
+    }
+    variant_names = {
+        "http_connection_failed": "httpConnectionFailed",
+        "response_stream_connection_failed": "responseStreamConnectionFailed",
+        "response_stream_disconnected": "responseStreamDisconnected",
+        "response_too_many_failed_attempts": "responseTooManyFailedAttempts",
+        "active_turn_not_steerable": "activeTurnNotSteerable",
+    }
+    metadata: dict[str, str | int] = {}
+
+    value = getattr(root, "value", root)
+    if isinstance(value, str) and value in stable_codes:
+        metadata["provider_error_code"] = value
+    else:
+        for attr, code in variant_names.items():
+            variant = getattr(root, attr, None)
+            if variant is None:
+                continue
+            metadata["provider_error_code"] = code
+            status = getattr(variant, "http_status_code", getattr(variant, "httpStatusCode", None))
+            if isinstance(status, int) and not isinstance(status, bool) and 100 <= status <= 599:
+                metadata["provider_http_status"] = status
+            break
+
+    return metadata
+
+
 @dataclass
 class TurnRun:
     """Collect one SDK turn while exposing one neutral event stream."""
@@ -230,20 +283,24 @@ class TurnRun:
                         self.items.extend(getattr(turn, "items", ()) or ())
                     status = enum_value(getattr(turn, "status", None)) or "completed"
                     self.terminal_status = status
+                    failure_metadata: dict[str, str | int] = {
+                        "status": status,
+                        "provider_status": status,
+                    }
                     if status == "interrupted":
                         self.terminal_error = InterruptedError("Codex turn was interrupted")
                         yield await self._publish(
                             self._emit(
                                 RuntimeEventKind.TURN_INTERRUPTED,
                                 turn_id=turn_id,
-                                metadata={"status": status},
+                                metadata=failure_metadata,
                             )
                         )
                         yield await self._publish(
                             self._emit(
                                 RuntimeEventKind.INTERRUPTED,
                                 turn_id=turn_id,
-                                metadata={"status": status},
+                                metadata=failure_metadata,
                             )
                         )
                     elif status == "completed":
@@ -256,15 +313,16 @@ class TurnRun:
                             )
                         )
                     else:
+                        failure_metadata.update(_provider_error_metadata(turn))
                         self.terminal_error = RuntimeUnavailableError(
                             "Codex turn failed",
-                            details={"provider_status": status},
+                            details=failure_metadata,
                         )
                         yield await self._publish(
                             self._emit(
                                 RuntimeEventKind.TURN_FAILED,
                                 turn_id=turn_id,
-                                metadata={"status": status},
+                                metadata=failure_metadata,
                             )
                         )
                     if self.terminal_error is None:
@@ -281,7 +339,7 @@ class TurnRun:
                             self._emit(
                                 RuntimeEventKind.INVOCATION_FAILED,
                                 turn_id=turn_id,
-                                metadata={"status": status},
+                                metadata=failure_metadata,
                             )
                         )
                         raise self.terminal_error

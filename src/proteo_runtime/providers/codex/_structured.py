@@ -57,13 +57,15 @@ class _SchemaAdapter:
             return cls(_normalize_sdk_schema(schema.model_json_schema()), schema, None)
         if not isinstance(schema, dict):
             raise CapabilityError("Structured schema must be a Pydantic model or JSON object")
-        copied = _normalize_sdk_schema(json.loads(json.dumps(schema)))
+        original = json.loads(json.dumps(schema))
+        provider_schema = _normalize_schema(original, adapt_provider=True)
+        host_schema = _normalize_schema(original, adapt_provider=False)
         try:
-            Draft202012Validator.check_schema(copied)
-            validator = Draft202012Validator(copied)
+            Draft202012Validator.check_schema(host_schema)
+            validator = Draft202012Validator(host_schema)
         except (SchemaError, TypeError, ValueError) as exc:
             raise CapabilityError("Invalid Draft 2020-12 structured schema") from exc
-        return cls(copied, None, validator)
+        return cls(provider_schema, None, validator)
 
     def validate(self, output: str) -> Any:
         """Parse one JSON value and validate it on the host."""
@@ -87,14 +89,15 @@ class _SchemaAdapter:
 
 
 def _normalize_sdk_schema(schema: dict[str, Any]) -> dict[str, Any]:
-    """Close object schemas and enforce strict structured-output constraints.
+    """Adapt a schema to Codex structured-output constraints.
 
     Recursively normalizes supported schemas to the strict subset required by
     Codex and OpenAI structured outputs:
     1. Object schemas have additionalProperties set to False.
     2. Every declared property in properties appears in required.
     3. Default values (e.g. default: null) are removed.
-    4. Type containers (items, anyOf, oneOf, allOf, $defs, etc.) are recursed.
+    4. oneOf unions are sent as anyOf and discriminators are removed.
+    5. Type containers (items, anyOf, oneOf, allOf, $defs, etc.) are recursed.
 
     Args:
         schema: Input JSON schema dictionary.
@@ -103,42 +106,99 @@ def _normalize_sdk_schema(schema: dict[str, Any]) -> dict[str, Any]:
         Normalized JSON schema conforming to strict structured output constraints.
     """
 
-    def visit(value: Any) -> Any:
-        """Recursively normalize object nodes and nested schema containers."""
+    return _normalize_schema(schema, adapt_provider=True)
+
+
+def _normalize_schema(schema: dict[str, Any], *, adapt_provider: bool) -> dict[str, Any]:
+    """Normalize strict schema rules while optionally adapting provider syntax.
+
+    Args:
+        schema: Input JSON schema dictionary.
+        adapt_provider: Whether to apply Codex-specific union adaptations.
+
+    Returns:
+        A normalized schema that retains the input union semantics when false.
+    """
+
+    schema_map_keywords = {
+        "$defs",
+        "definitions",
+        "dependentSchemas",
+        "patternProperties",
+        "properties",
+    }
+    schema_list_keywords = {"allOf", "anyOf", "oneOf", "prefixItems"}
+    schema_value_keywords = {
+        "additionalItems",
+        "additionalProperties",
+        "contains",
+        "contentSchema",
+        "else",
+        "if",
+        "items",
+        "not",
+        "propertyNames",
+        "then",
+        "unevaluatedItems",
+        "unevaluatedProperties",
+    }
+
+    def copy_data(value: Any) -> Any:
+        """Copy arbitrary schema values without interpreting their keys."""
         if isinstance(value, dict):
-            normalized: dict[str, Any] = {}
-            for key, item in value.items():
-                str_key = str(key)
-                if str_key == "default":
-                    continue
-                normalized[str_key] = visit(item)
-
-            is_object = normalized.get("type") == "object" or "properties" in normalized
-            if is_object:
-                if normalized.get("additionalProperties") is not False:
-                    normalized["additionalProperties"] = False
-                if "properties" in normalized and isinstance(normalized["properties"], dict):
-                    prop_keys = list(normalized["properties"].keys())
-                    existing_req = normalized.get("required")
-                    if isinstance(existing_req, list):
-                        seen = set(existing_req)
-                        req = list(existing_req)
-                        for k in prop_keys:
-                            if k not in seen:
-                                req.append(k)
-                                seen.add(k)
-                        normalized["required"] = req
-                    else:
-                        normalized["required"] = prop_keys
-                elif normalized.get("type") == "object" and "required" not in normalized:
-                    normalized["required"] = []
-
-            return normalized
-
+            return {str(key): copy_data(item) for key, item in value.items()}
         if isinstance(value, list):
-            return [visit(item) for item in value]
-
+            return [copy_data(item) for item in value]
         return value
+
+    def visit(value: Any) -> Any:
+        """Normalize schema nodes without rewriting literal map keys."""
+        if not isinstance(value, dict):
+            return copy_data(value)
+        if adapt_provider and "oneOf" in value and "anyOf" in value:
+            raise CapabilityError("Schema cannot combine oneOf and anyOf at one node")
+
+        normalized: dict[str, Any] = {}
+        for key, item in value.items():
+            str_key = str(key)
+            if str_key == "default" or (adapt_provider and str_key == "discriminator"):
+                continue
+            normalized_key = "anyOf" if adapt_provider and str_key == "oneOf" else str_key
+            if str_key in schema_map_keywords and isinstance(item, dict):
+                normalized[normalized_key] = {name: visit(child) for name, child in item.items()}
+            elif str_key in schema_list_keywords and isinstance(item, list):
+                normalized[normalized_key] = [visit(child) for child in item]
+            elif str_key in schema_value_keywords and isinstance(item, dict | bool):
+                normalized[normalized_key] = visit(item)
+            elif str_key == "dependencies" and isinstance(item, dict):
+                normalized[normalized_key] = {
+                    name: visit(child) if isinstance(child, dict | bool) else copy_data(child)
+                    for name, child in item.items()
+                }
+            else:
+                normalized[normalized_key] = copy_data(item)
+
+        is_object = normalized.get("type") == "object" or "properties" in normalized
+        if is_object:
+            if normalized.get("additionalProperties") is not False:
+                normalized["additionalProperties"] = False
+            if "properties" in normalized and isinstance(normalized["properties"], dict):
+                prop_keys = list(normalized["properties"].keys())
+                existing_req = normalized.get("required")
+                if isinstance(existing_req, list):
+                    seen = set(existing_req)
+                    req = list(existing_req)
+                    for prop_key in prop_keys:
+                        if prop_key not in seen:
+                            req.append(prop_key)
+                            seen.add(prop_key)
+                    normalized["required"] = req
+                else:
+                    normalized["required"] = prop_keys
+            elif normalized.get("type") == "object" and "required" not in normalized:
+                normalized["required"] = []
+
+        return normalized
 
     return cast(dict[str, Any], visit(schema))
 
@@ -339,6 +399,47 @@ class StructuredCodexModel:
                 try:
                     async for event in run.events():
                         provider_events.append(event)
+                except Exception:
+                    published_invocation_failure = False
+                    for event in provider_events:
+                        if event.kind in {
+                            RuntimeEventKind.OUTPUT_TEXT_DELTA,
+                            RuntimeEventKind.INVOCATION_COMPLETED,
+                            RuntimeEventKind.INVOCATION_STARTED,
+                        }:
+                            continue
+                        try:
+                            replayed = await self._base.runtime._dispatch(
+                                replace(
+                                    event,
+                                    event_id=f"{logical_id}:{sequence}",
+                                    invocation_id=logical_id,
+                                    sequence=sequence,
+                                    metadata={**event.metadata, "attempt": attempt},
+                                )
+                            )
+                        except Exception:
+                            continue
+                        if event.kind is RuntimeEventKind.INVOCATION_FAILED:
+                            published_invocation_failure = True
+                        yield replayed
+                        sequence += 1
+                    if not published_invocation_failure:
+                        try:
+                            failed = await self._base.runtime._dispatch(
+                                self._event(
+                                    RuntimeEventKind.INVOCATION_FAILED,
+                                    logical_id,
+                                    sequence,
+                                    {"attempt": attempt, "reason": "provider_failed"},
+                                    turn_id=run.result.turn_id if run.result is not None else None,
+                                )
+                            )
+                        except Exception:
+                            pass
+                        else:
+                            yield failed
+                    raise
                 finally:
                     if run.terminal_status is None:
                         await self._base._interrupt_or_invalidate(run)
